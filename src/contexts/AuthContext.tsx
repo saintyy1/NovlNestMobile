@@ -955,15 +955,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const reauthenticateWithGoogle = async () => {
     try {
-      // Use custom redirect URI for mobile app
-      const redirectUri = AuthSession.makeRedirectUri({
-        scheme: 'novlnest',
-        path: 'oauth/callback',
-      })
-
-      if (!redirectUri) {
-        throw new Error('Could not create redirect URI')
-      }
+      // Use Vercel backend URL as redirect URI (must be registered in Google Cloud Console)
+      const redirectUri = 'https://novlnest-mobile.vercel.app/auth/google/callback'
 
       // Create auth request
       const request = new AuthSession.AuthRequest({
@@ -989,7 +982,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       // Exchange code for ID token using your backend
-      const tokenResponse = await fetch('https://novlnest-backend.onrender.com/auth/google/token', {
+      const tokenResponse = await fetch('https://novlnest-mobile.vercel.app/auth/google/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code }),
@@ -1019,15 +1012,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signInWithGoogle = async () => {
     try {
-      // Use custom redirect URI for mobile app
-      const redirectUri = AuthSession.makeRedirectUri({
-        scheme: 'novlnest',
-        path: 'oauth/callback',
-      })
-
-      if (!redirectUri) {
-        throw new Error('Could not create redirect URI')
-      }
+      // Use Vercel backend URL as redirect URI (must be registered in Google Cloud Console)
+      const redirectUri = 'https://novlnest-mobile.vercel.app/auth/google/callback'
 
       // Create auth request
       const request = new AuthSession.AuthRequest({
@@ -1053,7 +1039,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       // Exchange code for ID token using your backend
-      const tokenResponse = await fetch('https://novlnest-backend.onrender.com/auth/google/token', {
+      const tokenResponse = await fetch('https://novlnest-mobile.vercel.app/auth/google/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code }),
