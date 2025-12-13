@@ -47,7 +47,7 @@ app.get('/auth/google/callback', async (req, res) => {
 // OAuth token exchange endpoint
 app.post('/auth/google/token', async (req, res) => {
   try {
-    const { code, redirectUri } = req.body;
+    const { code, redirectUri, codeVerifier } = req.body;
 
     if (!code) {
       return res.status(400).json({ error: 'Authorization code is required' });
@@ -56,14 +56,28 @@ app.post('/auth/google/token', async (req, res) => {
     // Use the redirect URI from request, fall back to env var
     const usedRedirectUri = redirectUri || REDIRECT_URI;
 
-    // Exchange authorization code for ID token
-    const tokenResponse = await axios.post('https://oauth2.googleapis.com/token', {
+    // Build token request payload
+    const tokenPayload = {
       grant_type: 'authorization_code',
       code,
       client_id: GOOGLE_CLIENT_ID,
       client_secret: GOOGLE_CLIENT_SECRET,
       redirect_uri: usedRedirectUri,
+    };
+
+    // Add code_verifier if PKCE was used
+    if (codeVerifier) {
+      tokenPayload.code_verifier = codeVerifier;
+    }
+
+    console.log('Token exchange request:', {
+      code: code.substring(0, 20) + '...',
+      redirectUri: usedRedirectUri,
+      hasPKCE: !!codeVerifier,
     });
+
+    // Exchange authorization code for ID token
+    const tokenResponse = await axios.post('https://oauth2.googleapis.com/token', tokenPayload);
 
     const { id_token, access_token } = tokenResponse.data;
 

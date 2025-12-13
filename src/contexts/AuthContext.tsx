@@ -985,7 +985,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const tokenResponse = await fetch('https://novlnest-mobile.vercel.app/auth/google/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, redirectUri }),
+        body: JSON.stringify({ code, redirectUri, codeVerifier: request.codeVerifier }),
       })
 
       if (!tokenResponse.ok) {
@@ -1042,7 +1042,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const tokenResponse = await fetch('https://novlnest-mobile.vercel.app/auth/google/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, redirectUri }),
+        body: JSON.stringify({ code, redirectUri, codeVerifier: request.codeVerifier }),
       })
 
       if (!tokenResponse.ok) {
