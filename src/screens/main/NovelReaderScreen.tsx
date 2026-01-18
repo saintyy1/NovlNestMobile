@@ -1,11 +1,9 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  Dimensions,
   TouchableOpacity,
-  TouchableWithoutFeedback,
   Modal,
   TextInput,
   ScrollView,
@@ -16,9 +14,13 @@ import {
   KeyboardAvoidingView,
   Platform,
   FlatList,
+  Dimensions,
+  Animated,
+  Share as RNShare,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import Icon from '@expo/vector-icons/Ionicons';
 import {
   doc,
   getDoc,
@@ -33,8 +35,16 @@ import {
 import { db } from '../../firebase/config';
 import type { Novel } from '../../types/novel';
 import { useAuth } from '../../contexts/AuthContext';
-
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+import { useTheme } from '../../contexts/ThemeContext';
+import {
+  trackNovelRead,
+  trackChapterStart,
+  trackChapterComplete,
+  trackReadingProgress,
+  trackContentInteraction,
+  trackShare,
+  getCurrentReadingTime,
+} from '../../utils/Analytics-utils';
 
 interface Comment {
   id: string;
@@ -52,13 +62,13 @@ interface Comment {
 const NovelReaderScreen = ({ route, navigation }: any) => {
   const { novelId, chapterNumber } = route.params;
   const { currentUser } = useAuth();
+  const { colors } = useTheme();
 
   const [novel, setNovel] = useState<Novel | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [currentChapter, setCurrentChapter] = useState(chapterNumber || 0);
   const [showComments, setShowComments] = useState(false);
-  const [menuVisible, setMenuVisible] = useState(false);
   const [chapterLiked, setChapterLiked] = useState(false);
   const [chapterLikes, setChapterLikes] = useState(0);
   const [comments, setComments] = useState<Comment[]>([]);
@@ -68,15 +78,12 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
   const [submittingComment, setSubmittingComment] = useState(false);
   const [submittingReply, setSubmittingReply] = useState<string | null>(null);
   const [deletingComment, setDeletingComment] = useState<string | null>(null);
+  const [isAtEnd, setIsAtEnd] = useState(false);
+  const [showNextChapterHint, setShowNextChapterHint] = useState(false);
+  const scrollViewRef = useRef<ScrollView>(null);
+  const slideAnim = useRef(new Animated.Value(0)).current;
 
-  const flatListRef = useRef<FlatList>(null);
-  const [currentPageIndex, setCurrentPageIndex] = useState(0);
-  const scrollOffsetRef = useRef(0);
-
-  // Content state
-  const [pages, setPages] = useState<string[]>([]);
-  const [isProcessingContent, setIsProcessingContent] = useState(false);
-  const [shouldScrollToEnd, setShouldScrollToEnd] = useState(false);
+  // screenWidth no longer needed - removed horizontal animation
 
   const getContentInfo = useCallback((readingOrderIndex: number) => {
     if (!novel) return { type: 'none', chapterIndex: -1, content: '', title: '' };
@@ -110,7 +117,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     return { type: 'none', chapterIndex: -1, content: '', title: '' };
   }, [novel]);
 
-  const currentContentInfo = useMemo(() => getContentInfo(currentChapter), [currentChapter, novel, getContentInfo]);
+  const currentContentInfo = getContentInfo(currentChapter);
 
   const getTotalReadingOrderItems = useCallback(() => {
     if (!novel) return 0;
@@ -120,125 +127,6 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     count += novel.chapters.length;
     return count;
   }, [novel]);
-
-  // Split content into pages based on character count (approximate)
-  useEffect(() => {
-    if (!currentContentInfo.content) {
-      setPages([]);
-      return;
-    }
-
-    setIsProcessingContent(true);
-
-    // Calculate approximate characters per page
-    const LINE_HEIGHT = 28;
-    const CHAR_PER_LINE = 50; // Approximate
-    const HEADER_HEIGHT = 100;
-    const FOOTER_HEIGHT = 50;
-    const PADDING = 80;
-    
-    const availableHeight = SCREEN_HEIGHT - HEADER_HEIGHT - FOOTER_HEIGHT - PADDING;
-    const linesPerPage = Math.floor(availableHeight / LINE_HEIGHT);
-    const charsPerPage = linesPerPage * CHAR_PER_LINE;
-
-    const fullText = currentContentInfo.content;
-    const pageArray: string[] = [];
-    
-    let remainingText = fullText;
-    
-    while (remainingText.length > 0) {
-      if (remainingText.length <= charsPerPage) {
-        pageArray.push(remainingText);
-        break;
-      }
-
-      // Find a good break point (end of sentence, paragraph, or word)
-      let breakPoint = charsPerPage;
-      const chunk = remainingText.substring(0, charsPerPage + 200); // Look ahead a bit
-      
-      // Try to break at paragraph
-      const lastParagraph = chunk.lastIndexOf('\n\n');
-      if (lastParagraph > charsPerPage * 0.7) {
-        breakPoint = lastParagraph + 2;
-      } else {
-        // Try to break at sentence
-        const sentenceEnds = ['. ', '! ', '? ', '.\n', '!\n', '?\n'];
-        let bestBreak = -1;
-        
-        for (const ending of sentenceEnds) {
-          const pos = chunk.lastIndexOf(ending, charsPerPage + 100);
-          if (pos > charsPerPage * 0.7 && pos > bestBreak) {
-            bestBreak = pos + ending.length;
-          }
-        }
-        
-        if (bestBreak > 0) {
-          breakPoint = bestBreak;
-        } else {
-          // Break at word
-          const lastSpace = chunk.lastIndexOf(' ', charsPerPage);
-          if (lastSpace > charsPerPage * 0.8) {
-            breakPoint = lastSpace + 1;
-          }
-        }
-      }
-
-      pageArray.push(remainingText.substring(0, breakPoint).trim());
-      remainingText = remainingText.substring(breakPoint).trim();
-    }
-
-    setPages(pageArray.length > 0 ? pageArray : ['No content']);
-    setIsProcessingContent(false);
-    setCurrentPageIndex(0);
-    
-    // Reset scroll position
-    setTimeout(() => {
-      if (shouldScrollToEnd && pageArray.length > 0) {
-        // Scroll to last page
-        flatListRef.current?.scrollToIndex({ 
-          index: pageArray.length - 1, 
-          animated: false 
-        });
-        setCurrentPageIndex(pageArray.length - 1);
-        setShouldScrollToEnd(false);
-      } else {
-        // Scroll to first page
-        flatListRef.current?.scrollToOffset({ offset: 0, animated: false });
-      }
-    }, 100);
-  }, [currentContentInfo.content, shouldScrollToEnd]);
-
-  // Handle scroll end - detect boundary swipes
-  const handleMomentumScrollEnd = useCallback((event: any) => {
-    const offsetX = event.nativeEvent.contentOffset.x;
-    const index = Math.round(offsetX / SCREEN_WIDTH);
-    
-    setCurrentPageIndex(index);
-    scrollOffsetRef.current = offsetX;
-  }, []);
-
-  // Handle scroll begin to detect direction
-  const handleScrollBeginDrag = useCallback((event: any) => {
-    scrollOffsetRef.current = event.nativeEvent.contentOffset.x;
-  }, []);
-
-  // Handle scroll end drag to detect boundary attempts
-  const handleScrollEndDrag = useCallback((event: any) => {
-    const offsetX = event.nativeEvent.contentOffset.x;
-    const velocity = event.nativeEvent.velocity?.x || 0;
-    
-    // Swiping right at the beginning (trying to go to previous chapter's last page)
-    if (offsetX < SCREEN_WIDTH * 0.1 && velocity > 1 && currentChapter > 0) {
-      setShouldScrollToEnd(true);
-      setCurrentChapter(currentChapter - 1);
-    }
-    
-    // Swiping left at the end (trying to go to next chapter's first page)
-    if (offsetX > (pages.length - 1) * SCREEN_WIDTH - SCREEN_WIDTH * 0.1 && velocity < -1 && currentChapter < getTotalReadingOrderItems() - 1) {
-      setShouldScrollToEnd(false);
-      setCurrentChapter(currentChapter + 1);
-    }
-  }, [currentChapter, pages.length, getTotalReadingOrderItems]);
 
   useEffect(() => {
     const fetchNovel = async () => {
@@ -299,6 +187,150 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
     fetchChapterData();
   }, [novel, currentChapter, currentUser]);
+
+  // Reset scroll position when chapter changes
+  useEffect(() => {
+    setIsAtEnd(false);
+    setShowNextChapterHint(false);
+    scrollViewRef.current?.scrollTo({ y: 0, animated: false });
+    
+    // Track chapter start for analytics
+    if (novel && currentContentInfo.type === 'chapter') {
+      trackChapterStart({
+        novelId: novel.id,
+        novelTitle: novel.title,
+        chapterNumber: currentContentInfo.chapterIndex + 1,
+        chapterTitle: currentContentInfo.title,
+        userId: currentUser?.uid,
+      });
+      
+      trackNovelRead({
+        novelId: novel.id,
+        novelTitle: novel.title,
+        chapterNumber: currentContentInfo.chapterIndex + 1,
+        userId: currentUser?.uid,
+        isAnonymous: !currentUser,
+      });
+    }
+  }, [currentChapter]);
+
+  // Track reading progress based on scroll position
+  const lastProgressRef = useRef<number>(0);
+
+  // Handle scroll to detect end of chapter
+  const handleScroll = (event: any) => {
+    const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
+    const paddingToBottom = 50;
+    const isCloseToBottom = layoutMeasurement.height + contentOffset.y >= contentSize.height - paddingToBottom;
+    
+    // Calculate reading progress percentage
+    const progressPercent = Math.min(100, Math.round((contentOffset.y + layoutMeasurement.height) / contentSize.height * 100));
+    
+    // Track progress at milestones (25%, 50%, 75%, 100%)
+    if (novel && currentContentInfo.type === 'chapter') {
+      const currentMilestone = Math.floor(progressPercent / 25) * 25;
+      const lastMilestone = Math.floor(lastProgressRef.current / 25) * 25;
+      
+      if (currentMilestone > lastMilestone && currentMilestone > 0) {
+        trackReadingProgress({
+          novelId: novel.id,
+          chapterNumber: currentContentInfo.chapterIndex + 1,
+          progressPercent: currentMilestone,
+        });
+      }
+      lastProgressRef.current = progressPercent;
+    }
+    
+    if (isCloseToBottom && !isAtEnd) {
+      setIsAtEnd(true);
+      if (currentChapter < getTotalReadingOrderItems() - 1) {
+        setShowNextChapterHint(true);
+      }
+      
+      // Track chapter complete when reaching end
+      if (novel && currentContentInfo.type === 'chapter') {
+        trackChapterComplete({
+          novelId: novel.id,
+          novelTitle: novel.title,
+          chapterNumber: currentContentInfo.chapterIndex + 1,
+          chapterTitle: currentContentInfo.title,
+          userId: currentUser?.uid,
+        });
+      }
+    } else if (!isCloseToBottom && isAtEnd) {
+      setIsAtEnd(false);
+      setShowNextChapterHint(false);
+    }
+  };
+
+  // Handle swipe up at end to go to next chapter
+  const handleScrollEndDrag = (event: any) => {
+    if (!isAtEnd || currentChapter >= getTotalReadingOrderItems() - 1) return;
+    
+    const { velocity } = event.nativeEvent;
+    // If user swipes up with enough velocity at the end
+    if (velocity && velocity.y < -0.5) {
+      goToNextChapter();
+    }
+  };
+
+  const goToNextChapter = () => {
+    if (currentChapter >= getTotalReadingOrderItems() - 1) return;
+    
+    const screenHeight = Dimensions.get('window').height;
+    
+    // Animate slide up (out of view)
+    Animated.timing(slideAnim, {
+      toValue: -screenHeight,
+      duration: 300,
+      useNativeDriver: true,
+    }).start(() => {
+      setCurrentChapter(currentChapter + 1);
+      slideAnim.setValue(screenHeight); // Position new content below
+      // Animate slide in from bottom
+      Animated.timing(slideAnim, {
+        toValue: 0,
+        duration: 300,
+        useNativeDriver: true,
+      }).start();
+    });
+  };
+
+  const handleShare = async () => {
+    try {
+      const chapterInfo = currentContentInfo.type === 'chapter' 
+        ? `Chapter ${currentContentInfo.chapterIndex + 1}: ${currentContentInfo.title}`
+        : currentContentInfo.title;
+      
+      await RNShare.share({
+        message: `I'm reading "${chapterInfo}" from "${novel?.title}" by ${novel?.authorName} on NovlNest! Check it out: https://novlnest.com/novel/${novel?.id}/read?chapter=${currentChapter}`,
+      });
+    } catch (error) {
+      console.error('Error sharing:', error);
+    }
+  };
+
+  const goToPreviousChapter = () => {
+    if (currentChapter <= 0) return;
+    
+    const screenHeight = Dimensions.get('window').height;
+    
+    // Animate slide down (out of view)
+    Animated.timing(slideAnim, {
+      toValue: screenHeight,
+      duration: 300,
+      useNativeDriver: true,
+    }).start(() => {
+      setCurrentChapter(currentChapter - 1);
+      slideAnim.setValue(-screenHeight); // Position new content above
+      // Animate slide in from top
+      Animated.timing(slideAnim, {
+        toValue: 0,
+        duration: 300,
+        useNativeDriver: true,
+      }).start();
+    });
+  };
 
   const organizeComments = useCallback((allComments: Comment[]): Comment[] => {
     const topLevel = allComments.filter((c) => !c.parentId);
@@ -612,135 +644,288 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     return date.toLocaleDateString();
   };
 
-  const renderComment = (comment: Comment, isReply: boolean = false) => (
-    <View key={comment.id} style={[styles.commentItem, isReply && styles.replyItem]}>
-      <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: comment.userId })}>
-        {comment.userPhoto ? (
-          <Image source={{ uri: comment.userPhoto }} style={styles.commentAvatar} />
-        ) : (
-          <View style={styles.commentAvatarPlaceholder}>
-            <Text style={styles.commentAvatarText}>{getUserInitials(comment.userName)}</Text>
-          </View>
-        )}
-      </TouchableOpacity>
+  const parseFormattedText = (text: string) => {
+    const elements: React.ReactNode[] = [];
+    let currentIndex = 0;
+    let key = 0;
 
-      <View style={styles.commentContent}>
-        <View style={styles.commentHeader}>
-          <Text style={styles.commentUserName}>{comment.userName}</Text>
-          <Text style={styles.commentDate}>{formatDate(comment.createdAt)}</Text>
-          {comment.userId === novel?.authorId && (
-            <View style={styles.authorBadge}>
-              <Text style={styles.authorBadgeText}>Author</Text>
-            </View>
-          )}
-        </View>
+    // Regex to match: ****bold****, **bold**, *italic*, or # headings at start of line
+    const formatRegex = /(\*{4}[^\*]+\*{4}|\*{2}[^\*]+\*{2}|\*[^\*]+\*|^#{1,6}\s+.+$)/gm;
+    
+    const matches = [...text.matchAll(formatRegex)];
+    
+    if (matches.length === 0) {
+      return <Text>{text}</Text>;
+    }
 
-        <Text style={styles.commentText}>{comment.text}</Text>
+    matches.forEach((match) => {
+      const matchText = match[0];
+      const matchIndex = match.index!;
 
-        <View style={styles.commentActions}>
-          <TouchableOpacity
-            onPress={() => handleCommentLike(comment.id, comment.likedBy?.includes(currentUser?.uid || '') || false)}
-            disabled={!currentUser}
-            style={styles.commentAction}
-          >
-            <Ionicons
-              name={comment.likedBy?.includes(currentUser?.uid || '') ? 'heart' : 'heart-outline'}
-              size={16}
-              color={comment.likedBy?.includes(currentUser?.uid || '') ? '#EF4444' : '#9CA3AF'}
-            />
-            <Text style={styles.commentActionText}>{comment.likes || 0}</Text>
+      // Add text before the match
+      if (matchIndex > currentIndex) {
+        elements.push(
+          <Text key={`text-${key++}`}>{text.substring(currentIndex, matchIndex)}</Text>
+        );
+      }
+
+      // Process the matched formatting
+      if (matchText.startsWith('****') && matchText.endsWith('****')) {
+        // Bold text (****text****)
+        const content = matchText.slice(4, -4);
+        elements.push(
+          <Text key={`bold-${key++}`} style={styles.boldText}>
+            {content}
+          </Text>
+        );
+      } else if (matchText.startsWith('**') && matchText.endsWith('**')) {
+        // Bold text (**text**)
+        const content = matchText.slice(2, -2);
+        elements.push(
+          <Text key={`bold-${key++}`} style={styles.boldText}>
+            {content}
+          </Text>
+        );
+      } else if (matchText.startsWith('*') && matchText.endsWith('*')) {
+        // Italic text (*text*)
+        const content = matchText.slice(1, -1);
+        elements.push(
+          <Text key={`italic-${key++}`} style={styles.italicText}>
+            {content}
+          </Text>
+        );
+      } else if (matchText.startsWith('#')) {
+        // Heading
+        const hashCount = matchText.match(/^#+/)?.[0].length || 1;
+        const content = matchText.replace(/^#+\s+/, '');
+        const headingSize = Math.max(24, 32 - (hashCount * 2));
+        elements.push(
+          <Text key={`heading-${key++}`} style={[styles.headingText, { fontSize: headingSize }]}>
+            {content}
+          </Text>
+        );
+      }
+
+      currentIndex = matchIndex + matchText.length;
+    });
+
+    // Add remaining text
+    if (currentIndex < text.length) {
+      elements.push(
+        <Text key={`text-${key++}`}>{text.substring(currentIndex)}</Text>
+      );
+    }
+
+    return <>{elements}</>;
+  };
+
+  // Smart paragraph splitting function
+  const splitIntoSmartParagraphs = (content: string): string[] => {
+    // First, split by explicit paragraph breaks (double newlines)
+    const explicitParagraphs = content.split(/\n\n+/).filter(p => p.trim().length > 0);
+    
+    const smartParagraphs: string[] = [];
+    
+    for (const para of explicitParagraphs) {
+      // Clean up the paragraph
+      const cleanPara = para.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+      
+      // If paragraph is short enough, keep as is
+      if (cleanPara.length < 400) {
+        smartParagraphs.push(cleanPara);
+        continue;
+      }
+      
+      // Split long paragraphs by sentences
+      // Match sentence endings: . ! ? followed by space and capital letter, or end of string
+      const sentences = cleanPara.match(/[^.!?]*[.!?]+(?:\s+|$)|[^.!?]+$/g) || [cleanPara];
+      
+      let currentParagraph = '';
+      const targetLength = 350; // Target paragraph length in characters
+      const minLength = 150; // Minimum paragraph length
+      
+      for (let i = 0; i < sentences.length; i++) {
+        const sentence = sentences[i].trim();
+        
+        if (!sentence) continue;
+        
+        // If adding this sentence would make paragraph too long
+        if (currentParagraph.length > 0 && currentParagraph.length + sentence.length > targetLength) {
+          // Only split if current paragraph is long enough
+          if (currentParagraph.length >= minLength) {
+            smartParagraphs.push(currentParagraph.trim());
+            currentParagraph = sentence;
+          } else {
+            currentParagraph += ' ' + sentence;
+          }
+        } else {
+          currentParagraph += (currentParagraph ? ' ' : '') + sentence;
+        }
+        
+        // Check for natural break points (dialogue, scene changes)
+        const hasDialogueEnd = sentence.endsWith('"') || sentence.endsWith('"');
+        const nextIsDialogue = i < sentences.length - 1 && 
+          (sentences[i + 1].trim().startsWith('"') || sentences[i + 1].trim().startsWith('"'));
+        
+        // Create paragraph break after dialogue or at natural scene breaks
+        if (currentParagraph.length >= minLength && (hasDialogueEnd && nextIsDialogue)) {
+          smartParagraphs.push(currentParagraph.trim());
+          currentParagraph = '';
+        }
+      }
+      
+      // Add any remaining content
+      if (currentParagraph.trim()) {
+        smartParagraphs.push(currentParagraph.trim());
+      }
+    }
+    
+    return smartParagraphs;
+  };
+
+  // Get parent comment data for reply display
+  const getParentCommentData = (parentId: string | undefined): { userName: string; userId: string } | null => {
+    if (!parentId) return null;
+
+    const findCommentById = (commentsList: Comment[], id: string): Comment | null => {
+      for (const c of commentsList) {
+        if (c.id === id) return c;
+        if (c.replies) {
+          const found = findCommentById(c.replies, id);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+
+    const parentComment = findCommentById(comments, parentId);
+    if (!parentComment) return null;
+
+    return {
+      userName: parentComment.userName,
+      userId: parentComment.userId,
+    };
+  };
+
+  const renderComment = (comment: Comment, isReply: boolean = false) => {
+    const parentData = isReply ? getParentCommentData(comment.parentId) : null;
+    
+    return (
+      <View key={comment.id} style={[
+        isReply ? styles.replyItem : styles.commentItem,
+        { backgroundColor: isReply ? 'transparent' : colors.surface }
+      ]}>
+        <View style={styles.commentContainer}>
+          <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: comment.userId })}>
+            {comment.userPhoto ? (
+              <Image source={{ uri: comment.userPhoto }} style={styles.commentAvatar} />
+            ) : (
+              <View style={[styles.commentAvatarPlaceholder, { backgroundColor: colors.primary }]}>
+                <Text style={styles.commentAvatarText}>{getUserInitials(comment.userName)}</Text>
+              </View>
+            )}
           </TouchableOpacity>
 
-          {currentUser && (
-            <TouchableOpacity onPress={() => setReplyingTo(comment.id)} style={styles.commentAction}>
-              <Ionicons name="return-down-forward-outline" size={16} color="#9CA3AF" />
-              <Text style={styles.commentActionText}>Reply</Text>
-            </TouchableOpacity>
-          )}
-
-          {canDeleteComment(comment) && (
-            <TouchableOpacity
-              onPress={() => handleDeleteComment(comment.id)}
-              disabled={deletingComment === comment.id}
-              style={styles.commentAction}
-            >
-              <Ionicons name="trash-outline" size={16} color="#9CA3AF" />
-              <Text style={styles.commentActionText}>Delete</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-
-        {replyingTo === comment.id && (
-          <View style={styles.replyInputContainer}>
-            <TextInput
-              value={replyContent}
-              onChangeText={setReplyContent}
-              placeholder={`Reply to ${comment.userName}...`}
-              placeholderTextColor="#9CA3AF"
-              style={styles.replyInput}
-              multiline
-            />
-            <View style={styles.replyActions}>
-              <TouchableOpacity onPress={() => setReplyingTo(null)} style={styles.replyCancel}>
-                <Text style={styles.replyCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => handleAddReply(comment.id)}
-                disabled={!replyContent.trim() || submittingReply === comment.id}
-                style={styles.replySubmit}
-              >
-                <Text style={styles.replySubmitText}>{submittingReply === comment.id ? 'Posting...' : 'Reply'}</Text>
-              </TouchableOpacity>
+          <View style={styles.commentContent}>
+            <View style={styles.commentHeader}>
+              {isReply && parentData ? (
+                <View style={styles.replyHeader}>
+                  <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: comment.userId })}>
+                    <Text style={[styles.commentUserName, { color: colors.text }]}>{comment.userName}</Text>
+                  </TouchableOpacity>
+                  <Text style={[styles.replyArrow, { color: colors.textSecondary }]}>{'>'}</Text>
+                  <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: parentData.userId })}>
+                    <Text style={[styles.commentUserName, { color: colors.primary }]}>{parentData.userName}</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: comment.userId })}>
+                  <Text style={[styles.commentUserName, { color: colors.text }]}>{comment.userName}</Text>
+                </TouchableOpacity>
+              )}
+              <Text style={[styles.commentDate, { color: colors.textSecondary }]}>{formatDate(comment.createdAt)}</Text>
+              {comment.userId === novel?.authorId && (
+                <View style={[styles.authorBadge, { backgroundColor: colors.primary }]}>
+                  <Text style={styles.authorBadgeText}>Author</Text>
+                </View>
+              )}
             </View>
+
+            <Text style={[styles.commentText, { color: colors.text }]}>{comment.text}</Text>
+
+            <View style={styles.commentActions}>
+              <TouchableOpacity
+                onPress={() => handleCommentLike(comment.id, comment.likedBy?.includes(currentUser?.uid || '') || false)}
+                disabled={!currentUser}
+                style={styles.commentAction}
+              >
+                <Ionicons
+                  name={comment.likedBy?.includes(currentUser?.uid || '') ? 'heart' : 'heart-outline'}
+                  size={16}
+                  color={comment.likedBy?.includes(currentUser?.uid || '') ? colors.error : colors.textSecondary}
+                />
+                <Text style={[styles.commentActionText, { color: colors.textSecondary }]}>{comment.likes || 0}</Text>
+              </TouchableOpacity>
+
+              {currentUser && (
+                <TouchableOpacity onPress={() => setReplyingTo(comment.id)} style={styles.commentAction}>
+                  <Ionicons name="return-down-forward-outline" size={16} color={colors.textSecondary} />
+                  <Text style={[styles.commentActionText, { color: colors.textSecondary }]}>Reply</Text>
+                </TouchableOpacity>
+              )}
+
+              {canDeleteComment(comment) && (
+                <TouchableOpacity
+                  onPress={() => handleDeleteComment(comment.id)}
+                  disabled={deletingComment === comment.id}
+                  style={styles.commentAction}
+                >
+                  <Ionicons name="trash-outline" size={16} color={colors.textSecondary} />
+                  <Text style={[styles.commentActionText, { color: colors.textSecondary }]}>Delete</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {replyingTo === comment.id && (
+              <View style={styles.replyInputContainer}>
+                <TextInput
+                  value={replyContent}
+                  onChangeText={setReplyContent}
+                  placeholder={`Reply to ${comment.userName}...`}
+                  placeholderTextColor={colors.textSecondary}
+                  style={[styles.replyInput, { backgroundColor: colors.surfaceSecondary, color: colors.text }]}
+                  multiline
+                />
+                <View style={styles.replyActions}>
+                  <TouchableOpacity onPress={() => setReplyingTo(null)} style={styles.replyCancel}>
+                    <Text style={[styles.replyCancelText, { color: colors.textSecondary }]}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => handleAddReply(comment.id)}
+                    disabled={!replyContent.trim() || submittingReply === comment.id}
+                    style={[styles.replySubmit, { backgroundColor: colors.primary }]}
+                  >
+                    <Text style={styles.replySubmitText}>{submittingReply === comment.id ? 'Posting...' : 'Reply'}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
           </View>
-        )}
+        </View>
 
         {comment.replies && comment.replies.length > 0 && (
           <View style={styles.repliesContainer}>{comment.replies.map((reply) => renderComment(reply, true))}</View>
         )}
       </View>
-    </View>
-  );
-
-  const renderPage = ({ item, index }: { item: string; index: number }) => {
-    const isFirstPage = index === 0;
-
-    return (
-      <View style={styles.pageContainer}>
-        <TouchableWithoutFeedback onPress={() => setMenuVisible(!menuVisible)}>
-          <View style={styles.pageContent}>
-            {isFirstPage && (
-              <View style={styles.pageHeader}>
-                <Text style={styles.chapterTitle}>{currentContentInfo.title}</Text>
-                <Text style={styles.authorName}>by {novel?.authorName}</Text>
-              </View>
-            )}
-
-            <ScrollView
-              style={styles.textContainer}
-              showsVerticalScrollIndicator={false}
-              scrollEnabled={false}
-            >
-              <Text style={styles.pageText}>{item}</Text>
-            </ScrollView>
-
-            <View style={styles.pageFooter}>
-              <Text style={styles.pageNumber}>
-                {index + 1} / {pages.length}
-              </Text>
-            </View>
-          </View>
-        </TouchableWithoutFeedback>
-      </View>
     );
   };
 
-  if (loading || isProcessingContent) {
+  if (loading) {
     return (
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#8B5CF6" />
-          <Text style={styles.loadingText}>Loading chapter...</Text>
+          <ActivityIndicator size="large" color={colors.primary} />
+          <Text style={[styles.loadingText, { color: colors.textSecondary }]}>Loading chapter...</Text>
         </View>
       </SafeAreaView>
     );
@@ -748,11 +933,11 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
   if (error || !novel) {
     return (
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
         <View style={styles.errorContainer}>
-          <Ionicons name="alert-circle" size={60} color="#EF4444" />
-          <Text style={styles.errorText}>{error || 'Novel not found'}</Text>
-          <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
+          <Ionicons name="alert-circle" size={60} color={colors.error} />
+          <Text style={[styles.errorText, { color: colors.text }]}>{error || 'Novel not found'}</Text>
+          <TouchableOpacity style={[styles.backButton, { backgroundColor: colors.primary }]} onPress={() => navigation.goBack()}>
             <Text style={styles.backButtonText}>Go Back</Text>
           </TouchableOpacity>
         </View>
@@ -761,68 +946,127 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
   }
 
   return (
-    <View style={styles.container}>
-      <StatusBar hidden />
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+      <StatusBar barStyle={colors.text === '#FFFFFF' ? 'light-content' : 'dark-content'} backgroundColor={colors.background} />
 
-      <FlatList
-        ref={flatListRef}
-        data={pages}
-        renderItem={renderPage}
-        keyExtractor={(item, index) => `page-${currentChapter}-${index}`}
-        horizontal
-        pagingEnabled
-        showsHorizontalScrollIndicator={false}
-        onScrollBeginDrag={handleScrollBeginDrag}
-        onScrollEndDrag={handleScrollEndDrag}
-        onMomentumScrollEnd={handleMomentumScrollEnd}
-        getItemLayout={(data, index) => ({
-          length: SCREEN_WIDTH,
-          offset: SCREEN_WIDTH * index,
-          index,
-        })}
-        extraData={currentChapter}
-      />
-
-      {menuVisible && (
-        <View style={styles.menuOverlay}>
-          <TouchableOpacity style={styles.menuButton} onPress={() => navigation.goBack()}>
-            <Ionicons name="close" size={24} color="#fff" />
-          </TouchableOpacity>
+      {/* Header */}
+      <View style={[styles.header, { backgroundColor: colors.background, borderBottomColor: colors.border }]}>
+        <TouchableOpacity
+            onPress={() => navigation.goBack()}
+            style={styles.topBarButton}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+            <Icon name="chevron-back" size={28} color="#8B5CF6" />
+        </TouchableOpacity>
+        <View style={styles.headerCenter}>
+          <Text style={[styles.headerTitle, { color: colors.text }]}>{currentContentInfo.title}</Text>
+          <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>
+            {currentChapter + 1} / {getTotalReadingOrderItems()}
+          </Text>
         </View>
-      )}
 
+        <TouchableOpacity
+          onPress={handleShare}
+          style={styles.topBarButton}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+      >
+          <Icon name="share-outline" size={24} color="#8B5CF6" />
+      </TouchableOpacity>
+      </View>
+
+      {/* Scrollable Content */}
+      <Animated.View style={[styles.readerContainer, { transform: [{ translateY: slideAnim }] }]}>
+        <ScrollView
+          ref={scrollViewRef}
+          style={styles.contentScroll}
+          contentContainerStyle={styles.contentContainer}
+          showsVerticalScrollIndicator={true}
+          onScroll={handleScroll}
+          onScrollEndDrag={handleScrollEndDrag}
+          scrollEventThrottle={16}
+        >
+          {splitIntoSmartParagraphs(currentContentInfo.content).map((paragraph: string, index: number) => (
+              <Text
+                key={index}
+                style={[styles.paragraph, { color: colors.text }]}
+              >
+                {parseFormattedText(paragraph)}
+              </Text>
+            ))}
+          
+          {/* End of chapter indicator */}
+          <View style={styles.chapterEndContainer}>
+            <View style={[styles.chapterEndLine, { backgroundColor: colors.border }]} />
+            <Text style={[styles.chapterEndText, { color: colors.textSecondary }]}>
+              End of {currentContentInfo.title}
+            </Text>
+            
+            {currentChapter < getTotalReadingOrderItems() - 1 ? (
+              <TouchableOpacity 
+                style={[styles.nextChapterButton, { backgroundColor: colors.primary }]}
+                onPress={goToNextChapter}
+              >
+                <Text style={styles.nextChapterButtonText}>
+                  Next: {getContentInfo(currentChapter + 1).title}
+                </Text>
+                <Ionicons name="chevron-forward" size={20} color="#fff" />
+              </TouchableOpacity>
+            ) : (
+              <Text style={[styles.noMoreChaptersText, { color: colors.textSecondary }]}>
+                You've reached the end of the story
+              </Text>
+            )}
+
+            {currentChapter > 0 && (
+              <TouchableOpacity 
+                style={[styles.prevChapterButton, { borderColor: colors.border }]}
+                onPress={goToPreviousChapter}
+              >
+                <Ionicons name="chevron-back" size={20} color={colors.text} />
+                <Text style={[styles.prevChapterButtonText, { color: colors.text }]}>
+                  Previous: {getContentInfo(currentChapter - 1).title}
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </ScrollView>
+      </Animated.View>
+
+      {/* Floating Actions */}
       <View style={styles.floatingActions}>
-        <TouchableOpacity style={styles.actionButton} onPress={handleChapterLike}>
-          <Ionicons name={chapterLiked ? 'heart' : 'heart-outline'} size={24} color={chapterLiked ? '#EF4444' : '#fff'} />
-          <Text style={styles.actionButtonText}>{chapterLikes}</Text>
+        <TouchableOpacity style={[styles.actionButton, { backgroundColor: colors.surface, borderColor: colors.border }]} onPress={handleChapterLike}>
+          <Ionicons name={chapterLiked ? 'heart' : 'heart-outline'} size={24} color={chapterLiked ? colors.error : colors.text} />
+          <Text style={[styles.actionButtonText, { color: colors.text }]}>{chapterLikes}</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.actionButton} onPress={() => setShowComments(true)}>
-          <Ionicons name="chatbubble-outline" size={24} color="#fff" />
-          <Text style={styles.actionButtonText}>
+        <TouchableOpacity style={[styles.actionButton, { backgroundColor: colors.surface, borderColor: colors.border }]} onPress={() => setShowComments(true)}>
+          <Ionicons name="chatbubble-outline" size={24} color={colors.text} />
+          <Text style={[styles.actionButtonText, { color: colors.text }]}>
             {comments.reduce((total, c) => total + 1 + (c.replies?.length || 0), 0)}
           </Text>
         </TouchableOpacity>
       </View>
 
       <Modal visible={showComments} animationType="slide" onRequestClose={() => setShowComments(false)}>
-        <SafeAreaView style={styles.modalContainer}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>
-              Comments ({comments.reduce((total, c) => total + 1 + (c.replies?.length || 0), 0)})
-            </Text>
-            <TouchableOpacity onPress={() => setShowComments(false)}>
-              <Ionicons name="close" size={24} color="#fff" />
-            </TouchableOpacity>
-          </View>
+        <View style={[styles.modalContainer, { backgroundColor: colors.background }]}>
+          <SafeAreaView style={{ backgroundColor: colors.background }} edges={['top']}>
+            <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
+              <Text style={[styles.modalTitle, { color: colors.text }]}>
+                Comments ({comments.reduce((total, c) => total + 1 + (c.replies?.length || 0), 0)})
+              </Text>
+              <TouchableOpacity onPress={() => setShowComments(false)} style={styles.modalCloseButton}>
+                <Ionicons name="close" size={24} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+          </SafeAreaView>
 
           <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
             <ScrollView style={styles.commentsList} showsVerticalScrollIndicator={false}>
               {comments.length === 0 ? (
                 <View style={styles.emptyComments}>
-                  <Ionicons name="chatbubbles-outline" size={48} color="#9CA3AF" />
-                  <Text style={styles.emptyCommentsText}>No comments yet</Text>
-                  <Text style={styles.emptyCommentsSubtext}>Be the first to comment!</Text>
+                  <Ionicons name="chatbubbles-outline" size={48} color={colors.textSecondary} />
+                  <Text style={[styles.emptyCommentsText, { color: colors.textSecondary }]}>No comments yet</Text>
+                  <Text style={[styles.emptyCommentsSubtext, { color: colors.textSecondary }]}>Be the first to comment!</Text>
                 </View>
               ) : (
                 comments.map((comment) => renderComment(comment))
@@ -830,39 +1074,183 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
             </ScrollView>
 
             {currentUser && (
-              <View style={styles.commentForm}>
+              <View style={[styles.commentForm, { borderTopColor: colors.border }]}>
                 <TextInput
                   value={newComment}
                   onChangeText={setNewComment}
                   placeholder="Write a comment..."
-                  placeholderTextColor="#9CA3AF"
-                  style={styles.commentInput}
+                  placeholderTextColor={colors.textSecondary}
+                  style={[styles.commentInput, { backgroundColor: colors.surface, color: colors.text }]}
                   multiline
                 />
                 <TouchableOpacity
                   onPress={handleAddComment}
                   disabled={!newComment.trim() || submittingComment}
-                  style={styles.commentSubmit}
+                  style={[styles.commentSubmit, { backgroundColor: colors.primary }]}
                 >
                   <Text style={styles.commentSubmitText}>{submittingComment ? 'Posting...' : 'Post'}</Text>
                 </TouchableOpacity>
               </View>
             )}
           </KeyboardAvoidingView>
-        </SafeAreaView>
+        </View>
       </Modal>
-    </View>
+    </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000',
   },
   safeArea: {
     flex: 1,
-    backgroundColor: '#000',
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+  },
+  topBarButton: {
+        width: 36,
+        height: 36,
+        justifyContent: 'center',
+        alignItems: 'center',
+        borderRadius: 18,
+    },
+  headerCenter: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    textAlign: 'center',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  headerSubtitle: {
+    fontSize: 14,
+    marginTop: 2,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  readerContainer: {
+    flex: 1,
+  },
+  contentScroll: {
+    flex: 1,
+  },
+  contentContainer: {
+    padding: 24,
+    paddingBottom: 100,
+  },
+  chapterEndContainer: {
+    marginTop: 40,
+    alignItems: 'center',
+    paddingBottom: 40,
+  },
+  chapterEndLine: {
+    width: 100,
+    height: 1,
+    marginBottom: 16,
+  },
+  chapterEndText: {
+    fontSize: 14,
+    marginBottom: 24,
+  },
+  nextChapterButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 8,
+    marginBottom: 12,
+  },
+  nextChapterButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+    marginRight: 8,
+  },
+  prevChapterButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  prevChapterButtonText: {
+    fontSize: 14,
+    marginLeft: 4,
+  },
+  noMoreChaptersText: {
+    fontSize: 14,
+    fontStyle: 'italic',
+  },
+  swipeHint: {
+    position: 'absolute',
+    bottom: 20,
+    left: 20,
+    right: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: 8,
+    opacity: 0.9,
+  },
+  swipeHintText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '500',
+    marginLeft: 8,
+  },
+  loadingPage: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pageContainer: {
+    flex: 1,
+  },
+  pageContent: {
+    padding: 24,
+  },
+  chapterTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  authorName: {
+    fontSize: 14,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    marginBottom: 24,
+    textAlign: 'center',
+  },
+  paragraph: {
+    fontSize: 18,
+    textAlign: 'left',
+    lineHeight: 28,
+    marginBottom: 20,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  boldText: {
+    fontWeight: 'bold',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  italicText: {
+    fontStyle: 'italic',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  headingText: {
+    fontWeight: 'bold',
+    marginTop: 8,
+    marginBottom: 4,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   loadingContainer: {
     flex: 1,
@@ -870,7 +1258,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   loadingText: {
-    color: '#9CA3AF',
     marginTop: 12,
     fontSize: 14,
   },
@@ -882,7 +1269,6 @@ const styles = StyleSheet.create({
   },
   errorText: {
     fontSize: 18,
-    color: '#fff',
     marginTop: 16,
     marginBottom: 24,
     textAlign: 'center',
@@ -890,69 +1276,12 @@ const styles = StyleSheet.create({
   backButton: {
     paddingHorizontal: 24,
     paddingVertical: 12,
-    backgroundColor: '#8B5CF6',
     borderRadius: 8,
   },
   backButtonText: {
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
-  },
-  pageContainer: {
-    width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT,
-  },
-  pageContent: {
-    flex: 1,
-    paddingHorizontal: 24,
-    paddingVertical: 40,
-    justifyContent: 'space-between',
-  },
-  pageHeader: {
-    marginBottom: 24,
-  },
-  chapterTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#fff',
-    marginBottom: 8,
-    textAlign: 'center',
-  },
-  authorName: {
-    fontSize: 14,
-    color: '#9CA3AF',
-    textAlign: 'center',
-  },
-  textContainer: {
-    flex: 1,
-  },
-  pageText: {
-    fontSize: 17,
-    lineHeight: 28,
-    color: '#E5E5E5',
-    textAlign: 'justify',
-    letterSpacing: 0.3,
-  },
-  pageFooter: {
-    paddingTop: 16,
-  },
-  pageNumber: {
-    fontSize: 12,
-    color: '#6B7280',
-    textAlign: 'center',
-  },
-  menuOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    padding: 20,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    zIndex: 10,
-  },
-  menuButton: {
-    alignSelf: 'flex-end',
-    padding: 12,
   },
   floatingActions: {
     position: 'absolute',
@@ -962,36 +1291,34 @@ const styles = StyleSheet.create({
     zIndex: 5,
   },
   actionButton: {
-    backgroundColor: 'rgba(0,0,0,0.8)',
     borderRadius: 25,
     width: 50,
     height: 50,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#333',
   },
   actionButtonText: {
-    color: '#fff',
     fontSize: 10,
     marginTop: 2,
   },
   modalContainer: {
     flex: 1,
-    backgroundColor: '#111827',
   },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#1F2937',
+  },
+  modalCloseButton: {
+    padding: 8,
   },
   modalTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#fff',
   },
   commentsList: {
     flex: 1,
@@ -1002,26 +1329,24 @@ const styles = StyleSheet.create({
     paddingVertical: 40,
   },
   emptyCommentsText: {
-    color: '#9CA3AF',
     fontSize: 14,
     marginTop: 12,
   },
   emptyCommentsSubtext: {
-    color: '#6B7280',
     fontSize: 12,
     marginTop: 4,
   },
   commentItem: {
-    flexDirection: 'row',
     marginBottom: 16,
     padding: 12,
-    backgroundColor: '#1F2937',
     borderRadius: 8,
   },
   replyItem: {
-    marginTop: 8,
-    marginLeft: 32,
-    backgroundColor: '#374151',
+    marginBottom: 8,
+  },
+  commentContainer: {
+    flexDirection: 'row',
+    marginBottom: 10,
   },
   commentAvatar: {
     width: 40,
@@ -1033,7 +1358,6 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#8B5CF6',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
@@ -1053,19 +1377,24 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 8,
   },
+  replyHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  replyArrow: {
+    fontSize: 14,
+    marginHorizontal: 4,
+  },
   commentUserName: {
-    color: '#fff',
     fontSize: 14,
     fontWeight: '600',
   },
   commentDate: {
-    color: '#9CA3AF',
     fontSize: 12,
   },
   authorBadge: {
     paddingHorizontal: 8,
     paddingVertical: 2,
-    backgroundColor: '#8B5CF6',
     borderRadius: 4,
   },
   authorBadgeText: {
@@ -1073,7 +1402,6 @@ const styles = StyleSheet.create({
     fontSize: 10,
   },
   commentText: {
-    color: '#D1D5DB',
     fontSize: 14,
     lineHeight: 20,
     marginBottom: 8,
@@ -1088,15 +1416,12 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   commentActionText: {
-    color: '#9CA3AF',
     fontSize: 12,
   },
   replyInputContainer: {
     marginTop: 12,
   },
   replyInput: {
-    backgroundColor: '#374151',
-    color: '#fff',
     padding: 8,
     borderRadius: 4,
     marginBottom: 8,
@@ -1112,13 +1437,11 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   replyCancelText: {
-    color: '#9CA3AF',
     fontSize: 12,
   },
   replySubmit: {
     paddingHorizontal: 12,
     paddingVertical: 6,
-    backgroundColor: '#8B5CF6',
     borderRadius: 4,
   },
   replySubmitText: {
@@ -1132,18 +1455,14 @@ const styles = StyleSheet.create({
   commentForm: {
     padding: 16,
     borderTopWidth: 1,
-    borderTopColor: '#1F2937',
   },
   commentInput: {
-    backgroundColor: '#1F2937',
-    color: '#fff',
     padding: 12,
     borderRadius: 8,
     marginBottom: 8,
     minHeight: 80,
   },
   commentSubmit: {
-    backgroundColor: '#8B5CF6',
     padding: 12,
     borderRadius: 8,
     alignItems: 'center',

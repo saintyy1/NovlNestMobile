@@ -15,13 +15,16 @@ import {
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
 import { collection, doc, setDoc } from 'firebase/firestore';
-import { ref, uploadBytes } from 'firebase/storage';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { spacing } from '../../theme';
-import { get } from 'react-native/Libraries/TurboModule/TurboModuleRegistry';
+import { InlineChatEditor, type ChatMessage } from '../../components/InlineChatEditor';
+import { trackContentCreate } from '../../utils/Analytics-utils';
+
 
 type SubmitType = null | 'novel' | 'poem';
 
@@ -38,10 +41,11 @@ const POEM_GENRES = [
 interface Chapter {
   title: string;
   content: string;
+  chatMessages?: ChatMessage[];
 }
 
 export const SubmitScreen = () => {
-  const navigation = useNavigation();
+  const navigation = useNavigation<any>();
   const route = useRoute();
   const { currentUser } = useAuth();
   const { colors } = useTheme();
@@ -62,6 +66,12 @@ export const SubmitScreen = () => {
   const [prologue, setPrologue] = useState('');
   const [hasGraphicContent, setHasGraphicContent] = useState(false);
   const [chapters, setChapters] = useState<Chapter[]>([]);
+  const [chapterSelections, setChapterSelections] = useState<{[key: number]: {start: number, end: number}}>({}); 
+  const [isParsing, setIsParsing] = useState(false);
+  const [parseError, setParseError] = useState('');
+  const [uploadingPdf, setUploadingPdf] = useState(false);
+  const [pdfProcessing, setPdfProcessing] = useState(false);
+  const [pdfFileName, setPdfFileName] = useState<string | null>(null);
   
   // Poem-specific fields
   const [content, setContent] = useState('');
@@ -104,14 +114,18 @@ export const SubmitScreen = () => {
 
   // Update header based on submit type
   useEffect(() => {
+    const headerTitleStyle = {
+      fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    };
+    
     if (submitType === 'novel') {
-      navigation.setOptions({ title: 'Submit Novel' });
+      navigation.setOptions({ title: 'Write Novel', headerTitleStyle });
       navigation.setParams({ showBackButton: true } as any);
     } else if (submitType === 'poem') {
-      navigation.setOptions({ title: 'Submit Poem' });
+      navigation.setOptions({ title: 'Write Poem', headerTitleStyle });
       navigation.setParams({ showBackButton: true } as any);
     } else {
-      navigation.setOptions({ title: 'Submit Story' });
+      navigation.setOptions({ title: 'Write', headerTitleStyle });
       navigation.setParams({ showBackButton: false } as any);
     }
   }, [submitType, navigation]);
@@ -144,7 +158,7 @@ export const SubmitScreen = () => {
   };
 
   const addChapter = () => {
-    setChapters([...chapters, { title: '', content: '' }]);
+    setChapters([...chapters, { title: '', content: '', chatMessages: [] }]);
   };
 
   const removeChapter = (index: number) => {
@@ -163,6 +177,124 @@ export const SubmitScreen = () => {
     const newChapters = [...chapters];
     newChapters[index].content = content;
     setChapters(newChapters);
+  };
+
+  const insertChatIntoChapter = (index: number, messages: ChatMessage[]) => {
+    const newChapters = [...chapters];
+    const currentContent = newChapters[index].content;
+
+    // Create simple JSON marker for chat messages
+    const chatData = `[CHAT_START]${JSON.stringify(messages)}[CHAT_END]`;
+
+    // Insert at end of content
+    newChapters[index].content = currentContent + (currentContent ? '\n\n' : '') + chatData;
+    newChapters[index].chatMessages = messages;
+    setChapters(newChapters);
+  };
+
+  const handlePdfImport = async () => {
+    try {
+      setUploadingPdf(true);
+      setParseError('');
+
+      // Pick PDF file
+      const result = await DocumentPicker.getDocumentAsync({
+        type: 'application/pdf',
+        copyToCacheDirectory: true,
+      });
+
+      if (result.canceled) {
+        setUploadingPdf(false);
+        return;
+      }
+
+      const file = result.assets[0];
+      setPdfFileName(file.name);
+
+      setPdfProcessing(true);
+      setUploadingPdf(false);
+
+      // Send PDF to backend for processing
+      const formData = new FormData();
+      
+      // React Native requires this specific format for file uploads
+      const fileToUpload: any = {
+        uri: Platform.OS === 'android' ? file.uri : file.uri.replace('file://', ''),
+        type: 'application/pdf',
+        name: file.name,
+      };
+      
+      formData.append('pdf', fileToUpload);
+
+      const BACKEND_URL = 'https://novlnest-pdf-parser.vercel.app';
+      
+      console.log('Uploading to:', `${BACKEND_URL}/api/process-pdf`);
+      
+      const response = await fetch(`${BACKEND_URL}/api/process-pdf`, {
+        method: 'POST',
+        body: formData,
+        // Don't set Content-Type - let the browser/RN set it automatically with boundary
+      });
+
+      // Log response for debugging
+      const responseText = await response.text();
+      console.log('Raw response:', responseText.substring(0, 200));
+
+      if (!response.ok) {
+        let errorData;
+        try {
+          errorData = JSON.parse(responseText);
+        } catch {
+          throw new Error(`Server error: ${response.status} - ${responseText.substring(0, 100)}`);
+        }
+        throw new Error(errorData.error || 'Failed to process PDF');
+      }
+
+      let data;
+      try {
+        data = JSON.parse(responseText);
+      } catch (parseError) {
+        console.error('JSON parse error. Response:', responseText);
+        throw new Error('Invalid response from server. Please check backend logs.');
+      }
+
+      if (data.success && data.chapters) {
+        // Map the returned chapters to our format
+        const importedChapters: Chapter[] = data.chapters.map((ch: any) => ({
+          title: ch.title || 'Untitled Chapter',
+          content: ch.content || '',
+          chatMessages: [],
+        }));
+
+        setChapters(importedChapters);
+        setPdfProcessing(false);
+        setPdfFileName(file.name);
+        Alert.alert(
+          'Success',
+          `Imported ${importedChapters.length} chapter(s) from PDF`,
+          [{ text: 'OK' }]
+        );
+      } else {
+        throw new Error(data.error || 'Failed to process PDF');
+      }
+    } catch (error: any) {
+      console.error('PDF import error:', error);
+      setUploadingPdf(false);
+      setPdfProcessing(false);
+      
+      let errorMessage = 'Failed to import PDF. ';
+      
+      if (error.message?.includes('Network request failed')) {
+        errorMessage += 'Cannot connect to backend server. Make sure it is running.';
+      } else if (error.message?.includes('timeout')) {
+        errorMessage += 'Processing took too long. Try a smaller PDF.';
+      } else {
+        errorMessage += error.message || 'Please try again or add chapters manually.';
+      }
+      
+      setParseError(errorMessage);
+      Alert.alert('Import Failed', errorMessage);
+    }
   };
 
   const handleSubmit = async () => {
@@ -248,6 +380,16 @@ export const SubmitScreen = () => {
           likes: 0,
           views: 0,
         });
+        
+        // Track novel creation for analytics
+        trackContentCreate({
+          contentType: 'novel',
+          contentId: docRef.id,
+          title,
+          genres,
+          wordCount: chapters.reduce((acc, ch) => acc + ch.content.split(/\s+/).length, 0),
+          userId: currentUser?.uid || '',
+        });
       } else {
         await setDoc(docRef, {
           title,
@@ -264,6 +406,16 @@ export const SubmitScreen = () => {
           coverSmallImage: coverSmallUrl || null,
           likes: 0,
           views: 0,
+        });
+        
+        // Track poem creation for analytics
+        trackContentCreate({
+          contentType: 'poem',
+          contentId: docRef.id,
+          title,
+          genres,
+          wordCount: content.split(/\s+/).length,
+          userId: currentUser?.uid || '',
         });
       }
 
@@ -642,10 +794,68 @@ export const SubmitScreen = () => {
         {/* Novel-specific: Chapters */}
         {submitType === 'novel' && (
           <View style={styles.section}>
+            {/* PDF Import Button */}
+            <TouchableOpacity
+              style={[styles.pdfImportButton, (uploadingPdf || pdfProcessing) && styles.pdfImportButtonDisabled]}
+              onPress={handlePdfImport}
+              disabled={uploadingPdf || pdfProcessing}
+            >
+              {uploadingPdf ? (
+                <>
+                  <ActivityIndicator size="small" color={colors.primary} />
+                  <Text style={styles.pdfImportButtonText}>Uploading PDF...</Text>
+                </>
+              ) : pdfProcessing ? (
+                <>
+                  <ActivityIndicator size="small" color={colors.primary} />
+                  <Text style={styles.pdfImportButtonText}>Processing PDF...</Text>
+                </>
+              ) : (
+                <>
+                  <Ionicons name="document-text-outline" size={24} color={colors.primary} />
+                  <View style={styles.pdfImportTextContainer}>
+                    <Text style={styles.pdfImportButtonText}>Import from PDF</Text>
+                    <Text style={styles.pdfImportButtonSubtext}>Automatically extract chapters</Text>
+                  </View>
+                </>
+              )}
+            </TouchableOpacity>
+
+            {parseError && (
+              <View style={styles.pdfErrorContainer}>
+                <Ionicons name="alert-circle-outline" size={20} color={colors.error} />
+                <Text style={styles.pdfErrorText}>{parseError}</Text>
+              </View>
+            )}
+
+            {pdfFileName && chapters.length > 0 && (
+              <View style={styles.pdfSuccessContainer}>
+                <Ionicons name="checkmark-circle" size={20} color={colors.primary} />
+                <Text style={styles.pdfSuccessText}>Imported from: {pdfFileName}</Text>
+              </View>
+            )}
+
             <View style={styles.chaptersHeader}>
               <Text style={styles.sectionTitle}>Chapters</Text>
-              <TouchableOpacity style={styles.addButton} onPress={addChapter}>
-                <Ionicons name="add-circle" size={24} color={colors.primary} />
+              <TouchableOpacity 
+                style={styles.addButton} 
+                onPress={() => {
+                  const chapterNumber = chapters.length + 1;
+                  navigation.navigate('ChapterEditor', {
+                    chapterNumber,
+                    initialTitle: '',
+                    initialContent: '',
+                    onSave: (newChapter: { title: string; content: string }) => {
+                      setChapters([...chapters, {
+                        title: newChapter.title,
+                        content: newChapter.content,
+                        chatMessages: []
+                      }]);
+                    }
+                  });
+                }}
+              >
+                <Ionicons name="add-circle" size={20} color={colors.primary} />
                 <Text style={styles.addButtonText}>Add Chapter</Text>
               </TouchableOpacity>
             </View>
@@ -655,37 +865,66 @@ export const SubmitScreen = () => {
                 <Ionicons name="book-outline" size={48} color={colors.textSecondary} />
                 <Text style={styles.emptyChaptersText}>No chapters added yet</Text>
                 <Text style={styles.emptyChaptersSubtext}>
-                  You can add chapters now or submit with just prologue/author's note
+                  Tap "Add Chapter" to start writing your story
                 </Text>
               </View>
             ) : (
               chapters.map((chapter, index) => (
-                <View key={index} style={styles.chapterCard}>
+                <TouchableOpacity
+                  key={index}
+                  style={styles.chapterCard}
+                  onPress={() => {
+                    navigation.navigate('ChapterEditor', {
+                      chapterNumber: index + 1,
+                      initialTitle: chapter.title,
+                      initialContent: chapter.content,
+                      onSave: (updatedChapter: { title: string; content: string }) => {
+                        const newChapters = [...chapters];
+                        newChapters[index] = {
+                          ...newChapters[index],
+                          title: updatedChapter.title,
+                          content: updatedChapter.content
+                        };
+                        setChapters(newChapters);
+                      }
+                    });
+                  }}
+                  activeOpacity={0.7}
+                >
                   <View style={styles.chapterHeader}>
-                    <Text style={styles.chapterTitle}>Chapter {index + 1}</Text>
-                    <TouchableOpacity onPress={() => removeChapter(index)}>
+                    <View style={styles.chapterTitleRow}>
+                      <Text style={styles.chapterNumber}>Chapter {index + 1}</Text>
+                      <Ionicons name="create-outline" size={16} color={colors.primary} />
+                    </View>
+                    <TouchableOpacity 
+                      onPress={() => removeChapter(index)}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    >
                       <Ionicons name="trash-outline" size={20} color={colors.error} />
                     </TouchableOpacity>
                   </View>
                   
-                  <TextInput
-                    style={[styles.input, styles.chapterTitleInput]}
-                    value={chapter.title}
-                    onChangeText={(text) => handleChapterTitleChange(index, text)}
-                    placeholder={`Chapter ${index + 1} title`}
-                    placeholderTextColor={colors.textSecondary}
-                  />
+                  <Text style={styles.chapterTitleText} numberOfLines={2}>
+                    {chapter.title || `Chapter ${index + 1} (Untitled)`}
+                  </Text>
                   
-                  <TextInput
-                    style={[styles.input, styles.textArea]}
-                    value={chapter.content}
-                    onChangeText={(text) => handleChapterContentChange(index, text)}
-                    placeholder="Write your chapter content..."
-                    placeholderTextColor={colors.textSecondary}
-                    multiline
-                    numberOfLines={6}
-                  />
-                </View>
+                  <Text style={styles.chapterPreview} numberOfLines={3}>
+                    {chapter.content || 'No content yet. Tap to edit.'}
+                  </Text>
+
+                  <View style={styles.chapterStats}>
+                    <View style={styles.statItem}>
+                      <Ionicons name="text-outline" size={12} color={colors.textSecondary} />
+                      <Text style={styles.chapterStatText}>{chapter.content.length} chars</Text>
+                    </View>
+                    <View style={styles.statItem}>
+                      <Ionicons name="document-text-outline" size={12} color={colors.textSecondary} />
+                      <Text style={styles.chapterStatText}>
+                        {chapter.content.trim().split(/\s+/).filter((w: string) => w).length} words
+                      </Text>
+                    </View>
+                  </View>
+                </TouchableOpacity>
               ))
             )}
           </View>
@@ -764,6 +1003,7 @@ const getStyles = (themeColors : any) => StyleSheet.create({
     textAlign: 'center',
     marginBottom: spacing.sm,
     letterSpacing: -0.5,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   selectionSubtitle: {
     fontSize: 16,
@@ -771,6 +1011,7 @@ const getStyles = (themeColors : any) => StyleSheet.create({
     textAlign: 'center',
     lineHeight: 24,
     paddingHorizontal: spacing.md,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   cardsContainer: {
     gap: spacing.lg,
@@ -814,11 +1055,13 @@ const getStyles = (themeColors : any) => StyleSheet.create({
     fontSize: 24,
     fontWeight: '700',
     color: themeColors.text,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
     marginBottom: spacing.xs,
   },
   cardDescription: {
     fontSize: 15,
     color: themeColors.textSecondary,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
     lineHeight: 22,
   },
   cardFooter: {
@@ -841,6 +1084,7 @@ const getStyles = (themeColors : any) => StyleSheet.create({
   featureText: {
     fontSize: 13,
     color: themeColors.textSecondary,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   cardArrow: {
     width: 36,
@@ -865,41 +1109,54 @@ const getStyles = (themeColors : any) => StyleSheet.create({
   bottomInfoText: {
     fontSize: 13,
     color: themeColors.textSecondary,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
     flex: 1,
   },
   errorBanner: {
-    backgroundColor: themeColors.error + '20',
-    borderColor: themeColors.error,
-    borderWidth: 1,
-    borderRadius: 8,
+    backgroundColor: themeColors.error + '15',
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.md,
+    marginBottom: spacing.sm,
+    borderRadius: 12,
     padding: spacing.md,
-    margin: spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
   },
   errorText: {
-    fontSize: 16,
+    fontSize: 14,
     color: themeColors.error,
+    flex: 1,
+    fontWeight: '500',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   section: {
-    padding: spacing.md,
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.lg,
   },
   label: {
-    fontSize: 16,
+    fontSize: 14,
     color: themeColors.text,
-    fontWeight: '600',
+    fontWeight: '700',
     marginBottom: spacing.sm,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   input: {
-    backgroundColor: themeColors.backgroundSecondary,
-    borderRadius: 8,
+    backgroundColor: themeColors.surface,
+    borderRadius: 12,
     padding: spacing.md,
     color: themeColors.text,
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: themeColors.border,
     fontSize: 16,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   textArea: {
-    minHeight: 100,
+    minHeight: 120,
     textAlignVertical: 'top',
+    paddingTop: spacing.md,
   },
   poemInput: {
     minHeight: 300,
@@ -925,6 +1182,7 @@ const getStyles = (themeColors : any) => StyleSheet.create({
     fontSize: 14,
     color: themeColors.primary,
     fontWeight: '600',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   statsRow: {
     flexDirection: 'row',
@@ -934,6 +1192,7 @@ const getStyles = (themeColors : any) => StyleSheet.create({
   statText: {
     fontSize: 12,
     color: themeColors.textSecondary,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   poemPreview: {
     backgroundColor: themeColors.backgroundSecondary,
@@ -1001,80 +1260,113 @@ const getStyles = (themeColors : any) => StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: themeColors.backgroundSecondary,
-    borderRadius: 8,
-    padding: spacing.md,
-    borderWidth: 1,
-    borderColor: themeColors.border,
+    backgroundColor: themeColors.primary + '10',
+    borderRadius: 12,
+    padding: spacing.lg,
+    borderWidth: 2,
+    borderColor: themeColors.primary,
+    borderStyle: 'dashed',
     gap: spacing.sm,
   },
   imageButtonText: {
-    fontSize: 16,
+    fontSize: 15,
     color: themeColors.primary,
-    fontWeight: '600',
+    fontWeight: '700',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   imagePreview: {
     marginTop: spacing.md,
     position: 'relative',
+    borderRadius: 12,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 3,
   },
   previewImage: {
     width: '100%',
-    height: 200,
-    borderRadius: 8,
+    height: 220,
+    borderRadius: 12,
   },
   removeImageButton: {
     position: 'absolute',
-    top: -8,
-    right: -8,
-    backgroundColor: themeColors.background,
-    borderRadius: 12,
+    top: 8,
+    right: 8,
+    backgroundColor: themeColors.error,
+    borderRadius: 20,
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 4,
   },
   genresGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: spacing.sm,
+    marginTop: spacing.xs,
   },
   genreChip: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: 20,
-    backgroundColor: themeColors.backgroundSecondary,
-    borderWidth: 1,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm + 2,
+    borderRadius: 24,
+    backgroundColor: themeColors.surface,
+    borderWidth: 1.5,
     borderColor: themeColors.border,
   },
   genreChipSelected: {
     backgroundColor: themeColors.primary,
     borderColor: themeColors.primary,
+    shadowColor: themeColors.primary,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
   },
   genreChipText: {
-    fontSize: 14,
+    fontSize: 13,
     color: themeColors.text,
+    fontWeight: '600',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   genreChipTextSelected: {
     color: '#fff',
-    fontWeight: '600',
+    fontWeight: '700',
   },
   radioGroup: {
     flexDirection: 'row',
     gap: spacing.md,
+    marginTop: spacing.xs,
   },
   radioButton: {
     flex: 1,
-    paddingVertical: spacing.md,
-    backgroundColor: themeColors.backgroundSecondary,
-    borderRadius: 8,
-    borderWidth: 1,
+    paddingVertical: spacing.md + 2,
+    backgroundColor: themeColors.surface,
+    borderRadius: 12,
+    borderWidth: 1.5,
     borderColor: themeColors.border,
     alignItems: 'center',
   },
   radioButtonSelected: {
     backgroundColor: themeColors.primary,
     borderColor: themeColors.primary,
+    shadowColor: themeColors.primary,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
   },
   radioButtonText: {
-    fontSize: 16,
+    fontSize: 15,
     color: themeColors.text,
-    fontWeight: '600',
+    fontWeight: '700',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   radioButtonTextSelected: {
     color: '#fff',
@@ -1086,78 +1378,272 @@ const getStyles = (themeColors : any) => StyleSheet.create({
     marginBottom: spacing.md,
   },
   sectionTitle: {
-    fontSize: 20,
-    fontWeight: '700',
+    fontSize: 18,
+    fontWeight: '800',
     color: themeColors.text,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
   addButton: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.xs,
+    backgroundColor: themeColors.primary + '15',
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: 20,
   },
   addButtonText: {
-    fontSize: 16,
+    fontSize: 14,
     color: themeColors.primary,
-    fontWeight: '600',
+    fontWeight: '700',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   emptyChapters: {
-    backgroundColor: themeColors.backgroundSecondary,
-    borderRadius: 12,
+    backgroundColor: themeColors.surface,
+    borderRadius: 16,
     padding: spacing.xl,
     alignItems: 'center',
+    marginTop: spacing.sm,
+    borderWidth: 2,
+    borderColor: themeColors.border,
+    borderStyle: 'dashed',
   },
   emptyChaptersText: {
     fontSize: 16,
     color: themeColors.text,
     marginTop: spacing.md,
     marginBottom: spacing.xs,
+    fontWeight: '600',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   emptyChaptersSubtext: {
-    fontSize: 14,
+    fontSize: 13,
     color: themeColors.textSecondary,
     textAlign: 'center',
+    lineHeight: 20,
   },
-  chapterCard: {
-    backgroundColor: themeColors.backgroundSecondary,
+  pdfImportButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.md,
+    backgroundColor: themeColors.primary + '15',
     borderRadius: 12,
+    padding: spacing.lg,
+    borderWidth: 2,
+    borderColor: themeColors.primary,
+    borderStyle: 'dashed',
+    marginBottom: spacing.md,
+  },
+  pdfImportButtonDisabled: {
+    opacity: 0.6,
+  },
+  pdfImportTextContainer: {
+    alignItems: 'flex-start',
+  },
+  pdfImportButtonText: {
+    fontSize: 16,
+    color: themeColors.primary,
+    fontWeight: '700',
+  },
+  pdfImportButtonSubtext: {
+    fontSize: 12,
+    color: themeColors.primary,
+    opacity: 0.8,
+    marginTop: 2,
+  },
+  pdfErrorContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    backgroundColor: themeColors.error + '10',
+    borderRadius: 8,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    borderLeftWidth: 4,
+    borderLeftColor: themeColors.error,
+  },
+  pdfErrorText: {
+    fontSize: 13,
+    color: themeColors.error,
+    fontWeight: '500',
+    flex: 1,
+    lineHeight: 18,
+  },
+  pdfSuccessContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    backgroundColor: themeColors.primary + '10',
+    borderRadius: 8,
     padding: spacing.md,
     marginBottom: spacing.md,
     borderLeftWidth: 4,
     borderLeftColor: themeColors.primary,
   },
+  pdfSuccessText: {
+    fontSize: 13,
+    color: themeColors.primary,
+    fontWeight: '600',
+    flex: 1,
+  },
+  sectionTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+    paddingBottom: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: themeColors.border,
+  },
+  pdfUploadButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.md,
+    backgroundColor: themeColors.backgroundSecondary,
+    borderRadius: 12,
+    padding: spacing.lg,
+    borderWidth: 2,
+    borderColor: themeColors.primary,
+    marginBottom: spacing.md,
+  },
+  pdfUploadButtonDisabled: {
+    opacity: 0.6,
+  },
+  pdfUploadButtonText: {
+    fontSize: 16,
+    color: themeColors.primary,
+    fontWeight: '600',
+  },
+  parsingIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    backgroundColor: themeColors.primary + '10',
+    borderRadius: 8,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    borderLeftWidth: 4,
+    borderLeftColor: themeColors.primary,
+  },
+  parsingText: {
+    fontSize: 14,
+    color: themeColors.primary,
+    fontWeight: '600',
+  },
+  parseErrorContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    backgroundColor: themeColors.error + '10',
+    borderRadius: 8,
+    padding: spacing.md,
+    borderLeftWidth: 4,
+    borderLeftColor: themeColors.error,
+  },
+  parseSuccessContainer: {
+    backgroundColor: themeColors.primary + '10',
+    borderLeftColor: themeColors.primary,
+  },
+  parseErrorText: {
+    fontSize: 14,
+    color: themeColors.error,
+    fontWeight: '500',
+    flex: 1,
+  },
+  parseSuccessText: {
+    color: themeColors.primary,
+  },
+  chapterCard: {
+    backgroundColor: themeColors.surface,
+    borderRadius: 16,
+    padding: spacing.lg,
+    marginBottom: spacing.md,
+    marginTop: spacing.xs,
+    borderWidth: 1,
+    borderColor: themeColors.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
+  },
   chapterHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: spacing.md,
+    marginBottom: spacing.sm,
   },
-  chapterTitle: {
+  chapterTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  chapterNumber: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: themeColors.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  chapterTitleText: {
     fontSize: 18,
     fontWeight: '700',
     color: themeColors.text,
-  },
-  chapterTitleInput: {
     marginBottom: spacing.sm,
+  },
+  chapterPreview: {
+    fontSize: 14,
+    color: themeColors.textSecondary,
+    lineHeight: 20,
+    marginBottom: spacing.md,
+  },
+  chapterStats: {
+    flexDirection: 'row',
+    gap: spacing.lg,
+    paddingTop: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: themeColors.border,
+  },
+  statItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  chapterStatText: {
+    fontSize: 11,
+    color: themeColors.textSecondary,
+    fontWeight: '600',
   },
   submitButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: themeColors.primary,
-    borderRadius: 12,
-    padding: spacing.lg,
-    margin: spacing.md,
+    borderRadius: 16,
+    padding: spacing.lg + 2,
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.xl,
+    marginBottom: spacing.md,
     gap: spacing.sm,
+    shadowColor: themeColors.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 5,
   },
   submitButtonDisabled: {
     opacity: 0.6,
   },
   submitButtonText: {
-    fontSize: 16,
+    fontSize: 17,
     color: '#fff',
-    fontWeight: '700',
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
   bottomSpacing: {
-    height: spacing.xl,
+    height: spacing.xl * 2,
   },
 });

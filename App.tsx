@@ -1,12 +1,11 @@
 // App.tsx
-import React from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import React, { useEffect } from 'react';
+import { NavigationContainer, NavigationState } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { RootStackParamList } from './src/types/navigation';
 import { NotificationsScreen } from './src/screens/main/NotificationsScreen';
 import { StatusBar } from 'expo-status-bar';
 import { View, ActivityIndicator, StyleSheet, TouchableOpacity, Platform } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { AuthProvider, useAuth } from './src/contexts/AuthContext';
 import { ChatProvider } from "./src/contexts/ChatContext"
 import { NotificationProvider } from './src/contexts/NotificationContext';
@@ -27,13 +26,60 @@ import TermsOfServiceScreen from './src/screens/main/TermsOfServiceScreen';
 import SupportScreen from './src/screens/main/SupportScreen';
 import MyTicketsScreen from './src/screens/main/MyTicketsScreen';
 import { MessagesScreen } from './src/screens/main/MessagesScreen';
+import { PromoteScreen } from './src/screens/main/PromoteScreen';
+import PaymentCallbackScreen from './src/screens/main/PaymentCallbackScreen';
+import EmailActionScreen from './src/screens/main/EmailActionScreen';
+import ChapterEditorScreen from './src/screens/main/ChapterEditorScreen';
+import { initializeAnalytics, trackScreenView, setUserId, cleanupAnalytics } from './src/utils/Analytics-utils';
 
 const Stack = createStackNavigator<RootStackParamList>();
+
+// Get the active route name for analytics
+const getActiveRouteName = (state: NavigationState | undefined): string => {
+  if (!state) return '';
+  const route = state.routes[state.index];
+  if (route.state) {
+    return getActiveRouteName(route.state as NavigationState);
+  }
+  return route.name;
+};
 
 // Create a separate component that uses the auth context and theme
 function AppContent() {
   const { currentUser, loading } = useAuth();
   const { colors } = useTheme();
+  const routeNameRef = React.useRef<string>('');
+
+  // Initialize analytics when app loads
+  useEffect(() => {
+    initializeAnalytics(currentUser?.uid);
+    
+    return () => {
+      cleanupAnalytics();
+    };
+  }, []);
+
+  // Update user ID when auth state changes
+  useEffect(() => {
+    if (currentUser?.uid) {
+      setUserId(currentUser.uid);
+    } else {
+      setUserId(null);
+    }
+  }, [currentUser?.uid]);
+
+  // Handle navigation state change for screen tracking
+  const onNavigationStateChange = (state: NavigationState | undefined) => {
+    const previousRouteName = routeNameRef.current;
+    const currentRouteName = getActiveRouteName(state);
+
+    if (previousRouteName !== currentRouteName && currentRouteName) {
+      // Track screen view
+      trackScreenView(currentRouteName, currentRouteName);
+    }
+
+    routeNameRef.current = currentRouteName;
+  };
 
   // Show loading screen while checking auth state
   if (loading) {
@@ -71,23 +117,9 @@ function AppContent() {
           <Stack.Screen
             name="Profile"
             component={ProfileScreen}
-            options={({ navigation }) => ({
-              headerShown: true,
-              headerStyle: {
-                backgroundColor: colors.primary,
-              },
-              headerTintColor: '#fff',
-              headerTitle: 'Profile',
-              headerBackTitle: 'Back',
-              headerRight: () => (
-                <TouchableOpacity
-                  onPress={() => navigation.navigate('Settings')}
-                  style={{ paddingRight: 16 }}
-                >
-                  <Ionicons name="settings-outline" size={24} color="#fff" />
-                </TouchableOpacity>
-              ),
-            })}
+            options={{
+              headerShown: false,
+            }}
           />
           <Stack.Screen
             name="Settings"
@@ -216,6 +248,40 @@ function AppContent() {
               headerShown: false,
             }}
           />
+          <Stack.Screen
+            name="PromoteScreen"
+            component={PromoteScreen}
+            options={{
+              headerShown: true,
+              headerStyle: {
+                backgroundColor: colors.primary,
+              },
+              headerTintColor: '#fff',
+              headerTitle: 'Promote Your Novel',
+              headerBackTitle: 'Back',
+            }}
+          />
+          <Stack.Screen
+            name="PaymentCallback"
+            component={PaymentCallbackScreen}
+            options={{
+              headerShown: false,
+            }}
+          />
+          <Stack.Screen
+            name="EmailAction"
+            component={EmailActionScreen}
+            options={{
+              headerShown: false,
+            }}
+          />
+          <Stack.Screen
+            name="ChapterEditor"
+            component={ChapterEditorScreen}
+            options={{
+              headerShown: true,
+            }}
+          />
         </Stack.Navigator>
       ) : (
         <AuthNavigator />
@@ -230,12 +296,38 @@ function AppContent() {
 }
 
 export default function App() {
+  const linking = {
+    prefixes: ['novlnest://', 'https://novlnest.com', 'https://auth.expo.io'],
+    config: {
+      screens: {
+        Auth: 'auth',
+        PaymentCallback: 'payment-callback',
+        EmailAction: {
+          path: 'auth/action',
+          parse: {
+            mode: (mode: string) => mode,
+            oobCode: (oobCode: string) => oobCode,
+            apiKey: (apiKey: string) => apiKey,
+          },
+        },
+      },
+    },
+  };
+
   return (
     <ThemeProvider>
       <AuthProvider>
         <ChatProvider>
           <NotificationProvider>
-            <NavigationContainer>
+            <NavigationContainer 
+              linking={linking}
+              onStateChange={(state) => {
+                const currentRouteName = getActiveRouteName(state);
+                if (currentRouteName) {
+                  trackScreenView(currentRouteName, currentRouteName);
+                }
+              }}
+            >
               <AppContent />
             </NavigationContainer>
           </NotificationProvider>

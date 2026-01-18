@@ -1,5 +1,5 @@
 // src/screens/main/LibraryScreen.tsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,8 @@ import {
   TouchableOpacity,
   Image,
   ActivityIndicator,
+  Alert,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { doc, getDoc } from 'firebase/firestore';
@@ -17,6 +19,7 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { colors, spacing, typography } from '../../theme';
 import { Novel } from '../../types/novel';
 import { Poem } from '../../types/poem';
+import { useFocusEffect } from '@react-navigation/native';
 
 const getFirebaseDownloadUrl = (url: string) => {
   if (!url || !url.includes('firebasestorage')) {
@@ -68,78 +71,142 @@ const getGenreColor = (genres: string[]) => {
 
 export const LibraryScreen = ({ navigation }: any) => {
   const { colors } = useTheme();
-  const { currentUser, loading: authLoading } = useAuth();
+  const { currentUser, loading: authLoading, markNovelAsFinished } = useAuth();
   const [likedNovels, setLikedNovels] = useState<Novel[]>([]);
   const [finishedNovels, setFinishedNovels] = useState<Novel[]>([]);
   const [likedPoems, setLikedPoems] = useState<Poem[]>([]);
   const [loading, setLoading] = useState(true);
   const [imageErrors, setImageErrors] = useState<Record<string, boolean>>({});
+  const [activeTab, setActiveTab] = useState<'reading' | 'finished' | 'poetry'>('reading');
 
   const styles = getStyles(colors);
 
-  useEffect(() => {
-    const fetchUserLibrary = async () => {
-      if (authLoading || !currentUser) {
-        setLoading(false);
-        setLikedNovels([]);
-        setFinishedNovels([]);
-        setLikedPoems([]);
-        return;
-      }
+  const fetchUserLibrary = useCallback(async () => {
+    if (authLoading || !currentUser) {
+      setLoading(false);
+      setLikedNovels([]);
+      setFinishedNovels([]);
+      setLikedPoems([]);
+      return;
+    }
 
-      setLoading(true);
-      try {
-        const likedNovelIds = currentUser.library || [];
-        const finishedNovelIds = currentUser.finishedReads || [];
-        const likedPoemIds = currentUser.poemLibrary || [];
+    setLoading(true);
+    try {
+      const likedNovelIds = currentUser.library || [];
+      const finishedNovelIds = currentUser.finishedReads || [];
+      const likedPoemIds = currentUser.poemLibrary || [];
 
-        const allNovelIds = Array.from(new Set([...likedNovelIds, ...finishedNovelIds]));
+      const allNovelIds = Array.from(new Set([...likedNovelIds, ...finishedNovelIds]));
 
-        const novelPromises = allNovelIds.map((novelId) => getDoc(doc(db, 'novels', novelId)));
-        const poemPromises = likedPoemIds.map((poemId) => getDoc(doc(db, 'poems', poemId)));
+      const novelPromises = allNovelIds.map((novelId) => getDoc(doc(db, 'novels', novelId)));
+      const poemPromises = likedPoemIds.map((poemId) => getDoc(doc(db, 'poems', poemId)));
 
-        const [novelDocs, poemDocs] = await Promise.all([
-          Promise.all(novelPromises),
-          Promise.all(poemPromises),
-        ]);
+      const [novelDocs, poemDocs] = await Promise.all([
+        Promise.all(novelPromises),
+        Promise.all(poemPromises),
+      ]);
 
-        const fetchedLikedNovels: Novel[] = [];
-        const fetchedFinishedNovels: Novel[] = [];
-        const fetchedLikedPoems: Poem[] = [];
+      const fetchedLikedNovels: Novel[] = [];
+      const fetchedFinishedNovels: Novel[] = [];
+      const fetchedLikedPoems: Poem[] = [];
 
-        novelDocs.forEach((novelDoc) => {
-          if (novelDoc.exists()) {
-            const novel = { id: novelDoc.id, ...novelDoc.data() } as Novel;
-            if (likedNovelIds.includes(novel.id)) {
-              fetchedLikedNovels.push(novel);
-            }
-            if (finishedNovelIds.includes(novel.id)) {
-              fetchedFinishedNovels.push(novel);
-            }
+      novelDocs.forEach((novelDoc) => {
+        if (novelDoc.exists()) {
+          const novel = { id: novelDoc.id, ...novelDoc.data() } as Novel;
+          if (likedNovelIds.includes(novel.id)) {
+            fetchedLikedNovels.push(novel);
           }
-        });
-
-        poemDocs.forEach((poemDoc) => {
-          if (poemDoc.exists()) {
-            const poem = { id: poemDoc.id, ...poemDoc.data() } as Poem;
-            fetchedLikedPoems.push(poem);
+          if (finishedNovelIds.includes(novel.id)) {
+            fetchedFinishedNovels.push(novel);
           }
-        });
+        }
+      });
 
-        setLikedNovels(fetchedLikedNovels);
-        setFinishedNovels(fetchedFinishedNovels);
-        setLikedPoems(fetchedLikedPoems);
-      } catch (err) {
-        console.error('Error fetching user library:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchUserLibrary();
+      poemDocs.forEach((poemDoc) => {
+        if (poemDoc.exists()) {
+          const poem = { id: poemDoc.id, ...poemDoc.data() } as Poem;
+          fetchedLikedPoems.push(poem);
+        }
+      });
+
+      setLikedNovels(fetchedLikedNovels);
+      setFinishedNovels(fetchedFinishedNovels);
+      setLikedPoems(fetchedLikedPoems);
+    } catch (err) {
+      console.error('Error fetching user library:', err);
+    } finally {
+      setLoading(false);
+    }
   }, [currentUser, authLoading]);
+
+  useFocusEffect(
+    useCallback(() => {
+      fetchUserLibrary();
+    }, [fetchUserLibrary])
+  );
+
+  useEffect(() => {
+    fetchUserLibrary();
+  }, [currentUser?.library, currentUser?.finishedReads, currentUser?.poemLibrary]);
 
   const handleImageError = (id: string) => {
     setImageErrors((prev) => ({ ...prev, [id]: true }));
+  };
+
+  const handleMoveToReading = async (novel: Novel) => {
+    try {
+      await markNovelAsFinished(novel.id, novel.title, novel.authorId);
+      Alert.alert('Success', `"${novel.title}" moved back to Currently Reading`);
+    } catch (error) {
+      console.error('Error moving novel to reading:', error);
+      Alert.alert('Error', 'Failed to move novel');
+    }
+  };
+
+  const handleMarkAsFinished = async (novel: Novel) => {
+    try {
+      await markNovelAsFinished(novel.id, novel.title, novel.authorId);
+      Alert.alert('Success', `"${novel.title}" marked as finished`);
+    } catch (error) {
+      console.error('Error marking novel as finished:', error);
+      Alert.alert('Error', 'Failed to mark novel as finished');
+    }
+  };
+
+  const showNovelOptions = (novel: Novel, isFinished: boolean) => {
+    if (isFinished) {
+      Alert.alert(
+        'Choose an action',
+        `What would you like to do with "${novel.title}"?`,
+        [
+          {
+            text: 'Continue Reading',
+            onPress: () => handleMoveToReading(novel),
+          },
+          {
+            text: 'Cancel',
+            style: 'cancel',
+          },
+        ],
+        { cancelable: true }
+      );
+    } else {
+      Alert.alert(
+        'Choose an action',
+        `What would you like to do with "${novel.title}"?`,
+        [
+          {
+            text: 'Mark as Finished',
+            onPress: () => handleMarkAsFinished(novel),
+          },
+          {
+            text: 'Cancel',
+            style: 'cancel',
+          },
+        ],
+        { cancelable: true }
+      );
+    }
   };
 
   const renderNovelCard = (novel: Novel, isFinished: boolean) => {
@@ -150,6 +217,8 @@ export const LibraryScreen = ({ navigation }: any) => {
         key={novel.id}
         style={styles.card}
         onPress={() => navigation.navigate('NovelOverview', { novelId: novel.id })}
+        onLongPress={() => showNovelOptions(novel, isFinished)}
+        delayLongPress={500}
       >
         <View style={styles.cardImageContainer}>
           {hasImage ? (
@@ -270,71 +339,142 @@ export const LibraryScreen = ({ navigation }: any) => {
 
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
-      {/* Currently Reading Section */}
-      <View style={styles.section}>
-        <View style={styles.sectionHeader}>
-          <Ionicons name="book-outline" size={24} color={colors.primary} />
-          <Text style={styles.sectionTitle}>Currently Reading</Text>
-        </View>
+      {/* Tab Navigation */}
+      <View style={styles.tabContainer}>
+        <View style={styles.tabWrapper}>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'reading' && styles.activeTab]}
+            onPress={() => setActiveTab('reading')}
+          >
+            <Ionicons 
+              name="book-outline" 
+              size={18} 
+              color={activeTab === 'reading' ? '#fff' : colors.textSecondary} 
+            />
+            <Text style={[styles.tabText, activeTab === 'reading' && styles.activeTabText]}>
+              Reading
+            </Text>
+            {likedNovels.length > 0 && (
+              <View style={[styles.tabBadge, activeTab === 'reading' && styles.activeTabBadge]}>
+                <Text style={[styles.tabBadgeText, activeTab === 'reading' && styles.activeTabBadgeText]}>
+                  {likedNovels.length}
+                </Text>
+              </View>
+            )}
+          </TouchableOpacity>
 
-        {likedNovels.length === 0 ? (
-          <View style={styles.emptySection}>
-            <Ionicons name="book-outline" size={48} color={colors.textSecondary} />
-            <Text style={styles.emptySectionTitle}>Your reading list is empty</Text>
-            <Text style={styles.emptySectionText}>Start liking novels to add them here!</Text>
-            <TouchableOpacity style={styles.browseButton} onPress={() => navigation.navigate('Browse')}>
-              <Text style={styles.browseButtonText}>Browse Novels</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <View style={styles.grid}>
-            {likedNovels.map((novel) => renderNovelCard(novel, false))}
-          </View>
-        )}
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'finished' && styles.activeTab]}
+            onPress={() => setActiveTab('finished')}
+          >
+            <Ionicons 
+              name="checkmark-circle-outline" 
+              size={18} 
+              color={activeTab === 'finished' ? '#fff' : colors.textSecondary} 
+            />
+            <Text style={[styles.tabText, activeTab === 'finished' && styles.activeTabText]}>
+              Finished
+            </Text>
+            {finishedNovels.length > 0 && (
+              <View style={[styles.tabBadge, activeTab === 'finished' && styles.activeTabBadge]}>
+                <Text style={[styles.tabBadgeText, activeTab === 'finished' && styles.activeTabBadgeText]}>
+                  {finishedNovels.length}
+                </Text>
+              </View>
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'poetry' && styles.activeTab]}
+            onPress={() => setActiveTab('poetry')}
+          >
+            <Ionicons 
+              name="rose-outline" 
+              size={18} 
+              color={activeTab === 'poetry' ? '#fff' : colors.textSecondary} 
+            />
+            <Text style={[styles.tabText, activeTab === 'poetry' && styles.activeTabText]}>
+              Poetry
+            </Text>
+            {likedPoems.length > 0 && (
+              <View style={[styles.tabBadge, activeTab === 'poetry' && styles.activeTabBadge]}>
+                <Text style={[styles.tabBadgeText, activeTab === 'poetry' && styles.activeTabBadgeText]}>
+                  {likedPoems.length}
+                </Text>
+              </View>
+            )}
+          </TouchableOpacity>
+        </View>
       </View>
+
+      {/* Currently Reading Section */}
+      {activeTab === 'reading' && (
+        <View style={styles.section}>
+          {likedNovels.length === 0 ? (
+            <View style={styles.emptySection}>
+              <Ionicons name="book-outline" size={48} color={colors.textSecondary} />
+              <Text style={styles.emptySectionTitle}>Your reading list is empty</Text>
+              <Text style={styles.emptySectionText}>Start liking novels to add them here!</Text>
+              <TouchableOpacity style={styles.browseButton} onPress={() => navigation.navigate('Browse')}>
+                <Text style={styles.browseButtonText}>Browse Novels</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <>
+              <View style={styles.longPressHint}>
+                <Ionicons name="information-circle-outline" size={14} color={colors.primary} />
+                <Text style={styles.longPressHintText}>Long press a novel to mark it as finished when you're done reading</Text>
+              </View>
+              <View style={styles.grid}>
+                {likedNovels.map((novel) => renderNovelCard(novel, false))}
+              </View>
+            </>
+          )}
+        </View>
+      )}
 
       {/* Finished Reads Section */}
-      <View style={styles.section}>
-        <View style={styles.sectionHeader}>
-          <Ionicons name="checkmark-circle-outline" size={24} color={colors.success} />
-          <Text style={styles.sectionTitle}>Finished Reads</Text>
+      {activeTab === 'finished' && (
+        <View style={styles.section}>
+          {finishedNovels.length === 0 ? (
+            <View style={styles.emptySection}>
+              <Ionicons name="checkmark-circle-outline" size={48} color={colors.textSecondary} />
+              <Text style={styles.emptySectionTitle}>No finished novels yet</Text>
+              <Text style={styles.emptySectionText}>Mark novels as finished to see them here!</Text>
+            </View>
+          ) : (
+            <>
+              <View style={styles.longPressHint}>
+                <Ionicons name="information-circle-outline" size={14} color={colors.primary} />
+                <Text style={styles.longPressHintText}>Long press a novel to mark it as not finished</Text>
+              </View>
+              <View style={styles.grid}>
+                {finishedNovels.map((novel) => renderNovelCard(novel, true))}
+              </View>
+            </>
+          )}
         </View>
-
-        {finishedNovels.length === 0 ? (
-          <View style={styles.emptySection}>
-            <Ionicons name="checkmark-circle-outline" size={48} color={colors.textSecondary} />
-            <Text style={styles.emptySectionTitle}>No finished novels yet</Text>
-            <Text style={styles.emptySectionText}>Mark novels as finished to see them here!</Text>
-          </View>
-        ) : (
-          <View style={styles.grid}>
-            {finishedNovels.map((novel) => renderNovelCard(novel, true))}
-          </View>
-        )}
-      </View>
+      )}
 
       {/* Poetry Collection Section */}
-      <View style={styles.section}>
-        <View style={styles.sectionHeader}>
-          <Ionicons name="rose-outline" size={24} color="#EC4899" />
-          <Text style={styles.sectionTitle}>Poetry Collection</Text>
+      {activeTab === 'poetry' && (
+        <View style={styles.section}>
+          {likedPoems.length === 0 ? (
+            <View style={styles.emptySection}>
+              <Ionicons name="rose-outline" size={48} color={colors.textSecondary} />
+              <Text style={styles.emptySectionTitle}>No poems in your collection yet</Text>
+              <Text style={styles.emptySectionText}>Start liking poems to add them here!</Text>
+              <TouchableOpacity style={styles.browseButton} onPress={() => navigation.navigate('Browse')}>
+                <Text style={styles.browseButtonText}>Browse Poems</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={styles.grid}>
+              {likedPoems.map((poem) => renderPoemCard(poem))}
+            </View>
+          )}
         </View>
-
-        {likedPoems.length === 0 ? (
-          <View style={styles.emptySection}>
-            <Ionicons name="rose-outline" size={48} color={colors.textSecondary} />
-            <Text style={styles.emptySectionTitle}>No poems in your collection yet</Text>
-            <Text style={styles.emptySectionText}>Start liking poems to add them here!</Text>
-            <TouchableOpacity style={styles.browseButton} onPress={() => navigation.navigate('Browse')}>
-              <Text style={styles.browseButtonText}>Browse Poems</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <View style={styles.grid}>
-            {likedPoems.map((poem) => renderPoemCard(poem))}
-          </View>
-        )}
-      </View>
+      )}
 
       <View style={styles.bottomSpacing} />
     </ScrollView>
@@ -356,6 +496,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     ...typography.body,
     color: themeColors.textSecondary,
     marginTop: spacing.md,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   emptyContainer: {
     flex: 1,
@@ -374,10 +515,66 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     ...typography.body,
     color: themeColors.textSecondary,
     textAlign: 'center',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   section: {
     padding: spacing.md,
     marginBottom: spacing.lg,
+  },
+  tabContainer: {
+    backgroundColor: themeColors.backgroundSecondary,
+    borderBottomWidth: 1,
+    borderBottomColor: themeColors.border,
+    paddingVertical: spacing.sm,
+  },
+  tabWrapper: {
+    flexDirection: 'row',
+    paddingHorizontal: spacing.md,
+    position: 'relative',
+  },
+  tab: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.xs,
+    gap: spacing.xs,
+  },
+  activeTab: {
+    backgroundColor: themeColors.primary,
+    borderRadius: 20,
+  },
+  tabText: {
+    ...typography.bodySmall,
+    color: themeColors.textSecondary,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    fontWeight: '600',
+    fontSize: 11,
+  },
+  activeTabText: {
+    color: '#fff',
+  },
+  tabBadge: {
+    backgroundColor: themeColors.primary,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 10,
+    minWidth: 20,
+    alignItems: 'center',
+  },
+  activeTabBadge: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  tabBadgeText: {
+    ...typography.caption,
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '600',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  activeTabBadgeText: {
+    color: '#fff',
   },
   sectionHeader: {
     flexDirection: 'row',
@@ -388,6 +585,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   sectionTitle: {
     ...typography.h2,
     color: themeColors.text,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   emptySection: {
     backgroundColor: themeColors.backgroundSecondary,
@@ -398,11 +596,13 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   emptySectionTitle: {
     ...typography.h3,
     color: themeColors.text,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',  
     marginTop: spacing.md,
     marginBottom: spacing.xs,
   },
   emptySectionText: {
     ...typography.body,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
     color: themeColors.textSecondary,
     textAlign: 'center',
     marginBottom: spacing.md,
@@ -416,6 +616,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   },
   browseButtonText: {
     ...typography.body,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
     color: '#fff',
     fontWeight: '600',
   },
@@ -423,6 +624,24 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: spacing.md,
+  },
+  longPressHint: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: themeColors.primary + '15',
+    borderRadius: 8,
+    marginBottom: spacing.md,
+    borderWidth: 1,
+    borderColor: themeColors.primary + '30',
+  },
+  longPressHintText: {
+    fontSize: 12,
+    color: themeColors.primary,
+    fontStyle: 'italic',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   card: {
     width: '47%',
@@ -449,6 +668,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   fallbackTitle: {
     ...typography.bodySmall,
     color: themeColors.text,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
     fontWeight: '600',
     textAlign: 'center',
     marginBottom: spacing.xs,
@@ -485,6 +705,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     ...typography.caption,
     color: '#fff',
     fontSize: 10,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   cardInfo: {
     marginTop: spacing.sm,
@@ -493,23 +714,15 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     ...typography.body,
     color: themeColors.text,
     fontWeight: '600',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
     marginBottom: spacing.xs,
   },
   cardAuthor: {
     ...typography.bodySmall,
     color: themeColors.textSecondary,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   bottomSpacing: {
     height: spacing.lg,
   },
-});
-
-const styles = getStyles({ 
-  background: '#111827',
-  backgroundSecondary: '#1F2937',
-  text: '#FFFFFF',
-  textSecondary: '#D1D5DB',
-  border: '#374151',
-  primary: '#8B5CF6',
-  success: '#10B981',
 });

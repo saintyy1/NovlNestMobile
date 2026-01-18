@@ -8,12 +8,14 @@ import {
   TouchableOpacity,
   Image,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { collection, query, orderBy, limit, getDocs, where } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import type { Novel } from '../../types/novel';
 import type { Poem } from '../../types/poem';
+import HeroBanner from '../../components/HeroBanner';
 import { useTheme } from '../../contexts/ThemeContext';
 import { spacing, typography } from '../../theme';
 
@@ -121,15 +123,20 @@ export const HomeScreen = ({ navigation }: any) => {
   const fetchTrendingNovels = async () => {
     try {
       const novelsRef = collection(db, 'novels');
-      const q = query(novelsRef, orderBy('views', 'desc'), limit(7));
+      const q = query(novelsRef, orderBy('views', 'desc'));
       const querySnapshot = await getDocs(q);
 
       const novels: Novel[] = [];
       querySnapshot.forEach((doc) => {
-        novels.push({ id: doc.id, ...doc.data() } as Novel);
+        const novelData = { id: doc.id, ...doc.data() } as Novel;
+        // Exclude promoted novels from trending
+        if (!novelData.isPromoted) {
+          novels.push(novelData);
+        }
       });
 
-      setTrendingNovels(novels);
+      // Limit to 7 after filtering
+      setTrendingNovels(novels.slice(0, 7));
     } catch (error) {
       console.error('Error fetching trending novels:', error);
     }
@@ -198,6 +205,34 @@ export const HomeScreen = ({ navigation }: any) => {
 
     fetchData();
   }, []);
+
+  const bannerSlides = [
+  {
+    id: "banner-1",
+    image: require("../../../assets/images/writers-comp.png"),
+    externalLink: "https://discord.gg/rMasj5PDPe",
+    alt: "Discord Community Banner",
+  },
+  {
+    id: "banner-2",
+    image: require("../../../assets/images/dec-comp-winner.png"),
+    novelId: "xeypggSi2BR7dYzp7NhO",
+    alt: "Dec Comp Banner",
+  },
+  {
+    id: "banner-3",
+    image: require("../../../assets/images/his-dangerous-truth.png"),
+    novelId: "erpas9As02OQgKGlXtJ7",
+    alt: "Promotion Banner",
+  },
+  {
+    id: "banner-4",
+    image: require("../../../assets/images/the-accidental-landlord.png"),
+    novelId: "OgrUd6n4cLlAbh3aKMrm",
+    alt: "Promotion Banner",
+  },
+];
+
 
   const handleImageError = (novelId: string) => {
     setImageErrors(prev => ({ ...prev, [novelId]: true }));
@@ -306,6 +341,10 @@ export const HomeScreen = ({ navigation }: any) => {
 
   return (
     <ScrollView style={[styles.container, { backgroundColor: colors.background }]} showsVerticalScrollIndicator={false}>
+
+      {/* Hero Banner Section */}
+      <HeroBanner slides={bannerSlides} autoSlideInterval={5000} />
+
       {promotedNovels.length > 0 && (
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
@@ -432,6 +471,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     ...typography.body,
     color: themeColors.textSecondary,
     marginTop: spacing.md,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   section: {
     padding: spacing.md,
@@ -445,6 +485,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   sectionTitle: {
     ...typography.h2,
     color: themeColors.text,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   horizontalScroll: {
     gap: spacing.md,
@@ -461,17 +502,6 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     justifyContent: 'center',
     marginBottom: spacing.sm,
   },
-  novelTitle: {
-    ...typography.body,
-    color: themeColors.text,
-    fontWeight: '600',
-    marginBottom: spacing.xs,
-  },
-  novelAuthor: {
-    ...typography.bodySmall,
-    color: themeColors.textSecondary,
-    marginBottom: spacing.xs,
-  },
   novelStats: {
     flexDirection: 'row',
     gap: spacing.sm,
@@ -484,11 +514,13 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   novelStatText: {
     ...typography.caption,
     color: themeColors.textSecondary,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   genreTitle: {
     ...typography.h3,
     color: themeColors.text,
     marginBottom: spacing.md,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   genresScroll: {
     paddingRight: spacing.md,
@@ -512,6 +544,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     ...typography.bodySmall,
     color: themeColors.text,
     fontWeight: '500',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   emptySection: {
     paddingVertical: spacing.xl,
@@ -520,6 +553,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   emptyText: {
     ...typography.body,
     color: themeColors.textSecondary,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   bottomSpacing: {
     height: spacing.lg,
@@ -530,6 +564,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
     marginBottom: spacing.xs,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   fallbackDivider: {
     width: 30,
@@ -544,12 +579,4 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     opacity: 0.75,
     textAlign: 'center',
   },
-});
-
-const styles = getStyles({ 
-  background: '#111827',
-  backgroundSecondary: '#1F2937',
-  text: '#FFFFFF',
-  textSecondary: '#D1D5DB',
-  border: '#374151',
 });

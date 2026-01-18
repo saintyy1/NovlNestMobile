@@ -35,28 +35,24 @@ export const googleProvider = new GoogleAuthProvider();
 // Action Code Settings for email verification and password reset
 // This determines where users are redirected after clicking email links
 export const actionCodeSettings: ActionCodeSettings = {
-  // URL you want to redirect back to. This must be added to your Firebase Console
-  // Go to: Firebase Console > Authentication > Settings > Authorized domains
-  // Add your production domain and your custom URL scheme for mobile deep linking
-  url: __DEV__ 
-    ? 'http://localhost:8081' // Development - adjust port if needed
-    : process.env.EXPO_PUBLIC_APP_URL, // Production URL
+  // URL you want to redirect back to. This MUST be whitelisted in Firebase Console:
+  // Firebase Console > Authentication > Settings > Authorized domains
+  // Add: novlnest.com (already added)
+  url: 'https://novlnest.com/auth-action',
   
   // This must be true for mobile apps to handle the link in-app
   handleCodeInApp: true,
   
   // iOS Bundle ID - required for iOS deep linking
-  // Get this from your app.json under "ios.bundleIdentifier"
   iOS: {
-    bundleId: process.env.EXPO_PUBLIC_IOS_BUNDLE_ID,
+    bundleId: 'com.tolu.novlnest',
   },
   
   // Android Package Name - required for Android deep linking
-  // Get this from your app.json under "android.package"
   android: {
-    packageName: process.env.EXPO_PUBLIC_ANDROID_PACKAGE,
-    installApp: true, // Whether to install the app if not already installed
-    minimumVersion: '1.0.0', // Minimum app version required
+    packageName: 'com.novlnest',
+    installApp: true,
+    minimumVersion: '1.0.0',
   },
   
   // Dynamic Link domain for Firebase Dynamic Links (optional but recommended)

@@ -11,6 +11,8 @@ import {
   Alert,
   Share as RNShare,
   Dimensions,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -36,6 +38,7 @@ import { db } from '../../firebase/config';
 import { Novel } from '../../types/novel';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { trackNovelView, trackContentInteraction, trackShare } from '../../utils/Analytics-utils';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -67,7 +70,6 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
   const [commentsLoading, setCommentsLoading] = useState(true);
   const [error, setError] = useState('');
   const [liked, setLiked] = useState(false);
-  const [isFinished, setIsFinished] = useState(false);
   const [isSummaryExpanded, setIsSummaryExpanded] = useState(false);
   const [authorData, setAuthorData] = useState<AuthorData | null>(null);
 
@@ -75,12 +77,14 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
   const [newComment, setNewComment] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
+  const [replyingToUser, setReplyingToUser] = useState<string>('');
   const [replyContent, setReplyContent] = useState('');
   const [submittingReply, setSubmittingReply] = useState(false);
   const [deletingComment, setDeletingComment] = useState<string | null>(null);
+  const [showReplyModal, setShowReplyModal] = useState(false);
+  const commentRefs = useRef<Record<string, View | null>>({});
+  const replyInputRef = useRef<TextInput>(null);
 
-  // Modal states
-  const [showShareModal, setShowShareModal] = useState(false);
   const [showTipModal, setShowTipModal] = useState(false);
 
   const styles = getStyles(colors);
@@ -109,19 +113,25 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
           const novelData = { id: novelDoc.id, ...novelDoc.data() } as Novel;
           setNovel(novelData);
 
+          // Track novel view for analytics
+          trackNovelView({
+            novelId: novelData.id,
+            title: novelData.title,
+            authorId: novelData.authorId,
+            authorName: novelData.authorName,
+            genres: novelData.genres,
+          });
+
           if (currentUser) {
             setLiked(novelData.likedBy?.includes(currentUser.uid) || false);
-            setIsFinished(currentUser.finishedReads?.includes(novelDoc.id) || false);
-
-            // Increment view count (24 hour cooldown)
+      
+            // Increment view count only once per user
             const viewKey = `novel_view_${novelId}_${currentUser.uid}`;
-            const lastView = await AsyncStorage.getItem(viewKey);
-            const now = Date.now();
-            const twentyFourHours = 24 * 60 * 60 * 1000;
+            const hasViewed = await AsyncStorage.getItem(viewKey);
 
-            if (!lastView || now - Number(lastView) > twentyFourHours) {
+            if (!hasViewed) {
               await updateDoc(novelDocRef, { views: increment(1) });
-              await AsyncStorage.setItem(viewKey, now.toString());
+              await AsyncStorage.setItem(viewKey, 'true');
               setNovel(prev => prev ? { ...prev, views: (prev.views || 0) + 1 } : null);
             }
           }
@@ -243,23 +253,6 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
       console.error('Error updating likes:', error);
       setLiked(!liked);
       Alert.alert('Error', 'Failed to update like status');
-    }
-  };
-
-  const handleMarkAsFinished = async () => {
-    if (!novel?.id || !currentUser) {
-      Alert.alert('Error', 'Unable to mark as finished');
-      return;
-    }
-
-    try {
-      const currentlyFinished = currentUser.finishedReads?.includes(novel.id) || false;
-      await markNovelAsFinished(novel.id, novel.title, novel.authorId);
-      setIsFinished(!currentlyFinished);
-      Alert.alert('Success', !currentlyFinished ? 'Novel marked as finished!' : 'Novel unmarked as finished.');
-    } catch (error) {
-      console.error('Error marking novel as finished:', error);
-      Alert.alert('Error', 'Failed to update finished status');
     }
   };
 
@@ -498,103 +491,126 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
     }
   };
 
+  const getParentCommentData = (parentId: string | undefined): { userName: string; userId: string } | null => {
+    if (!parentId) return null;
+
+    const findCommentById = (comments: Comment[], id: string): Comment | null => {
+      for (const c of comments) {
+        if (c.id === id) return c;
+        if (c.replies) {
+          const found = findCommentById(c.replies, id);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+
+    const parentComment = findCommentById(comments, parentId);
+    if (!parentComment) return null;
+
+    return {
+      userName: parentComment.userName,
+      userId: parentComment.userId,
+    };
+  };
+
   const renderComment = (comment: Comment, isReply: boolean = false) => (
-    <View key={comment.id} style={[styles.commentItem, isReply && styles.replyItem]}>
-      <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: comment.userId })}>
-        {comment.userPhoto ? (
-          <Image source={{ uri: comment.userPhoto }} style={styles.commentAvatar} />
-        ) : (
-          <View style={styles.commentAvatarPlaceholder}>
-            <Text style={styles.commentAvatarText}>{getUserInitials(comment.userName)}</Text>
-          </View>
-        )}
-      </TouchableOpacity>
-
-      <View style={styles.commentContent}>
-        <View style={styles.commentHeader}>
-          <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: comment.userId })}>
-            <Text style={styles.commentUserName}>{comment.userName}</Text>
-          </TouchableOpacity>
-          <Text style={styles.commentDate}>{formatDate(comment.createdAt)}</Text>
-          {comment.userId === novel?.authorId && (
-            <View style={styles.authorBadge}>
-              <Text style={styles.authorBadgeText}>Author</Text>
+    <View 
+      key={comment.id} 
+      style={isReply ? styles.replyItem : styles.commentItem}
+      ref={(ref) => { commentRefs.current[comment.id] = ref; }}
+    >
+      <View style={styles.commentContainer}>
+        <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: comment.userId })}>
+          {comment.userPhoto ? (
+            <Image source={{ uri: comment.userPhoto }} style={styles.commentAvatar} />
+          ) : (
+            <View style={styles.commentAvatarPlaceholder}>
+              <Text style={styles.commentAvatarText}>{getUserInitials(comment.userName)}</Text>
             </View>
           )}
-        </View>
+        </TouchableOpacity>
 
-        <Text style={styles.commentText}>{comment.content}</Text>
-
-        <View style={styles.commentActions}>
-          <TouchableOpacity
-            onPress={() => handleCommentLike(comment.id, comment.likedBy?.includes(currentUser?.uid || ''))}
-            disabled={!currentUser}
-            style={styles.commentAction}
-          >
-            <Ionicons
-              name={comment.likedBy?.includes(currentUser?.uid || '') ? 'heart' : 'heart-outline'}
-              size={16}
-              color={comment.likedBy?.includes(currentUser?.uid || '') ? '#EF4444' : '#9CA3AF'}
-            />
-            <Text style={styles.commentActionText}>{comment.likes || 0}</Text>
-          </TouchableOpacity>
-
-          {currentUser && (
-            <TouchableOpacity
-              onPress={() => {
-                setReplyingTo(replyingTo === comment.id ? null : comment.id);
-                setReplyContent('');
-              }}
-              style={styles.commentAction}
-            >
-              <Ionicons name="return-down-forward-outline" size={16} color="#9CA3AF" />
-              <Text style={styles.commentActionText}>Reply</Text>
-            </TouchableOpacity>
-          )}
-
-          {canDeleteComment(comment) && (
-            <TouchableOpacity
-              onPress={() => handleDeleteComment(comment.id)}
-              disabled={deletingComment === comment.id}
-              style={styles.commentAction}
-            >
-              <Ionicons name="trash-outline" size={16} color="#9CA3AF" />
-              <Text style={styles.commentActionText}>Delete</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-
-        {replyingTo === comment.id && (
-          <View style={styles.replyInputContainer}>
-            <TextInput
-              value={replyContent}
-              onChangeText={setReplyContent}
-              placeholder={`Reply to ${comment.userName}...`}
-              placeholderTextColor="#9CA3AF"
-              style={styles.replyInput}
-              multiline
-            />
-            <View style={styles.replyActions}>
-              <TouchableOpacity onPress={() => setReplyingTo(null)} style={styles.replyCancel}>
-                <Text style={styles.replyCancelText}>Cancel</Text>
+        <View style={styles.commentContent}>
+          <View style={styles.commentHeader}>
+            {isReply && comment.parentId ? (
+              <View style={styles.replyHeader}>
+                <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: comment.userId })}>
+                  <Text style={styles.commentUserName}>{comment.userName}</Text>
+                </TouchableOpacity>
+                <Text style={styles.replyArrow}> {'>'} </Text>
+                {(() => {
+                  const parent = getParentCommentData(comment.parentId);
+                  return parent ? (
+                    <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: parent.userId })}>
+                      <Text style={styles.commentUserName}>{parent.userName}</Text>
+                    </TouchableOpacity>
+                  ) : null;
+                })()}
+              </View>
+            ) : (
+              <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: comment.userId })}>
+                <Text style={styles.commentUserName}>{comment.userName}</Text>
               </TouchableOpacity>
+            )}
+            <Text style={styles.commentDate}>{formatDate(comment.createdAt)}</Text>
+            {comment.userId === novel?.authorId && (
+              <View style={styles.authorBadge}>
+                <Text style={styles.authorBadgeText}>Author</Text>
+              </View>
+            )}
+          </View>
+
+          <Text style={styles.commentText}>{comment.content}</Text>
+
+          <View style={styles.commentActions}>
+            <TouchableOpacity
+              onPress={() => handleCommentLike(comment.id, comment.likedBy?.includes(currentUser?.uid || ''))}
+              disabled={!currentUser}
+              style={styles.commentAction}
+            >
+              <Ionicons
+                name={comment.likedBy?.includes(currentUser?.uid || '') ? 'heart' : 'heart-outline'}
+                size={16}
+                color={comment.likedBy?.includes(currentUser?.uid || '') ? '#EF4444' : '#9CA3AF'}
+              />
+              <Text style={styles.commentActionText}>{comment.likes || 0}</Text>
+            </TouchableOpacity>
+
+            {currentUser && (
               <TouchableOpacity
-                onPress={() => handleReplySubmit(comment.id)}
-                disabled={!replyContent.trim() || submittingReply}
-                style={styles.replySubmit}
+                onPress={() => {
+                  setReplyingTo(comment.id);
+                  setReplyingToUser(comment.userName);
+                  setReplyContent('');
+                  setShowReplyModal(true);
+                }}
+                style={styles.commentAction}
               >
-                <Text style={styles.replySubmitText}>{submittingReply ? 'Posting...' : 'Reply'}</Text>
+                <Ionicons name="return-down-forward-outline" size={16} color="#9CA3AF" />
+                <Text style={styles.commentActionText}>Reply</Text>
               </TouchableOpacity>
-            </View>
-          </View>
-        )}
+            )}
 
-        {comment.replies && comment.replies.length > 0 && (
-          <View style={styles.repliesContainer}>
-            {comment.replies.map((reply) => renderComment(reply, true))}
+            {canDeleteComment(comment) && (
+              <TouchableOpacity
+                onPress={() => handleDeleteComment(comment.id)}
+                disabled={deletingComment === comment.id}
+                style={styles.commentAction}
+              >
+                <Ionicons name="trash-outline" size={16} color="#9CA3AF" />
+                <Text style={styles.commentActionText}>Delete</Text>
+              </TouchableOpacity>
+            )}
           </View>
-        )}
+        </View>
       </View>
+
+      {comment.replies && comment.replies.length > 0 && (
+        <View style={styles.repliesContainer}>
+          {comment.replies.map((reply) => renderComment(reply, true))}
+        </View>
+      )}
     </View>
   );
 
@@ -630,11 +646,11 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerButton}>
-          <Ionicons name="arrow-back" size={24} color="#fff" />
+          <Ionicons name="arrow-back" size={24} color={colors.text} />
         </TouchableOpacity>
         <View style={styles.headerActions}>
           <TouchableOpacity onPress={handleShare} style={styles.headerButton}>
-            <Ionicons name="share-outline" size={24} color="#fff" />
+            <Ionicons name="share-outline" size={24} color={colors.text} />
           </TouchableOpacity>
         </View>
       </View>
@@ -707,22 +723,6 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
 
           {/* Secondary Actions */}
           <View style={styles.secondaryActions}>
-            {currentUser && (
-              <TouchableOpacity
-                style={[styles.secondaryButton, isFinished && styles.finishedButton]}
-                onPress={handleMarkAsFinished}
-              >
-                <Ionicons
-                  name={isFinished ? 'checkmark-circle' : 'book-outline'}
-                  size={18}
-                  color={isFinished ? '#000000' : '#fff'}
-                />
-                <Text style={[styles.secondaryButtonText, isFinished && styles.finishedText]}>
-                  {isFinished ? 'Finished' : 'Mark as Finished'}
-                </Text>
-              </TouchableOpacity>
-            )}
-
             {authorData?.supportLink && (
               <TouchableOpacity
                 style={styles.giftButton}
@@ -730,16 +730,6 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
               >
                 <Ionicons name="gift-outline" size={18} />
                 <Text style={styles.giftButtonText}>Gift</Text>
-              </TouchableOpacity>
-            )}
-
-            {isAuthor && (
-              <TouchableOpacity
-                style={styles.secondaryButton}
-                onPress={() => navigation.navigate('AddChapters', { novelId: novel.id })}
-              >
-                <Ionicons name="add-circle-outline" size={18} color="#fff" />
-                <Text style={styles.secondaryButtonText}>Add Chapters</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -783,6 +773,14 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
                 <Text style={styles.viewAllText}>View all</Text>
               </TouchableOpacity>
             </View>
+
+            {/* Author hint for long press */}
+            {isAuthor && novel.chapters && novel.chapters.length > 0 && (
+              <View style={styles.authorHint}>
+                <Ionicons name="information-circle-outline" size={14} color={colors.primary} />
+                <Text style={styles.authorHintText}>Long press on a chapter to edit or delete it</Text>
+              </View>
+            )}
 
             {/* Author's Note */}
             {novel.authorsNote && (
@@ -846,12 +844,37 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
                               }),
                           },
                           {
-                            text: 'Read Chapter',
-                            onPress: () =>
-                              navigation.navigate('NovelReader', {
-                                novelId: novel.id,
-                                chapterNumber: chapterNumber,
-                              }),
+                            text: 'Delete Chapter',
+                            style: 'destructive',
+                            onPress: () => {
+                              Alert.alert(
+                                'Confirm Deletion',
+                                'Are you sure you want to delete this chapter? This action cannot be undone.',
+                                [
+                                  { 
+                                    text: 'Delete',
+                                    style: 'destructive',
+                                    onPress: async () => {
+                                      try {
+                                        const novelRef = doc(db, 'novels', novel.id);
+                                        const novelDoc = await getDoc(novelRef);
+                                        if (novelDoc.exists()) {
+                                          const novelData = novelDoc.data() as Novel;
+                                          const updatedChapters = [...(novelData.chapters || [])];
+                                          updatedChapters.splice(index, 1);
+                                          await updateDoc(novelRef, { chapters: updatedChapters });
+                                          Alert.alert('Success', 'Chapter deleted successfully!');
+                                        }
+                                      } catch (error) {
+                                        console.error('Error deleting chapter:', error);
+                                        Alert.alert('Error', 'Failed to delete chapter. Please try again.');
+                                      }
+                                    },
+                                  },
+                                  { text: 'Cancel', style: 'cancel' },
+                                ]
+                              );
+                            },
                           },
                           { text: 'Cancel', style: 'cancel' },
                         ]
@@ -874,29 +897,34 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
           {/* Comments Section */}
           <View style={styles.commentsSection}>
             <Text style={styles.sectionTitle}>
-              Comments ({comments.reduce((total, comment) => total + 1 + (comment.replies?.length || 0), 0)})
+              Comments ({comments.length})
             </Text>
 
             {currentUser ? (
-              <View style={styles.commentForm}>
-                <TextInput
-                  value={newComment}
-                  onChangeText={setNewComment}
-                  placeholder="Share your thoughts about this novel..."
-                  placeholderTextColor="#9CA3AF"
-                  style={styles.commentInput}
-                  multiline
-                />
-                <TouchableOpacity
-                  onPress={handleCommentSubmit}
-                  disabled={!newComment.trim() || submittingComment}
-                  style={styles.commentSubmit}
-                >
-                  <Text style={styles.commentSubmitText}>
-                    {submittingComment ? 'Posting...' : 'Post Comment'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
+              <KeyboardAvoidingView
+                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                keyboardVerticalOffset={Platform.OS === 'ios' ? 100 : 0}
+              >
+                <View style={styles.commentForm}>
+                  <TextInput
+                    value={newComment}
+                    onChangeText={setNewComment}
+                    placeholder="Share your thoughts about this novel..."
+                    placeholderTextColor="#9CA3AF"
+                    style={styles.commentInput}
+                    multiline
+                  />
+                  <TouchableOpacity
+                    onPress={handleCommentSubmit}
+                    disabled={!newComment.trim() || submittingComment}
+                    style={styles.commentSubmit}
+                  >
+                    <Text style={styles.commentSubmitText}>
+                      {submittingComment ? 'Posting...' : 'Post Comment'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </KeyboardAvoidingView>
             ) : (
               <View style={styles.loginPrompt}>
                 <Text style={styles.loginPromptText}>Sign in to leave a comment</Text>
@@ -915,9 +943,23 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
                 <Text style={styles.emptyCommentsSubtext}>Be the first to share your thoughts!</Text>
               </View>
             ) : (
-              <View style={styles.commentsList}>
-                {comments.map((comment) => renderComment(comment))}
-              </View>
+              <>
+                <View style={styles.commentsHeader}>
+                  <Text style={styles.commentsCount}>{comments.length} {comments.length === 1 ? 'Comment' : 'Comments'}</Text>
+                  <View style={styles.scrollHint}>
+                    <Ionicons name="arrow-down" size={14} color={colors.textSecondary} />
+                    <Text style={styles.scrollHintText}>Scroll to see more</Text>
+                  </View>
+                </View>
+                <ScrollView 
+                  style={styles.commentsList}
+                  nestedScrollEnabled={true}
+                  showsVerticalScrollIndicator={true}
+                  persistentScrollbar={true}
+                >
+                  {comments.map((comment) => renderComment(comment))}
+                </ScrollView>
+              </>
             )}
           </View>
         </View>
@@ -987,14 +1029,68 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
           </View>
         </View>
       )}
+
+      {/* Reply Modal */}
+      {showReplyModal && (
+        <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.replyModalContainer}
+          >
+            <View style={styles.modalContent}>
+              <TouchableOpacity
+                style={styles.modalClose}
+                onPress={() => {
+                  setShowReplyModal(false);
+                  setReplyingTo(null);
+                  setReplyContent('');
+                }}
+              >
+                <Ionicons name="close" size={24} color="#9CA3AF" />
+              </TouchableOpacity>
+
+              <View style={styles.modalHeader}>
+                <Ionicons name="chatbubble-outline" size={40} color={colors.primary} />
+                <Text style={styles.modalTitle}>Reply to {replyingToUser}</Text>
+              </View>
+
+              <TextInput
+                value={replyContent}
+                onChangeText={setReplyContent}
+                placeholder="Write your reply..."
+                placeholderTextColor="#9CA3AF"
+                style={styles.replyModalInput}
+                multiline
+                autoFocus
+                numberOfLines={6}
+              />
+
+              <TouchableOpacity
+                style={[styles.replyModalSubmit, (!replyContent.trim() || submittingReply) && styles.replyModalSubmitDisabled]}
+                onPress={() => {
+                  if (replyingTo) {
+                    handleReplySubmit(replyingTo);
+                    setShowReplyModal(false);
+                  }
+                }}
+                disabled={!replyContent.trim() || submittingReply}
+              >
+                <Text style={styles.replyModalSubmitText}>
+                  {submittingReply ? 'Posting...' : 'Post Reply'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      )}
     </SafeAreaView>
   );
 };
 
-const getStyles = (themeColors : any) => StyleSheet.create({
+const getStyles = (themeColors: any) => StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#111827',
+    backgroundColor: themeColors.background,
   },
   loadingContainer: {
     flex: 1,
@@ -1009,14 +1105,14 @@ const getStyles = (themeColors : any) => StyleSheet.create({
   },
   errorText: {
     fontSize: 18,
-    color: '#fff',
+    color: themeColors.text,
     marginTop: 16,
     marginBottom: 24,
   },
   backButton: {
     paddingHorizontal: 24,
     paddingVertical: 12,
-    backgroundColor: '#8B5CF6',
+    backgroundColor: themeColors.primary,
     borderRadius: 8,
   },
   backButtonText: {
@@ -1030,6 +1126,9 @@ const getStyles = (themeColors : any) => StyleSheet.create({
     alignItems: 'center' as const,
     paddingHorizontal: 16,
     paddingVertical: 12,
+    backgroundColor: themeColors.background,
+    borderBottomWidth: 1,
+    borderBottomColor: themeColors.cardBorder,
   },
   headerButton: {
     padding: 8,
@@ -1044,7 +1143,7 @@ const getStyles = (themeColors : any) => StyleSheet.create({
   coverSection: {
     alignItems: 'center' as const,
     paddingVertical: 20,
-    backgroundColor: '#1F2937',
+    backgroundColor: themeColors.background,
   },
   coverImage: {
     width: SCREEN_WIDTH * 0.6,
@@ -1054,24 +1153,27 @@ const getStyles = (themeColors : any) => StyleSheet.create({
   placeholderCover: {
     width: SCREEN_WIDTH * 0.6,
     height: SCREEN_WIDTH * 0.9,
-    backgroundColor: '#374151',
+    backgroundColor: themeColors.card,
     borderRadius: 12,
     justifyContent: 'center' as const,
     alignItems: 'center' as const,
+    borderWidth: 1,
+    borderColor: themeColors.cardBorder,
   },
   infoSection: {
     padding: 20,
+    backgroundColor: themeColors.background,
   },
   title: {
     fontSize: 24,
     fontWeight: 'bold' as const,
-    color: '#fff',
+    color: themeColors.text,
     marginBottom: 8,
     textAlign: 'center' as const,
   },
   author: {
     fontSize: 16,
-    color: '#8B5CF6',
+    color: themeColors.primary,
     marginBottom: 20,
     textAlign: 'center' as const,
   },
@@ -1080,9 +1182,11 @@ const getStyles = (themeColors : any) => StyleSheet.create({
     justifyContent: 'space-around' as const,
     alignItems: 'center' as const,
     paddingVertical: 16,
-    backgroundColor: '#1F2937',
+    backgroundColor: themeColors.card,
     borderRadius: 12,
     marginBottom: 20,
+    borderWidth: 1,
+    borderColor: themeColors.cardBorder,
   },
   statItem: {
     alignItems: 'center' as const,
@@ -1090,19 +1194,19 @@ const getStyles = (themeColors : any) => StyleSheet.create({
   },
   statText: {
     fontSize: 12,
-    color: '#9CA3AF',
+    color: themeColors.textSecondary,
     marginTop: 4,
   },
   statValue: {
     fontSize: 16,
     fontWeight: '600' as const,
-    color: '#fff',
+    color: themeColors.text,
     marginTop: 2,
   },
   statDivider: {
     width: 1,
     height: 40,
-    backgroundColor: '#374151',
+    backgroundColor: themeColors.cardBorder,
   },
   actionButtons: {
     flexDirection: 'row' as const,
@@ -1114,7 +1218,7 @@ const getStyles = (themeColors : any) => StyleSheet.create({
     flexDirection: 'row' as const,
     alignItems: 'center' as const,
     justifyContent: 'center' as const,
-    backgroundColor: '#000',
+    backgroundColor: themeColors.primary,
     paddingVertical: 14,
     borderRadius: 25,
     gap: 8,
@@ -1128,9 +1232,11 @@ const getStyles = (themeColors : any) => StyleSheet.create({
     width: 50,
     height: 50,
     borderRadius: 25,
-    backgroundColor: '#000',
+    backgroundColor: themeColors.surface,
     justifyContent: 'center' as const,
     alignItems: 'center' as const,
+    borderWidth: 1,
+    borderColor: themeColors.cardBorder,
   },
   secondaryActions: {
     flexDirection: 'row' as const,
@@ -1143,26 +1249,29 @@ const getStyles = (themeColors : any) => StyleSheet.create({
     alignItems: 'center' as const,
     paddingHorizontal: 16,
     paddingVertical: 10,
-    backgroundColor: '#1F2937',
+    backgroundColor: themeColors.card,
     borderRadius: 20,
     gap: 6,
+    borderWidth: 1,
+    borderColor: themeColors.cardBorder,
   },
   secondaryButtonText: {
-    color: '#fff',
+    color: themeColors.text,
     fontSize: 14,
   },
   finishedButton: {
-    backgroundColor: '#10B981',
+    backgroundColor: themeColors.success,
+    borderColor: themeColors.success,
   },
   finishedText: {
-    color: '#fff',
+    color: '#000',
   },
   giftButton: {
     flexDirection: 'row' as const,
     alignItems: 'center' as const,
     paddingHorizontal: 16,
     paddingVertical: 10,
-    backgroundColor: '#10B981',
+    backgroundColor: themeColors.success,
     borderRadius: 20,
     gap: 6,
   },
@@ -1177,12 +1286,14 @@ const getStyles = (themeColors : any) => StyleSheet.create({
   genreTag: {
     paddingHorizontal: 16,
     paddingVertical: 8,
-    backgroundColor: '#1F2937',
+    backgroundColor: themeColors.card,
     borderRadius: 20,
     marginRight: 8,
+    borderWidth: 1,
+    borderColor: themeColors.cardBorder,
   },
   genreText: {
-    color: '#D1D5DB',
+    color: themeColors.text,
     fontSize: 14,
   },
   descriptionContainer: {
@@ -1191,16 +1302,16 @@ const getStyles = (themeColors : any) => StyleSheet.create({
   sectionTitle: {
     fontSize: 18,
     fontWeight: 'bold' as const,
-    color: '#fff',
+    color: themeColors.text,
     marginBottom: 12,
   },
   description: {
     fontSize: 15,
-    color: '#D1D5DB',
+    color: themeColors.textSecondary,
     lineHeight: 22,
   },
   seeMore: {
-    color: '#8B5CF6',
+    color: themeColors.primary,
     fontSize: 14,
     fontWeight: '600' as const,
     marginTop: 8,
@@ -1214,8 +1325,25 @@ const getStyles = (themeColors : any) => StyleSheet.create({
     alignItems: 'center' as const,
     marginBottom: 12,
   },
+  authorHint: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: themeColors.primary + '15',
+    borderRadius: 8,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: themeColors.primary + '30',
+  },
+  authorHintText: {
+    fontSize: 12,
+    color: themeColors.primary,
+    fontStyle: 'italic' as const,
+  },
   viewAllText: {
-    color: '#8B5CF6',
+    color: themeColors.primary,
     fontSize: 14,
     fontWeight: '600' as const,
   },
@@ -1225,9 +1353,11 @@ const getStyles = (themeColors : any) => StyleSheet.create({
     justifyContent: 'space-between' as const,
     paddingVertical: 12,
     paddingHorizontal: 16,
-    backgroundColor: '#1F2937',
+    backgroundColor: themeColors.card,
     borderRadius: 8,
     marginBottom: 8,
+    borderWidth: 1,
+    borderColor: themeColors.cardBorder,
   },
   chapterInfo: {
     flexDirection: 'row' as const,
@@ -1241,12 +1371,12 @@ const getStyles = (themeColors : any) => StyleSheet.create({
   chapterNumber: {
     fontSize: 16,
     fontWeight: '600' as const,
-    color: '#8B5CF6',
+    color: themeColors.primary,
     width: 30,
   },
   chapterTitle: {
     fontSize: 15,
-    color: '#fff',
+    color: themeColors.text,
     flex: 1,
   },
   commentsSection: {
@@ -1256,15 +1386,17 @@ const getStyles = (themeColors : any) => StyleSheet.create({
     marginBottom: 20,
   },
   commentInput: {
-    backgroundColor: '#1F2937',
-    color: '#fff',
+    backgroundColor: themeColors.card,
+    color: themeColors.text,
     padding: 12,
     borderRadius: 8,
     marginBottom: 8,
     minHeight: 80,
+    borderWidth: 1,
+    borderColor: themeColors.cardBorder,
   },
   commentSubmit: {
-    backgroundColor: '#8B5CF6',
+    backgroundColor: themeColors.primary,
     padding: 12,
     borderRadius: 8,
     alignItems: 'center' as const,
@@ -1276,17 +1408,19 @@ const getStyles = (themeColors : any) => StyleSheet.create({
   },
   loginPrompt: {
     padding: 16,
-    backgroundColor: '#1F2937',
+    backgroundColor: themeColors.card,
     borderRadius: 8,
     marginBottom: 20,
+    borderWidth: 1,
+    borderColor: themeColors.cardBorder,
   },
   loginPromptText: {
-    color: '#9CA3AF',
+    color: themeColors.textSecondary,
     fontSize: 14,
     marginBottom: 8,
   },
   loginPromptLink: {
-    color: '#8B5CF6',
+    color: themeColors.primary,
     fontSize: 14,
   },
   emptyComments: {
@@ -1294,28 +1428,100 @@ const getStyles = (themeColors : any) => StyleSheet.create({
     paddingVertical: 40,
   },
   emptyCommentsText: {
-    color: '#9CA3AF',
+    color: themeColors.textSecondary,
     fontSize: 14,
     marginTop: 12,
   },
   emptyCommentsSubtext: {
-    color: '#6B7280',
+    color: themeColors.textSecondary,
     fontSize: 12,
     marginTop: 4,
   },
-  commentsList: {
+  loadMoreButton: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
+    padding: 16,
+    marginTop: 16,
+    backgroundColor: themeColors.card,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: themeColors.primary,
+  },
+  loadMoreText: {
+    color: themeColors.primary,
+    fontSize: 14,
+    fontWeight: '600' as const,
+    marginRight: 8,
+  },
+  endOfComments: {
+    alignItems: 'center' as const,
+    paddingVertical: 20,
     marginTop: 16,
   },
-  commentItem: {
+  endOfCommentsText: {
+    color: themeColors.textSecondary,
+    fontSize: 12,
+    fontStyle: 'italic' as const,
+  },
+  showMoreReplies: {
     flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginTop: 8,
+    marginLeft: 48,
+  },
+  showMoreRepliesText: {
+    color: themeColors.primary,
+    fontSize: 13,
+    marginRight: 4,
+  },
+  commentsList: {
+    marginTop: 16,
+    maxHeight: 500,
+    borderWidth: 1,
+    borderColor: themeColors.cardBorder,
+    borderRadius: 8,
+    padding: 8,
+  },
+  commentsHeader: {
+    flexDirection: 'row' as const,
+    justifyContent: 'space-between' as const,
+    alignItems: 'center' as const,
+    paddingVertical: 2,
+    paddingHorizontal: 4,
+    marginBottom: 8,
+  },
+  commentsCount: {
+    fontSize: 15,
+    fontWeight: '600' as const,
+    color: themeColors.text,
+  },
+  scrollHint: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 4,
+  },
+  scrollHintText: {
+    fontSize: 12,
+    color: themeColors.textSecondary,
+    fontStyle: 'italic' as const,
+  },
+  commentItem: {
     marginBottom: 16,
     padding: 12,
-    backgroundColor: '#1F2937',
+    backgroundColor: themeColors.card,
     borderRadius: 8,
+    borderWidth: 1,
+    borderColor: themeColors.cardBorder,
   },
   replyItem: {
-    marginTop: 8,
-    backgroundColor: '#374151',
+    marginBottom: 8,
+  },
+  commentContainer: {
+    flexDirection: 'row' as const,
   },
   commentAvatar: {
     width: 40,
@@ -1327,7 +1533,7 @@ const getStyles = (themeColors : any) => StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#8B5CF6',
+    backgroundColor: themeColors.primary,
     justifyContent: 'center' as const,
     alignItems: 'center' as const,
     marginRight: 12,
@@ -1347,19 +1553,28 @@ const getStyles = (themeColors : any) => StyleSheet.create({
     flexWrap: 'wrap' as const,
     gap: 8,
   },
+  replyHeader: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+  },
+  replyArrow: {
+    color: themeColors.textSecondary,
+    fontSize: 14,
+    marginHorizontal: 4,
+  },
   commentUserName: {
-    color: '#fff',
+    color: themeColors.text,
     fontSize: 14,
     fontWeight: '600' as const,
   },
   commentDate: {
-    color: '#9CA3AF',
+    color: themeColors.textSecondary,
     fontSize: 12,
   },
   authorBadge: {
     paddingHorizontal: 8,
     paddingVertical: 2,
-    backgroundColor: '#8B5CF6',
+    backgroundColor: themeColors.primary,
     borderRadius: 4,
   },
   authorBadgeText: {
@@ -1367,7 +1582,7 @@ const getStyles = (themeColors : any) => StyleSheet.create({
     fontSize: 10,
   },
   commentText: {
-    color: '#D1D5DB',
+    color: themeColors.text,
     fontSize: 14,
     lineHeight: 20,
     marginBottom: 8,
@@ -1382,19 +1597,21 @@ const getStyles = (themeColors : any) => StyleSheet.create({
     gap: 4,
   },
   commentActionText: {
-    color: '#9CA3AF',
+    color: themeColors.textSecondary,
     fontSize: 12,
   },
   replyInputContainer: {
     marginTop: 12,
   },
   replyInput: {
-    backgroundColor: '#374151',
-    color: '#fff',
+    backgroundColor: themeColors.surface,
+    color: themeColors.text,
     padding: 8,
     borderRadius: 4,
     marginBottom: 8,
     minHeight: 60,
+    borderWidth: 1,
+    borderColor: themeColors.cardBorder,
   },
   replyActions: {
     flexDirection: 'row' as const,
@@ -1406,13 +1623,13 @@ const getStyles = (themeColors : any) => StyleSheet.create({
     paddingVertical: 6,
   },
   replyCancelText: {
-    color: '#9CA3AF',
+    color: themeColors.textSecondary,
     fontSize: 12,
   },
   replySubmit: {
     paddingHorizontal: 12,
     paddingVertical: 6,
-    backgroundColor: '#8B5CF6',
+    backgroundColor: themeColors.primary,
     borderRadius: 4,
   },
   replySubmitText: {
@@ -1435,11 +1652,13 @@ const getStyles = (themeColors : any) => StyleSheet.create({
     padding: 20,
   },
   modalContent: {
-    backgroundColor: '#1F2937',
+    backgroundColor: themeColors.card,
     borderRadius: 16,
     padding: 24,
     width: '100%',
     maxWidth: 400,
+    borderWidth: 1,
+    borderColor: themeColors.cardBorder,
   },
   modalClose: {
     position: 'absolute' as const,
@@ -1454,40 +1673,42 @@ const getStyles = (themeColors : any) => StyleSheet.create({
   modalTitle: {
     fontSize: 20,
     fontWeight: 'bold' as const,
-    color: '#fff',
+    color: themeColors.text,
     marginTop: 12,
     marginBottom: 8,
     textAlign: 'center' as const,
   },
   modalSubtitle: {
     fontSize: 14,
-    color: '#9CA3AF',
+    color: themeColors.textSecondary,
     textAlign: 'center' as const,
   },
   tipInfo: {
-    backgroundColor: '#374151',
+    backgroundColor: themeColors.surface,
     padding: 16,
     borderRadius: 8,
     marginBottom: 16,
+    borderWidth: 1,
+    borderColor: themeColors.cardBorder,
   },
   tipRow: {
     marginBottom: 12,
   },
   tipLabel: {
     fontSize: 12,
-    color: '#9CA3AF',
+    color: themeColors.textSecondary,
     marginBottom: 4,
   },
   tipValue: {
     fontSize: 14,
-    color: '#fff',
+    color: themeColors.text,
     fontWeight: '500' as const,
   },
   copyButton: {
     flexDirection: 'row' as const,
     alignItems: 'center' as const,
     justifyContent: 'center' as const,
-    backgroundColor: '#10B981',
+    backgroundColor: themeColors.success,
     padding: 12,
     borderRadius: 8,
     gap: 8,
@@ -1495,6 +1716,36 @@ const getStyles = (themeColors : any) => StyleSheet.create({
   copyButtonText: {
     color: '#fff',
     fontSize: 14,
+    fontWeight: '600' as const,
+  },
+  replyModalContainer: {
+    width: '100%',
+    maxWidth: 500,
+  },
+  replyModalInput: {
+    backgroundColor: themeColors.surface,
+    color: themeColors.text,
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 16,
+    minHeight: 120,
+    maxHeight: 200,
+    borderWidth: 1,
+    borderColor: themeColors.cardBorder,
+    textAlignVertical: 'top' as const,
+  },
+  replyModalSubmit: {
+    backgroundColor: themeColors.primary,
+    padding: 14,
+    borderRadius: 8,
+    alignItems: 'center' as const,
+  },
+  replyModalSubmitDisabled: {
+    opacity: 0.5,
+  },
+  replyModalSubmitText: {
+    color: '#fff',
+    fontSize: 15,
     fontWeight: '600' as const,
   },
 });

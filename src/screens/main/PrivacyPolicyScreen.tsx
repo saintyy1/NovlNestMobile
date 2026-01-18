@@ -4,157 +4,193 @@ import {
   Text,
   ScrollView,
   StyleSheet,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../contexts/ThemeContext';
 
 const PrivacyPolicyScreen = () => {
   const { colors } = useTheme();
   const styles = getStyles(colors);
+
+  const Section = ({ icon, title, children }: { icon: string; title: string; children: React.ReactNode }) => (
+    <View style={styles.section}>
+      <View style={styles.sectionHeader}>
+        <View style={[styles.sectionIcon, { backgroundColor: colors.primary + '15' }]}>
+          <Ionicons name={icon as any} size={20} color={colors.primary} />
+        </View>
+        <Text style={styles.sectionTitle}>{title}</Text>
+      </View>
+      <View style={styles.sectionContent}>
+        {children}
+      </View>
+    </View>
+  );
+
+  const BulletPoint = ({ text }: { text: string }) => (
+    <View style={styles.bulletRow}>
+      <View style={[styles.bulletDot, { backgroundColor: colors.primary }]} />
+      <Text style={styles.bulletText}>{text}</Text>
+    </View>
+  );
+
+  const InfoCard = ({ icon, title, description }: { icon: string; title: string; description: string }) => (
+    <View style={[styles.infoCard, { backgroundColor: colors.card }]}>
+      <View style={[styles.infoCardIcon, { backgroundColor: colors.primary + '15' }]}>
+        <Ionicons name={icon as any} size={18} color={colors.primary} />
+      </View>
+      <View style={styles.infoCardContent}>
+        <Text style={styles.infoCardTitle}>{title}</Text>
+        <Text style={styles.infoCardDesc}>{description}</Text>
+      </View>
+    </View>
+  );
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['bottom', 'left', 'right']}>
       <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
         {/* Header */}
         <View style={styles.header}>
+          <View style={[styles.headerIcon, { backgroundColor: colors.primary }]}>
+            <Ionicons name="shield-checkmark" size={32} color="#fff" />
+          </View>
           <Text style={styles.title}>Privacy Policy</Text>
-          <Text style={styles.lastUpdated}>Last updated: August 25, 2025</Text>
+          <View style={styles.dateBadge}>
+            <Ionicons name="calendar-outline" size={14} color={colors.textSecondary} />
+            <Text style={styles.lastUpdated}>Updated August 25, 2025</Text>
+          </View>
         </View>
 
-        {/* Content */}
-        <View style={styles.content}>
-          <Text style={styles.sectionTitle}>Introduction</Text>
-          <Text style={styles.paragraph}>
-            At Novlnest, we are committed to protecting your privacy and ensuring the security
-            of your personal information. This Privacy Policy explains how we collect, use, disclose, and safeguard
-            your information when you visit our website and use our services.
+        {/* Intro Card */}
+        <View style={[styles.introCard, { backgroundColor: colors.primary + '10', borderColor: colors.primary + '30' }]}>
+          <Ionicons name="lock-closed" size={24} color={colors.primary} />
+          <Text style={styles.introText}>
+            Your privacy matters to us. This policy explains how we collect, use, and protect your information.
           </Text>
+        </View>
 
-          <Text style={styles.sectionTitle}>Information We Collect</Text>
+        {/* Sections */}
+        <Section icon="information-circle" title="Introduction">
+          <Text style={styles.paragraph}>
+            At NovlNest, we are committed to protecting your privacy and ensuring the security of your personal information.
+          </Text>
+        </Section>
 
+        <Section icon="folder-open" title="Information We Collect">
           <Text style={styles.subsectionTitle}>Personal Information</Text>
-          <Text style={styles.paragraph}>
-            We may collect personal information that you voluntarily provide to us when you:
-          </Text>
-          <View style={styles.bulletList}>
-            <Text style={styles.bulletItem}>• Register for an account</Text>
-            <Text style={styles.bulletItem}>• Submit novels or other content</Text>
-            <Text style={styles.bulletItem}>• Contact us through our contact form</Text>
-            <Text style={styles.bulletItem}>• Participate in surveys or promotions</Text>
+          <Text style={styles.paragraph}>We collect information when you:</Text>
+          <BulletPoint text="Register for an account" />
+          <BulletPoint text="Submit novels or content" />
+          <BulletPoint text="Contact us or participate in promotions" />
+
+          <Text style={styles.subsectionTitle}>What We Collect</Text>
+          <View style={styles.infoGrid}>
+            <InfoCard icon="person" title="Profile Data" description="Name, email, profile picture" />
+            <InfoCard icon="create" title="Content" description="Stories, comments, reviews" />
+            <InfoCard icon="analytics" title="Usage Data" description="Pages visited, time spent" />
+            <InfoCard icon="phone-portrait" title="Device Info" description="Browser, OS, IP address" />
           </View>
+        </Section>
 
-          <Text style={styles.paragraph}>This information may include:</Text>
-          <View style={styles.bulletList}>
-            <Text style={styles.bulletItem}>• Name and display name</Text>
-            <Text style={styles.bulletItem}>• Email address</Text>
-            <Text style={styles.bulletItem}>• Profile picture</Text>
-            <Text style={styles.bulletItem}>• Biographical information</Text>
-            <Text style={styles.bulletItem}>• Content you create and publish (novels, stories, comments, reviews)</Text>
+        <Section icon="settings" title="How We Use Your Information">
+          <BulletPoint text="Operate and maintain the platform" />
+          <BulletPoint text="Process registrations and manage profiles" />
+          <BulletPoint text="Enable content publishing and sharing" />
+          <BulletPoint text="Communicate about your account" />
+          <BulletPoint text="Provide customer support" />
+          <BulletPoint text="Send updates (with your consent)" />
+          <BulletPoint text="Improve our services" />
+          <BulletPoint text="Ensure security and prevent issues" />
+        </Section>
+
+        <Section icon="share-social" title="Information Sharing">
+          <View style={[styles.highlightBox, { backgroundColor: colors.success + '15', borderLeftColor: colors.success }]}>
+            <Text style={[styles.highlightTitle, { color: colors.success }]}>Public Content</Text>
+            <Text style={styles.highlightText}>
+              Your profile, published novels, and comments are visible to other users.
+            </Text>
           </View>
-
-          <Text style={styles.subsectionTitle}>Automatically Collected Information</Text>
-          <Text style={styles.paragraph}>
-            When you visit our website, we may automatically collect certain information about your device and usage
-            patterns, including:
-          </Text>
-          <View style={styles.bulletList}>
-            <Text style={styles.bulletItem}>• IP address and location data</Text>
-            <Text style={styles.bulletItem}>• Browser type and version</Text>
-            <Text style={styles.bulletItem}>• Operating system</Text>
-            <Text style={styles.bulletItem}>• Pages visited and time spent on our site</Text>
-            <Text style={styles.bulletItem}>• Referring website</Text>
-          </View>
-
-          <Text style={styles.sectionTitle}>How We Use Your Information</Text>
-          <Text style={styles.paragraph}>We use the information we collect to:</Text>
-          <View style={styles.bulletList}>
-            <Text style={styles.bulletItem}>• Operate and maintain the NovlNest platform</Text>
-            <Text style={styles.bulletItem}>• Process your account registration and manage your profile</Text>
-            <Text style={styles.bulletItem}>• Enable you to publish and share your content</Text>
-            <Text style={styles.bulletItem}>• Communicate with you about your account and our services</Text>
-            <Text style={styles.bulletItem}>• Respond to your inquiries and provide customer support</Text>
-            <Text style={styles.bulletItem}>• Send you updates and promotional materials (with your consent)</Text>
-            <Text style={styles.bulletItem}>• Improve NovlNest by analyzing usage patterns</Text>
-            <Text style={styles.bulletItem}>• Detect, prevent, and address technical issues and security threats</Text>
-            <Text style={styles.bulletItem}>• Comply with legal requirements</Text>
-          </View>
-
-          <Text style={styles.sectionTitle}>Information Sharing and Disclosure</Text>
-
-          <Text style={styles.subsectionTitle}>Public Information</Text>
-          <Text style={styles.paragraph}>
-            Information you choose to make public (such as your profile information, published novels, and comments)
-            will be visible to other users of our platform.
-          </Text>
 
           <Text style={styles.subsectionTitle}>Service Providers</Text>
           <Text style={styles.paragraph}>
-            We may share necessary data with trusted third parties (e.g., hosting, analytics, email delivery) to keep NovlNest running. They are bound by confidentiality agreements.
+            We share necessary data with trusted third parties (hosting, analytics) bound by confidentiality agreements.
           </Text>
 
           <Text style={styles.subsectionTitle}>Legal Requirements</Text>
           <Text style={styles.paragraph}>
-            We may disclose your information if required to do so by law or in response to valid requests by public
-            authorities.
+            We may disclose information if required by law or valid legal requests.
           </Text>
+        </Section>
 
-          <Text style={styles.sectionTitle}>Data Security</Text>
+        <Section icon="lock-closed" title="Data Security">
           <Text style={styles.paragraph}>
-            We implement appropriate technical and organizational security measures to protect your personal
-            information against unauthorized access, alteration, disclosure, or destruction. However, no method of
-            transmission over the internet or electronic storage is 100% secure.
+            We implement technical and organizational measures to protect your information. However, no internet transmission is 100% secure.
           </Text>
+        </Section>
 
-          <Text style={styles.sectionTitle}>Your Rights and Choices</Text>
-          <Text style={styles.paragraph}>You have the right to:</Text>
-          <View style={styles.bulletList}>
-            <Text style={styles.bulletItem}>• Access and update your personal information</Text>
-            <Text style={styles.bulletItem}>• Delete your account and associated data</Text>
-            <Text style={styles.bulletItem}>• Opt out of promotional communications</Text>
-            <Text style={styles.bulletItem}>• Request a copy of your data</Text>
-            <Text style={styles.bulletItem}>• Request correction of inaccurate information</Text>
+        <Section icon="hand-left" title="Your Rights">
+          <View style={[styles.rightsGrid]}>
+            <View style={[styles.rightItem, { backgroundColor: colors.card }]}>
+              <Ionicons name="eye" size={24} color={colors.primary} />
+              <Text style={styles.rightText}>Access your data</Text>
+            </View>
+            <View style={[styles.rightItem, { backgroundColor: colors.card }]}>
+              <Ionicons name="create" size={24} color={colors.primary} />
+              <Text style={styles.rightText}>Update info</Text>
+            </View>
+            <View style={[styles.rightItem, { backgroundColor: colors.card }]}>
+              <Ionicons name="trash" size={24} color={colors.primary} />
+              <Text style={styles.rightText}>Delete account</Text>
+            </View>
+            <View style={[styles.rightItem, { backgroundColor: colors.card }]}>
+              <Ionicons name="download" size={24} color={colors.primary} />
+              <Text style={styles.rightText}>Export data</Text>
+            </View>
           </View>
-          <Text style={styles.paragraph}>
-            To exercise these rights, please contact us at{' '}
-            <Text style={styles.bold}>n0velnest999@gmail.com</Text>. We will respond to your request within a reasonable timeframe.
+          <Text style={[styles.paragraph, { marginTop: 12 }]}>
+            Contact us at n0velnest999@gmail.com to exercise these rights.
           </Text>
+        </Section>
 
-          <Text style={styles.sectionTitle}>Cookies and Tracking Technologies</Text>
+        <Section icon="analytics" title="Cookies & Tracking">
           <Text style={styles.paragraph}>
-            We use cookies and similar tracking technologies to enhance your experience on our website. You can
-            control cookie settings through your browser preferences, though disabling cookies may affect the
-            functionality of our services.
+            We use cookies to enhance your experience. You can control cookies through browser settings, though this may affect functionality.
           </Text>
+        </Section>
 
-          <Text style={styles.sectionTitle}>Children's Privacy</Text>
-          <Text style={styles.paragraph}>
-            NovlNest is not intended for children under 13. We do not knowingly collect personal data from children under 13. If you believe a child has shared personal information with us, please contact us immediately.
-          </Text>
-
-          <Text style={styles.sectionTitle}>International Users</Text>
-          <Text style={styles.paragraph}>
-            Your information may be transferred to and processed in countries other than your own. We ensure that such
-            transfers comply with applicable data protection laws and implement appropriate safeguards.
-          </Text>
-
-          <Text style={styles.sectionTitle}>Changes to This Privacy Policy</Text>
-          <Text style={styles.paragraph}>
-            We may update this Privacy Policy from time to time. We will notify you of any changes by posting the new
-            Privacy Policy on this page and updating the "Last updated" date. We encourage you to review this Privacy
-            Policy periodically.
-          </Text>
-
-          <Text style={styles.sectionTitle}>Contact Us</Text>
-          <Text style={styles.paragraph}>
-            If you have any questions or concerns about this Privacy Policy or our privacy practices, please contact us at:
-          </Text>
-          <View style={styles.contactBox}>
-            <Text style={styles.contactText}>
-              Email: <Text style={styles.bold}>n0velnest999@gmail.com</Text>
+        <Section icon="people" title="Children's Privacy">
+          <View style={[styles.warningBox, { backgroundColor: colors.warning + '15', borderLeftColor: colors.warning }]}>
+            <Text style={[styles.highlightTitle, { color: colors.warning }]}>Age Requirement</Text>
+            <Text style={styles.highlightText}>
+              NovlNest is not for users under 13. We don't knowingly collect data from children.
             </Text>
           </View>
-        </View>
+        </Section>
 
-        {/* Bottom Spacing */}
+        <Section icon="globe" title="International Users">
+          <Text style={styles.paragraph}>
+            Your data may be transferred internationally. We ensure compliance with applicable data protection laws.
+          </Text>
+        </Section>
+
+        <Section icon="refresh" title="Policy Changes">
+          <Text style={styles.paragraph}>
+            We may update this policy periodically. Changes will be posted here with an updated date.
+          </Text>
+        </Section>
+
+        <Section icon="mail" title="Contact Us">
+          <Text style={styles.paragraph}>Questions about your privacy?</Text>
+          <View style={styles.contactCard}>
+            <Ionicons name="mail" size={24} color={colors.primary} />
+            <View style={styles.contactInfo}>
+              <Text style={styles.contactLabel}>Email</Text>
+              <Text style={styles.contactValue}>n0velnest999@gmail.com</Text>
+            </View>
+          </View>
+        </Section>
+
         <View style={{ height: 40 }} />
       </ScrollView>
     </SafeAreaView>
@@ -168,75 +204,221 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   },
   container: {
     flex: 1,
-    backgroundColor: themeColors.background,
   },
   header: {
+    alignItems: 'center',
+    paddingVertical: 24,
     paddingHorizontal: 16,
-    paddingTop: 24,
-    paddingBottom: 16,
-    alignItems: 'center' as const,
+  },
+  headerIcon: {
+    width: 64,
+    height: 64,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
   },
   title: {
     fontSize: 28,
-    fontWeight: 'bold' as const,
+    fontWeight: '700',
     color: themeColors.text,
-    marginBottom: 8,
-    textAlign: 'center' as const,
-  },
-  lastUpdated: {
-    fontSize: 16,
-    color: themeColors.textSecondary,
-    textAlign: 'center' as const,
-  },
-  content: {
-    backgroundColor: themeColors.surface,
-    marginHorizontal: 16,
-    borderRadius: 12,
-    padding: 20,
-  },
-  sectionTitle: {
-    fontSize: 20,
-    fontWeight: 'bold' as const,
-    color: themeColors.text,
-    marginTop: 24,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
     marginBottom: 12,
   },
-  subsectionTitle: {
-    fontSize: 17,
-    fontWeight: '600' as const,
+  dateBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: themeColors.surface,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+  },
+  lastUpdated: {
+    fontSize: 13,
+    color: themeColors.textSecondary,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  introCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginHorizontal: 16,
+    marginBottom: 20,
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  introText: {
+    flex: 1,
+    fontSize: 14,
     color: themeColors.text,
-    marginTop: 16,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    lineHeight: 20,
+  },
+  section: {
+    marginHorizontal: 16,
+    marginBottom: 16,
+    backgroundColor: themeColors.surface,
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: themeColors.border,
+  },
+  sectionIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sectionTitle: {
+    flex: 1,
+    fontSize: 17,
+    fontWeight: '700',
+    color: themeColors.text,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  sectionContent: {
+    padding: 16,
+  },
+  subsectionTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: themeColors.text,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    marginTop: 12,
     marginBottom: 8,
   },
   paragraph: {
-    fontSize: 15,
+    fontSize: 14,
     color: themeColors.textSecondary,
     lineHeight: 22,
-    marginBottom: 12,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    marginBottom: 8,
   },
-  bulletList: {
-    marginLeft: 8,
-    marginBottom: 12,
+  bulletRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 8,
+    paddingRight: 8,
   },
-  bulletItem: {
-    fontSize: 15,
+  bulletDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginTop: 7,
+    marginRight: 10,
+  },
+  bulletText: {
+    flex: 1,
+    fontSize: 14,
     color: themeColors.textSecondary,
-    lineHeight: 22,
-    marginBottom: 6,
+    lineHeight: 20,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
-  bold: {
-    fontWeight: 'bold' as const,
-    color: themeColors.text,
-  },
-  contactBox: {
-    backgroundColor: themeColors.card,
-    padding: 16,
-    borderRadius: 8,
+  infoGrid: {
+    gap: 10,
     marginTop: 8,
   },
-  contactText: {
-    fontSize: 15,
+  infoCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 12,
+    borderRadius: 10,
+  },
+  infoCardIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  infoCardContent: {
+    flex: 1,
+  },
+  infoCardTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: themeColors.text,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  infoCardDesc: {
+    fontSize: 12,
     color: themeColors.textSecondary,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  highlightBox: {
+    padding: 14,
+    borderRadius: 10,
+    borderLeftWidth: 4,
+    marginBottom: 12,
+  },
+  warningBox: {
+    padding: 14,
+    borderRadius: 10,
+    borderLeftWidth: 4,
+  },
+  highlightTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: 4,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  highlightText: {
+    fontSize: 13,
+    color: themeColors.textSecondary,
+    lineHeight: 20,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  rightsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  rightItem: {
+    width: '47%',
+    alignItems: 'center',
+    padding: 16,
+    borderRadius: 12,
+    gap: 8,
+  },
+  rightText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: themeColors.text,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    textAlign: 'center',
+  },
+  contactCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    backgroundColor: themeColors.card,
+    padding: 16,
+    borderRadius: 12,
+    marginTop: 8,
+  },
+  contactInfo: {
+    flex: 1,
+  },
+  contactLabel: {
+    fontSize: 12,
+    color: themeColors.textSecondary,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  contactValue: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: themeColors.text,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
 });
 

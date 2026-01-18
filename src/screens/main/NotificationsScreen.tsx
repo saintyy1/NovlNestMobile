@@ -8,6 +8,7 @@ import {
   Image,
   ActivityIndicator,
   Alert,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { collection, query, where, orderBy, onSnapshot, doc, getDoc } from 'firebase/firestore';
@@ -536,6 +537,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     fontSize: 20,
     fontWeight: '600',
     color: '#fff',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   headerPlaceholder: {
     width: 40,
@@ -548,6 +550,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   },
   loadingText: {
     ...typography.body,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
     color: themeColors.textSecondary,
     marginTop: spacing.md,
   },
@@ -613,12 +616,14 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   },
   emptyStateTitle: {
     ...typography.h3,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
     color: themeColors.text,
     marginTop: spacing.md,
     marginBottom: spacing.xs,
   },
   emptyStateText: {
     ...typography.body,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
     color: themeColors.textSecondary,
   },
   notificationsList: {
@@ -668,6 +673,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   },
   notificationMessage: {
     ...typography.bodySmall,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
     color: themeColors.textSecondary,
     marginBottom: spacing.xs,
     lineHeight: 20,
@@ -678,6 +684,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   },
   notificationTime: {
     ...typography.caption,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
     color: themeColors.textSecondary,
   },
   markReadButton: {

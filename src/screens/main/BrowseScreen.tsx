@@ -1,5 +1,5 @@
 // src/screens/main/BrowseScreen.tsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   TouchableOpacity,
   Image,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -26,6 +27,7 @@ import type { Novel } from '../../types/novel';
 import type { Poem } from '../../types/poem';
 import { useTheme } from '../../contexts/ThemeContext';
 import { spacing, typography } from '../../theme';
+import { trackSearch } from '../../utils/Analytics-utils';
 
 const NOVEL_GENRES = [
   'All',
@@ -60,7 +62,7 @@ const POEM_GENRES = [
   'Ode',
 ];
 
-const FILTERS = ['Popular', 'New', 'Trending'];
+const FILTERS = ['Trending', 'New', 'Likes'];
 
 type BrowseType = null | 'novels' | 'poems';
 
@@ -71,7 +73,7 @@ export const BrowseScreen = () => {
   const [browseType, setBrowseType] = useState<BrowseType>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedGenre, setSelectedGenre] = useState('All');
-  const [selectedFilter, setSelectedFilter] = useState('Popular');
+  const [selectedFilter, setSelectedFilter] = useState('Trending');
   const [novels, setNovels] = useState<Novel[]>([]);
   const [poems, setPoems] = useState<Poem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -128,7 +130,7 @@ export const BrowseScreen = () => {
   useEffect(() => {
     setSelectedGenre('All');
     setSearchQuery('');
-    setSelectedFilter('Popular');
+    setSelectedFilter('Trending');
   }, [browseType]);
 
   // Fetch data when filters change
@@ -153,13 +155,13 @@ export const BrowseScreen = () => {
       }
 
       switch (selectedFilter) {
-        case 'Popular':
+        case 'Trending':
           queryConstraints.push(orderBy('views', 'desc'));
           break;
         case 'New':
           queryConstraints.push(orderBy('createdAt', 'desc'));
           break;
-        case 'Trending':
+        case 'Likes':
           queryConstraints.push(orderBy('likes', 'desc'));
           break;
       }
@@ -191,6 +193,13 @@ export const BrowseScreen = () => {
             novel.authorName.toLowerCase().includes(searchLower) ||
             novel.summary.toLowerCase().includes(searchLower)
         );
+        
+        // Track search for analytics
+        trackSearch({
+          searchTerm: searchQuery.trim(),
+          category: 'novels',
+          resultsCount: novelsData.length,
+        });
       }
 
       setNovels(novelsData);
@@ -212,13 +221,13 @@ export const BrowseScreen = () => {
       }
 
       switch (selectedFilter) {
-        case 'Popular':
+        case 'Trending':
           queryConstraints.push(orderBy('views', 'desc'));
           break;
         case 'New':
           queryConstraints.push(orderBy('createdAt', 'desc'));
           break;
-        case 'Trending':
+        case 'Likes':
           queryConstraints.push(orderBy('likes', 'desc'));
           break;
       }
@@ -250,6 +259,13 @@ export const BrowseScreen = () => {
             poem.poetName.toLowerCase().includes(searchLower) ||
             poem.content.toLowerCase().includes(searchLower)
         );
+        
+        // Track search for analytics
+        trackSearch({
+          searchTerm: searchQuery.trim(),
+          category: 'poems',
+          resultsCount: poemsData.length,
+        });
       }
 
       setPoems(poemsData);
@@ -316,61 +332,50 @@ export const BrowseScreen = () => {
     return (
       <TouchableOpacity
         key={novel.id}
-        style={styles.itemCard}
+        style={styles.listItem}
         onPress={() => (navigation as any).navigate('NovelOverview', { novelId: novel.id })}
+        activeOpacity={0.85}
       >
-        <View style={styles.imageContainer}>
+        <View style={styles.listItemCover}>
           {hasImage ? (
             <Image
               source={{ uri: getFirebaseDownloadUrl(novel.coverSmallImage || novel.coverImage || '') }}
-              style={styles.itemImage}
+              style={styles.listItemImage}
               onError={() => handleImageError(novel.id)}
             />
           ) : (
-            <View style={[styles.imageFallback, { backgroundColor: getGenreColor(novel.genres) }]}>
-              <Text style={styles.fallbackTitle} numberOfLines={3}>
+            <View style={[styles.listItemImageFallback, { backgroundColor: getGenreColor(novel.genres) }]}>
+              <Text style={styles.listItemFallbackText} numberOfLines={2}>
                 {novel.title}
-              </Text>
-              <View style={styles.fallbackDivider} />
-              <Text style={styles.fallbackAuthor} numberOfLines={1}>
-                {novel.authorName}
               </Text>
             </View>
           )}
-          
-          <View style={styles.statsOverlay}>
-            <View style={styles.statItem}>
-              <Ionicons name="eye" size={12} color="#fff" />
-              <Text style={styles.statText}>{novel.views}</Text>
-            </View>
-            <View style={styles.statItem}>
-              <Ionicons name="heart" size={12} color="#fff" />
-              <Text style={styles.statText}>{novel.likes}</Text>
-            </View>
-          </View>
         </View>
-
-        <View style={styles.itemInfo}>
-          <Text style={styles.itemTitle} numberOfLines={2}>
+        
+        <View style={styles.listItemContent}>
+          <Text style={styles.listItemTitle} numberOfLines={2}>
             {novel.title}
           </Text>
-          <Text style={styles.itemAuthor} numberOfLines={1}>
-            by {novel.authorName}
+          <Text style={styles.listItemAuthor} numberOfLines={1}>
+            {novel.authorName}
           </Text>
-          <Text style={styles.itemSummary} numberOfLines={2}>
-            {novel.summary}
-          </Text>
-          <View style={styles.genresContainer}>
+          <View style={styles.listItemGenres}>
             {novel.genres.slice(0, 2).map((genre, index) => (
-              <View key={index} style={styles.genreChip}>
-                <Text style={styles.genreChipText}>{genre}</Text>
-              </View>
+              <Text key={index} style={styles.genreLabel}>
+                {genre}
+              </Text>
             ))}
-            {novel.genres.length > 2 && (
-              <View style={styles.genreChip}>
-                <Text style={styles.genreChipText}>+{novel.genres.length - 2}</Text>
-              </View>
-            )}
+            {novel.genres.length > 2 && <Text style={styles.genreLabel}>+{novel.genres.length - 2}</Text>}
+          </View>
+          <View style={styles.listItemStats}>
+            <View style={styles.listItemStat}>
+              <Ionicons name="eye" size={13} color={colors.textSecondary} />
+              <Text style={styles.listItemStatText}>{(novel.views || 0) > 1000 ? ((novel.views || 0) / 1000).toFixed(1) + 'K' : (novel.views || 0)}</Text>
+            </View>
+            <View style={styles.listItemStat}>
+              <Ionicons name="heart" size={13} color={colors.textSecondary} />
+              <Text style={styles.listItemStatText}>{(novel.likes || 0) > 1000 ? ((novel.likes || 0) / 1000).toFixed(1) + 'K' : (novel.likes || 0)}</Text>
+            </View>
           </View>
         </View>
       </TouchableOpacity>
@@ -383,61 +388,50 @@ export const BrowseScreen = () => {
     return (
       <TouchableOpacity
         key={poem.id}
-        style={styles.itemCard}
+        style={styles.listItem}
         onPress={() => (navigation as any).navigate('PoemOverview', { poemId: poem.id })}
+        activeOpacity={0.85}
       >
-        <View style={styles.imageContainer}>
+        <View style={styles.listItemCover}>
           {hasImage ? (
             <Image
               source={{ uri: getFirebaseDownloadUrl(poem.coverSmallImage || poem.coverImage || '') }}
-              style={styles.itemImage}
+              style={styles.listItemImage}
               onError={() => handleImageError(poem.id)}
             />
           ) : (
-            <View style={[styles.imageFallback, { backgroundColor: getGenreColor(poem.genres) }]}>
-              <Text style={styles.fallbackTitle} numberOfLines={3}>
+            <View style={[styles.listItemImageFallback, { backgroundColor: getGenreColor(poem.genres) }]}>
+              <Text style={styles.listItemFallbackText} numberOfLines={2}>
                 {poem.title}
-              </Text>
-              <View style={styles.fallbackDivider} />
-              <Text style={styles.fallbackAuthor} numberOfLines={1}>
-                {poem.poetName}
               </Text>
             </View>
           )}
-          
-          <View style={styles.statsOverlay}>
-            <View style={styles.statItem}>
-              <Ionicons name="eye" size={12} color="#fff" />
-              <Text style={styles.statText}>{poem.views}</Text>
-            </View>
-            <View style={styles.statItem}>
-              <Ionicons name="heart" size={12} color="#fff" />
-              <Text style={styles.statText}>{poem.likes}</Text>
-            </View>
-          </View>
         </View>
-
-        <View style={styles.itemInfo}>
-          <Text style={styles.itemTitle} numberOfLines={2}>
+        
+        <View style={styles.listItemContent}>
+          <Text style={styles.listItemTitle} numberOfLines={2}>
             {poem.title}
           </Text>
-          <Text style={styles.itemAuthor} numberOfLines={1}>
-            by {poem.poetName}
+          <Text style={styles.listItemAuthor} numberOfLines={1}>
+            {poem.poetName}
           </Text>
-          <Text style={styles.itemSummary} numberOfLines={1}>
-            {poem.description}
-          </Text>
-          <View style={styles.genresContainer}>
+          <View style={styles.listItemGenres}>
             {poem.genres.slice(0, 2).map((genre, index) => (
-              <View key={index} style={styles.genreChip}>
-                <Text style={styles.genreChipText}>{genre}</Text>
-              </View>
+              <Text key={index} style={styles.genreLabel}>
+                {genre}
+              </Text>
             ))}
-            {poem.genres.length > 2 && (
-              <View style={styles.genreChip}>
-                <Text style={styles.genreChipText}>+{poem.genres.length - 2}</Text>
-              </View>
-            )}
+            {poem.genres.length > 2 && <Text style={styles.genreLabel}>+{poem.genres.length - 2}</Text>}
+          </View>
+          <View style={styles.listItemStats}>
+            <View style={styles.listItemStat}>
+              <Ionicons name="eye" size={13} color={colors.textSecondary} />
+              <Text style={styles.listItemStatText}>{(poem.views || 0) > 1000 ? ((poem.views || 0) / 1000).toFixed(1) + 'K' : (poem.views || 0)}</Text>
+            </View>
+            <View style={styles.listItemStat}>
+              <Ionicons name="heart" size={13} color={colors.textSecondary} />
+              <Text style={styles.listItemStatText}>{(poem.likes || 0) > 1000 ? ((poem.likes || 0) / 1000).toFixed(1) + 'K' : (poem.likes || 0)}</Text>
+            </View>
           </View>
         </View>
       </TouchableOpacity>
@@ -447,100 +441,60 @@ export const BrowseScreen = () => {
   // Initial selection screen
   if (browseType === null) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['left', 'right']}>
         <ScrollView
           contentContainerStyle={styles.selectionContainer}
           showsVerticalScrollIndicator={false}
         >
           {/* Header Section */}
-          <View style={styles.selectionHeader}>
-            <View style={styles.headerIconContainer}>
-              <Ionicons name="search" size={40} color={colors.primary} />
+          <View style={styles.selectionHeaderSection}>
+            <Text style={styles.selectionMainTitle}>What are you reading?</Text>
+            <Text style={styles.selectionHeaderDesc}>Discover stories and poems tailored to your taste</Text>
+          </View>
+
+          {/* Novels Section */}
+          <TouchableOpacity
+            style={styles.largeCard}
+            onPress={() => setBrowseType('novels')}
+            activeOpacity={0.85}
+          >
+            <View style={[styles.largeCardGradient, { backgroundColor: colors.primary + '20' }]}>
+              <View style={styles.largeCardContent}>
+                <View style={[styles.largeCardIcon, { backgroundColor: colors.primary }]}>
+                  <Ionicons name="book" size={28} color="#fff" />
+                </View>
+                <View style={styles.largeCardTextContainer}>
+                  <Text style={styles.largeCardTitle}>Novels</Text>
+                  <Text style={styles.largeCardSubtitle}>Full-length stories</Text>
+                </View>
+                <View style={styles.largeCardArrow}>
+                  <Ionicons name="chevron-forward" size={24} color={colors.primary} />
+                </View>
+              </View>
             </View>
-            <Text style={styles.selectionTitle}>Explore Stories</Text>
-            <Text style={styles.selectionSubtitle}>
-              Choose what you'd like to discover and find your next favorite read
-            </Text>
-          </View>
+          </TouchableOpacity>
 
-          {/* Cards Section */}
-          <View style={styles.cardsContainer}>
-            {/* Novels Card */}
-            <TouchableOpacity
-              style={styles.selectionCard}
-              onPress={() => setBrowseType('novels')}
-              activeOpacity={0.7}
-            >
-              <View style={styles.cardGradient}>
-                <View style={styles.cardIconWrapper}>
-                  <View style={[styles.cardIconContainer, { backgroundColor: colors.primary }]}>
-                    <Ionicons name="book" size={32} color="#fff" />
-                  </View>
+          {/* Poems Section */}
+          <TouchableOpacity
+            style={styles.largeCard}
+            onPress={() => setBrowseType('poems')}
+            activeOpacity={0.85}
+          >
+            <View style={[styles.largeCardGradient, { backgroundColor: '#EC4899' + '20' }]}>
+              <View style={styles.largeCardContent}>
+                <View style={[styles.largeCardIcon, { backgroundColor: '#EC4899' }]}>
+                  <Ionicons name="rose" size={28} color="#fff" />
                 </View>
-
-                <View style={styles.cardContent}>
-                  <Text style={styles.cardTitle}>Novels</Text>
-                  <Text style={styles.cardDescription}>
-                    Discover full-length stories with chapters, characters, and compelling plots
-                  </Text>
+                <View style={styles.largeCardTextContainer}>
+                  <Text style={styles.largeCardTitle}>Poems</Text>
+                  <Text style={styles.largeCardSubtitle}>Beautiful verses</Text>
                 </View>
-
-                <View style={styles.cardFooter}>
-                  <View style={styles.cardFeatures}>
-                    <View style={styles.featureItem}>
-                      <Ionicons name="book-outline" size={14} color={colors.textSecondary} />
-                      <Text style={styles.featureText}>Full-length stories</Text>
-                    </View>
-                    <View style={styles.featureItem}>
-                      <Ionicons name="star-outline" size={14} color={colors.textSecondary} />
-                      <Text style={styles.featureText}>Popular & trending</Text>
-                    </View>
-                  </View>
-                  <View style={styles.cardArrow}>
-                    <Ionicons name="arrow-forward" size={20} color={colors.primary} />
-                  </View>
+                <View style={styles.largeCardArrow}>
+                  <Ionicons name="chevron-forward" size={24} color="#EC4899" />
                 </View>
               </View>
-            </TouchableOpacity>
-
-            {/* Poems Card */}
-            <TouchableOpacity
-              style={styles.selectionCard}
-              onPress={() => setBrowseType('poems')}
-              activeOpacity={0.7}
-            >
-              <View style={styles.cardGradient}>
-                <View style={styles.cardIconWrapper}>
-                  <View style={[styles.cardIconContainer, { backgroundColor: '#EC4899' }]}>
-                    <Ionicons name="rose" size={32} color="#fff" />
-                  </View>
-                </View>
-
-                <View style={styles.cardContent}>
-                  <Text style={styles.cardTitle}>Poems</Text>
-                  <Text style={styles.cardDescription}>
-                    Explore beautiful verses and poetic expressions that touch the heart
-                  </Text>
-                </View>
-
-                <View style={styles.cardFooter}>
-                  <View style={styles.cardFeatures}>
-                    <View style={styles.featureItem}>
-                      <Ionicons name="sparkles-outline" size={14} color={colors.textSecondary} />
-                      <Text style={styles.featureText}>Creative verses</Text>
-                    </View>
-                    <View style={styles.featureItem}>
-                      <Ionicons name="heart-outline" size={14} color={colors.textSecondary} />
-                      <Text style={styles.featureText}>Emotional depth</Text>
-                    </View>
-                  </View>
-                  <View style={styles.cardArrow}>
-                    <Ionicons name="arrow-forward" size={20} color="#EC4899" />
-                  </View>
-                </View>
-              </View>
-            </TouchableOpacity>
-          </View>
+            </View>
+          </TouchableOpacity>
         </ScrollView>
       </SafeAreaView>
     );
@@ -550,19 +504,21 @@ export const BrowseScreen = () => {
   const items = browseType === 'novels' ? novels : poems;
 
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+    <SafeAreaView style={styles.container} edges={['left', 'right']}>
       {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => setBrowseType(null)} style={styles.headerButton}>
+      <View style={styles.browseHeader}>
+        <TouchableOpacity onPress={() => setBrowseType(null)} style={styles.browseHeaderButton}>
           <Ionicons name="arrow-back" size={24} color={colors.primary} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Browse {browseType}</Text>
+        <Text style={styles.browseHeaderTitle}>{browseType === 'novels' ? 'Novels' : 'Poems'}</Text>
+        <View style={{ width: 40 }} />
       </View>
+
       {/* Search Bar */}
-      <View style={styles.searchContainer}>
-        <Ionicons name="search" size={20} color={colors.textSecondary} style={styles.searchIcon} />
+      <View style={styles.browseSearchContainer}>
+        <Ionicons name="search" size={18} color={colors.textSecondary} style={styles.browseSearchIcon} />
         <TextInput
-          style={styles.searchInput}
+          style={styles.browseSearchInput}
           placeholder={`Search ${browseType}...`}
           value={searchQuery}
           onChangeText={setSearchQuery}
@@ -570,81 +526,82 @@ export const BrowseScreen = () => {
         />
         {searchQuery.length > 0 && (
           <TouchableOpacity onPress={() => setSearchQuery('')}>
-            <Ionicons name="close-circle" size={20} color={colors.textSecondary} />
+            <Ionicons name="close-circle" size={18} color={colors.textSecondary} />
           </TouchableOpacity>
         )}
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false}>
+      <ScrollView showsVerticalScrollIndicator={false} style={styles.browseContent}>
         {/* Genre Filter */}
-        <View style={styles.section}>
+        <View style={styles.filterSection}>
           <Text style={styles.sectionTitle}>Genres</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-            <View style={styles.chipContainer}>
-              {genres.map((genre) => (
-                <TouchableOpacity
-                  key={genre}
-                  style={[styles.chip, selectedGenre === genre && styles.chipSelected]}
-                  onPress={() => setSelectedGenre(genre)}
-                >
-                  <Text style={[styles.chipText, selectedGenre === genre && styles.chipTextSelected]}>
-                    {genre}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+          <ScrollView 
+            horizontal 
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.genreScroll}
+          >
+            {genres.map((genre) => (
+              <TouchableOpacity
+                key={genre}
+                style={[styles.genreTag, selectedGenre === genre && styles.genreTagActive]}
+                onPress={() => setSelectedGenre(genre)}
+              >
+                <Text style={[styles.genreTagText, selectedGenre === genre && styles.genreTagTextActive]}>
+                  {genre}
+                </Text>
+              </TouchableOpacity>
+            ))}
           </ScrollView>
         </View>
 
         {/* Sort Filter */}
-        <View style={styles.section}>
+        <View style={styles.filterSection}>
           <Text style={styles.sectionTitle}>Sort By</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-            <View style={styles.chipContainer}>
-              {FILTERS.map((filter) => (
-                <TouchableOpacity
-                  key={filter}
-                  style={[styles.chip, selectedFilter === filter && styles.chipSelected]}
-                  onPress={() => setSelectedFilter(filter)}
-                >
-                  <Text style={[styles.chipText, selectedFilter === filter && styles.chipTextSelected]}>
-                    {filter}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </ScrollView>
+          <View style={styles.sortButtonContainer}>
+            {FILTERS.map((filter) => (
+              <TouchableOpacity
+                key={filter}
+                style={[styles.sortButton, selectedFilter === filter && styles.sortButtonActive]}
+                onPress={() => setSelectedFilter(filter)}
+              >
+                <Text style={[styles.sortButtonText, selectedFilter === filter && styles.sortButtonTextActive]}>
+                  {filter}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
         </View>
 
+        {/* Results Header */}
+        {items.length > 0 && (
+          <View>
+            <Text style={styles.sectionTitle}>{items.length} {browseType === 'novels' ? 'Stories' : 'Poems'}</Text>
+          </View>
+        )}
+
         {/* Results */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>
-            Results {items.length > 0 && `(${items.length})`}
-          </Text>
-          
-          {loading ? (
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color={colors.primary} />
-              <Text style={styles.loadingText}>Loading {browseType}...</Text>
-            </View>
-          ) : items.length > 0 ? (
-            <View style={styles.resultsGrid}>
-              {browseType === 'novels'
-                ? novels.map(renderNovelCard)
-                : poems.map(renderPoemCard)}
-            </View>
-          ) : (
-            <View style={styles.emptyContainer}>
-              <Ionicons 
-                name={browseType === 'novels' ? 'book-outline' : 'rose-outline'} 
-                size={64} 
-                color={colors.textSecondary} 
-              />
-              <Text style={styles.emptyText}>No {browseType} found</Text>
-              <Text style={styles.emptySubtext}>Try adjusting your search or filters</Text>
-            </View>
-          )}
-        </View>
+        {loading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color={colors.primary} />
+            <Text style={styles.loadingText}>Loading {browseType}...</Text>
+          </View>
+        ) : items.length > 0 ? (
+          <View style={styles.resultsContainer}>
+            {browseType === 'novels'
+              ? novels.map(renderNovelCard)
+              : poems.map(renderPoemCard)}
+          </View>
+        ) : (
+          <View style={styles.emptyContainer}>
+            <Ionicons 
+              name={browseType === 'novels' ? 'book-outline' : 'rose-outline'} 
+              size={56} 
+              color={colors.textSecondary} 
+            />
+            <Text style={styles.emptyText}>No {browseType} found</Text>
+            <Text style={styles.emptySubtext}>Try adjusting your search or filters</Text>
+          </View>
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -655,371 +612,439 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     flex: 1,
     backgroundColor: themeColors.background,
   },
-  header: {
-    flexDirection: 'row' as const,
-    justifyContent: 'space-between' as const,
-    alignItems: 'center' as const,
-    paddingHorizontal: 16,
-  },
-  headerButton: {
-    paddingHorizontal: 8,
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: 'bold' as const,
-    color: themeColors.primary,
-  },
+  
+  // ===== SELECTION SCREEN =====
   selectionContainer: {
     flexGrow: 1,
     padding: spacing.lg,
+    justifyContent: 'flex-start',
   },
-  selectionHeader: {
-    alignItems: 'center',
-    marginTop: spacing.xl,
+  selectionHeaderSection: {
     marginBottom: spacing.xl * 1.5,
+    marginTop: spacing.md,
   },
-  headerIconContainer: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: themeColors.primary + '15',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: spacing.lg,
-  },
-  selectionTitle: {
-    fontSize: 32,
-    fontWeight: '800',
+  selectionMainTitle: {
+    fontSize: 28,
+    fontWeight: '700',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
     color: themeColors.text,
-    textAlign: 'center',
     marginBottom: spacing.sm,
     letterSpacing: -0.5,
   },
-  selectionSubtitle: {
+  selectionHeaderDesc: {
     fontSize: 16,
     color: themeColors.textSecondary,
-    textAlign: 'center',
-    lineHeight: 24,
-    paddingHorizontal: spacing.md,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    lineHeight: 22,
   },
-  cardsContainer: {
-    gap: spacing.lg,
-    marginBottom: spacing.xl,
-  },
-  selectionCard: {
-    borderRadius: 20,
+  largeCard: {
+    marginBottom: spacing.lg,
+    borderRadius: 16,
     overflow: 'hidden',
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 12,
   },
-  cardGradient: {
-    backgroundColor: themeColors.backgroundSecondary,
+  largeCardGradient: {
     padding: spacing.lg,
     borderWidth: 1,
     borderColor: themeColors.border,
-    borderRadius: 20,
   },
-  cardIconWrapper: {
-    marginBottom: spacing.md,
+  largeCardContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
-  cardIconContainer: {
+  largeCardIcon: {
     width: 56,
     height: 56,
-    borderRadius: 16,
-    alignItems: 'center',
+    borderRadius: 12,
     justifyContent: 'center',
-    backgroundColor: themeColors.primary,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 2,
+    alignItems: 'center',
+    marginRight: spacing.lg,
   },
-  cardContent: {
-    marginBottom: spacing.lg,
+  largeCardTextContainer: {
+    flex: 1,
   },
-  cardTitle: {
-    fontSize: 24,
+  largeCardTitle: {
+    fontSize: 20,
     fontWeight: '700',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
     color: themeColors.text,
     marginBottom: spacing.xs,
   },
-  cardDescription: {
-    fontSize: 15,
+  largeCardSubtitle: {
+    fontSize: 14,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
     color: themeColors.textSecondary,
-    lineHeight: 22,
   },
-  cardFooter: {
+  largeCardArrow: {
+    marginLeft: spacing.md,
+  },
+
+  // ===== BROWSE SCREEN =====
+  browseHeader: {
     flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingTop: spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: themeColors.border,
-  },
-  cardFeatures: {
-    flex: 1,
-    gap: spacing.xs,
-  },
-  featureItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-  },
-  featureText: {
-    fontSize: 13,
-    color: themeColors.textSecondary,
-  },
-  cardArrow: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: themeColors.background,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  searchContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: themeColors.backgroundSecondary,
-    margin: spacing.md,
     paddingHorizontal: spacing.md,
-    borderRadius: 10,
-    height: 50,
+    paddingVertical: spacing.md,
+    paddingTop: spacing.md,
   },
-  searchIcon: {
+  browseHeaderButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: themeColors.backgroundSecondary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  browseHeaderTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: themeColors.text,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+
+  browseSearchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: spacing.md,
+    marginBottom: spacing.md,
+    paddingHorizontal: spacing.md,
+    backgroundColor: themeColors.backgroundSecondary,
+    borderRadius: 12,
+    height: 44,
+  },
+  browseSearchIcon: {
     marginRight: spacing.sm,
   },
-  searchInput: {
+  browseSearchInput: {
     flex: 1,
     fontSize: 16,
     color: themeColors.text,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
-  section: {
+
+  browseContent: {
+    flex: 1,
+    paddingHorizontal: spacing.md,
+    paddingBottom: spacing.sm,
+  },
+
+  // ===== FILTERS =====
+  filterSection: {
     marginBottom: spacing.lg,
   },
-  sectionTitle: {
-    ...typography.h3,
+  filterLabel: {
+    fontSize: 16,
+    fontWeight: '600',
     color: themeColors.text,
-    marginHorizontal: spacing.md,
     marginBottom: spacing.sm,
+    paddingHorizontal: spacing.sm,
   },
-  chipContainer: {
-    flexDirection: 'row',
-    paddingHorizontal: spacing.md,
+  
+  genreScroll: {
+    paddingHorizontal: spacing.sm,
     gap: spacing.sm,
   },
-  chip: {
+  genreTag: {
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     borderRadius: 20,
     backgroundColor: themeColors.backgroundSecondary,
     borderWidth: 1,
     borderColor: themeColors.border,
+    marginRight: spacing.sm,
   },
-  chipSelected: {
+  genreTagActive: {
     backgroundColor: themeColors.primary,
     borderColor: themeColors.primary,
   },
-  chipText: {
-    ...typography.bodySmall,
+  genreTagText: {
+    fontSize: 13,
+    fontWeight: '500',
     color: themeColors.text,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
-  chipTextSelected: {
+  genreTagTextActive: {
     color: '#fff',
     fontWeight: '600',
   },
-  loadingContainer: {
-    paddingVertical: spacing.xl * 2,
+
+  sortButtonContainer: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  sortButton: {
+    flex: 1,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: 10,
+    backgroundColor: themeColors.backgroundSecondary,
+    borderWidth: 1,
+    borderColor: themeColors.border,
     alignItems: 'center',
   },
-  loadingText: {
-    ...typography.body,
-    color: themeColors.textSecondary,
-    marginTop: spacing.md,
+  sortButtonActive: {
+    backgroundColor: themeColors.primary,
+    borderColor: themeColors.primary,
   },
-  resultsGrid: {
-    paddingHorizontal: spacing.md,
+  sortButtonText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: themeColors.text,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  sortButtonTextActive: {
+    color: '#fff',
+    fontWeight: '600',
+  },
+  
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: themeColors.text,
+    marginBottom: spacing.md,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    paddingHorizontal: spacing.sm,
+  },
+  
+  carouselContainer: {
+    paddingHorizontal: spacing.sm,
     gap: spacing.md,
   },
-  itemCard: {
-    flexDirection: 'row',
-    backgroundColor: themeColors.backgroundSecondary,
-    borderRadius: 10,
+  
+  carouselCover: {
+    width: 140,
+    height: 200,
+    borderRadius: 8,
     overflow: 'hidden',
-    marginBottom: spacing.sm,
+    backgroundColor: themeColors.backgroundSecondary,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
   },
-  imageContainer: {
-    width: 120,
-    height: 180,
-    position: 'relative',
+  
+  carouselImage: {
+    width: '100%',
+    height: '100%',
   },
-  itemImage: {
-    width: '100%' as any,
-    height: '100%' as any,
-  },
-  imageFallback: {
-    width: '100%' as any,
-    height: '100%' as any,
+  
+  carouselImageFallback: {
+    width: '100%',
+    height: '100%',
     justifyContent: 'center',
     alignItems: 'center',
     padding: spacing.sm,
   },
-  fallbackTitle: {
-    ...typography.bodySmall,
-    color: themeColors.text,
+  
+  carouselFallbackText: {
+    fontSize: 12,
     fontWeight: '600',
-    textAlign: 'center',
-    marginBottom: spacing.xs,
-  },
-  fallbackDivider: {
-    width: 30,
-    height: 1,
-    backgroundColor: themeColors.text,
-    opacity: 0.3,
-    marginVertical: spacing.xs,
-  },
-  fallbackAuthor: {
-    ...typography.caption,
-    color: themeColors.textSecondary,
-    opacity: 0.75,
-    textAlign: 'center',
-  },
-  statsOverlay: {
-    position: 'absolute',
-    bottom: spacing.sm,
-    right: spacing.sm,
-    gap: 4,
-  },
-  statItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  statText: {
-    ...typography.caption,
     color: '#fff',
-    fontSize: 10,
+    textAlign: 'center',
   },
-  itemInfo: {
-    flex: 1,
-    padding: spacing.md,
-    justifyContent: 'center',
-  },
-  itemTitle: {
-    ...typography.body,
-    color: themeColors.text,
-    fontWeight: '600',
-    marginBottom: spacing.xs,
-  },
-  itemAuthor: {
-    ...typography.bodySmall,
-    color: themeColors.textSecondary,
-    marginBottom: spacing.xs,
-  },
-  itemSummary: {
-    ...typography.bodySmall,
-    color: themeColors.textSecondary,
-    marginBottom: spacing.sm,
-  },
-  genresContainer: {
+
+  listItem: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.xs,
-  },
-  genreChip: {
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  genreChipText: {
-    ...typography.caption,
-    color: themeColors.text,
-    fontSize: 10,
-  },
-  poemCard: {
-    backgroundColor: themeColors.backgroundSecondary,
-    borderRadius: 10,
-    padding: spacing.md,
+    paddingBottom: spacing.lg,
     marginBottom: spacing.md,
-    borderWidth: 1,
-    borderColor: themeColors.border,
+    borderBottomWidth: 1,
+    borderBottomColor: themeColors.border,
   },
-  poemHeader: {
-    flexDirection: 'row',
-    marginBottom: spacing.sm,
+  
+  listItemCover: {
+    width: 100,
+    height: 150,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: themeColors.backgroundSecondary,
+    marginRight: spacing.md,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
   },
-  poemIconContainer: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: themeColors.background,
-    alignItems: 'center',
+  
+  listItemImage: {
+    width: '100%',
+    height: '100%',
+  },
+  
+  listItemImageFallback: {
+    width: '100%',
+    height: '100%',
     justifyContent: 'center',
-    marginRight: spacing.sm,
-  },
-  poemHeaderInfo: {
-    flex: 1,
-  },
-  poemTitle: {
-    ...typography.body,
-    color: themeColors.text,
-    fontWeight: '600',
-    marginBottom: spacing.xs,
-  },
-  poemAuthor: {
-    ...typography.bodySmall,
-    color: themeColors.textSecondary,
-  },
-  poemContent: {
-    ...typography.body,
-    color: themeColors.text,
-    fontStyle: 'italic',
-    marginBottom: spacing.sm,
-    lineHeight: 22,
-  },
-  poemFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
+    padding: spacing.sm,
   },
-  poemStats: {
-    flexDirection: 'row',
+  
+  listItemFallbackText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#fff',
+    textAlign: 'center',
+  },
+  
+  listItemContent: {
+    flex: 1,
+    justifyContent: 'center',
     gap: spacing.sm,
   },
-  poemStatItem: {
+  
+  listItemTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: themeColors.text,
+    marginBottom: spacing.xs,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  
+  listItemAuthor: {
+    fontSize: 14,
+    color: themeColors.textSecondary,
+    marginBottom: spacing.sm,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  
+  listItemGenres: {
+    flexDirection: 'row',
+    gap: spacing.xs,
+    marginBottom: spacing.sm,
+    flexWrap: 'wrap',
+  },
+  
+  genreLabel: {
+    fontSize: 13,
+    color: themeColors.textSecondary,
+    fontWeight: '500',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  
+  listItemStats: {
+    flexDirection: 'row',
+    gap: spacing.md,
+  },
+  
+  listItemStat: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: spacing.xs,
   },
-  poemStatText: {
-    ...typography.caption,
+  
+  listItemStatText: {
+    fontSize: 14,
     color: themeColors.textSecondary,
+    fontWeight: '500',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+
+  // ===== MODERN CARDS =====
+  resultsContainer: {
+    marginBottom: spacing.lg,
+  },
+  
+  novelItem: {
+    marginBottom: spacing.lg,
+  },
+  
+  coverContainer: {
+    width: '100%',
+    height: 280,
+    borderRadius: 12,
+    overflow: 'hidden',
+    backgroundColor: themeColors.backgroundSecondary,
+    marginBottom: spacing.md,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  
+  coverImage: {
+    width: '100%',
+    height: '100%',
+  },
+  
+  coverFallback: {
+    width: '100%',
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.md,
+  },
+  
+  coverFallbackText: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#fff',
+    textAlign: 'center',
+  },
+  
+  itemMetadata: {
+    paddingHorizontal: spacing.sm,
+  },
+  
+  itemTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: themeColors.text,
+    marginBottom: spacing.xs,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  itemAuthor: {
+    fontSize: 13,
+    color: themeColors.textSecondary,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    marginBottom: spacing.sm,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    gap: spacing.md,
+  },
+  stat: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  statText: {
+    fontSize: 12,
+    color: themeColors.textSecondary,
+    fontWeight: '500',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+
+  // ===== EMPTY & LOADING =====
+  loadingContainer: {
+    paddingVertical: spacing.xl * 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadingText: {
+    fontSize: 14,
+    color: themeColors.textSecondary,
+    marginTop: spacing.md,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   emptyContainer: {
     paddingVertical: spacing.xl * 2,
     alignItems: 'center',
+    justifyContent: 'center',
   },
   emptyText: {
-    ...typography.h3,
+    fontSize: 18,
+    fontWeight: '600',
     color: themeColors.text,
     marginTop: spacing.md,
     marginBottom: spacing.xs,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   emptySubtext: {
-    ...typography.body,
+    fontSize: 14,
     color: themeColors.textSecondary,
     textAlign: 'center',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
 });
 

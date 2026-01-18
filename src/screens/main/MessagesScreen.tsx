@@ -13,6 +13,7 @@ import {
   Modal,
   Alert,
 } from 'react-native';
+// SafeAreaView removed - using View instead to allow header to extend under status bar
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
@@ -20,6 +21,98 @@ import { db } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useChat, ChatConversation, ChatMessage } from '../../contexts/ChatContext';
+import { useNotifications } from '../../contexts/NotificationContext';
+
+// User Avatar Component
+const UserAvatar = ({ navigation, currentUser, colors }: any) => {
+  const [imageError, setImageError] = React.useState(false);
+
+  return (
+    <TouchableOpacity
+      onPress={() => navigation.navigate('Profile', { userId: currentUser?.uid })}
+      style={{
+        width: 36,
+        height: 36,
+        borderRadius: 18,
+        overflow: 'hidden',
+      }}
+    >
+      {currentUser?.photoURL && !imageError ? (
+        <Image
+          source={{ uri: currentUser.photoURL }}
+          style={{ width: '100%', height: '100%' }}
+          onError={() => setImageError(true)}
+        />
+      ) : (
+        <View
+          style={{
+            width: '100%',
+            height: '100%',
+            backgroundColor: colors.secondary,
+            justifyContent: 'center',
+            alignItems: 'center',
+          }}
+        >
+          <Text
+            style={{
+              color: '#fff',
+              fontSize: 16,
+              fontWeight: '700',
+            }}
+          >
+            {currentUser?.displayName ? currentUser.displayName.charAt(0).toUpperCase() : 'U'}
+          </Text>
+        </View>
+      )}
+    </TouchableOpacity>
+  );
+};
+
+// Notifications Button Component
+const NotificationsButton = ({ navigation, colors }: any) => {
+  const { unreadCount } = useNotifications();
+
+  return (
+    <TouchableOpacity
+      onPress={() => navigation.navigate('Notifications')}
+      style={{
+        position: 'relative',
+        width: 36,
+        height: 36,
+        justifyContent: 'center',
+        alignItems: 'center',
+      }}
+    >
+      <Ionicons name="notifications-outline" size={24} color="#fff" />
+      {unreadCount > 0 && (
+        <View
+          style={{
+            position: 'absolute',
+            top: 0,
+            right: 0,
+            backgroundColor: colors.error,
+            borderRadius: 10,
+            minWidth: 20,
+            height: 20,
+            justifyContent: 'center',
+            alignItems: 'center',
+            paddingHorizontal: 4,
+          }}
+        >
+          <Text
+            style={{
+              color: '#fff',
+              fontSize: 10,
+              fontWeight: '700',
+            }}
+          >
+            {unreadCount > 99 ? '99+' : unreadCount}
+          </Text>
+        </View>
+      )}
+    </TouchableOpacity>
+  );
+};
 
 export const MessagesScreen = ({ navigation, route }: any) => {
   const { currentUser } = useAuth();
@@ -121,7 +214,7 @@ export const MessagesScreen = ({ navigation, route }: any) => {
 
       return () => clearTimeout(timer);
     }
-  }, [route.params?.userId, currentUser?.uid, state.conversations]);
+  }, [route.params?.userId, currentUser?.uid]);
 
   const handleConversationSelect = (conversation: ChatConversation) => {
     setCurrentConversation(conversation);
@@ -130,6 +223,8 @@ export const MessagesScreen = ({ navigation, route }: any) => {
 
   const handleBackToConversations = () => {
     setCurrentConversation(null);
+    // Clear the userId param to prevent re-opening the conversation
+    navigation.setParams({ userId: undefined });
   };
 
   const handleSendMessage = async () => {
@@ -345,7 +440,7 @@ export const MessagesScreen = ({ navigation, route }: any) => {
 
   if (!currentUser) {
     return (
-      <SafeAreaView style={styles.safeArea}>
+      <View style={styles.safeArea}>
         <View style={styles.emptyContainer}>
           <Ionicons name="chatbubbles-outline" size={64} color={colors.textSecondary} />
           <Text style={styles.emptyTitle}>Please log in</Text>
@@ -357,26 +452,39 @@ export const MessagesScreen = ({ navigation, route }: any) => {
             <Text style={styles.loginButtonText}>Go to Login</Text>
           </TouchableOpacity>
         </View>
-      </SafeAreaView>
+      </View>
     );
   }
 
   if (state.isLoading && state.conversations.length === 0) {
     return (
-      <SafeAreaView style={styles.safeArea}>
+      <View style={styles.safeArea}>
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.primary} />
           <Text style={styles.loadingText}>Loading messages...</Text>
         </View>
-      </SafeAreaView>
+      </View>
     );
   }
 
   // Conversations List View
   if (!state.currentConversation) {
     return (
-      <SafeAreaView style={styles.safeArea} edges={['left', 'right', 'bottom']}>
-        {/* Search Bar */}
+      <View style={styles.safeArea}>
+        {/* Header */}
+        <View style={styles.conversationsHeader}>
+          <View style={styles.conversationsHeaderContent}>
+            <Text style={styles.conversationsHeaderTitle}>Messages</Text>
+            <View style={styles.headerRightContainer}>
+              <NotificationsButton navigation={navigation} colors={colors} />
+              <UserAvatar navigation={navigation} currentUser={currentUser} colors={colors} />
+            </View>
+          </View>
+        </View>
+
+        {/* Content with SafeAreaView for bottom inset */}
+        <SafeAreaView style={styles.contentContainer} edges={[]}>
+          {/* Search Bar */}
           <View style={styles.searchContainer}>
             <Ionicons name="search" size={20} color={colors.textSecondary} style={styles.searchIcon} />
             <TextInput
@@ -393,28 +501,29 @@ export const MessagesScreen = ({ navigation, route }: any) => {
             )}
           </View>
 
-        {/* Conversations List */}
-        {state.conversations.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Ionicons name="chatbubbles-outline" size={64} color={colors.textSecondary} />
-            <Text style={styles.emptyTitle}>No conversations yet</Text>
-            <Text style={styles.emptyText}>Start a conversation with someone!</Text>
-          </View>
-        ) : (
-          <FlatList
-            data={filteredConversations}
-            renderItem={renderConversationItem}
-            keyExtractor={item => item.id}
-            contentContainerStyle={styles.conversationsList}
-            showsVerticalScrollIndicator={false}
-            ListEmptyComponent={
-              <View style={styles.emptyContainer}>
-                <Text style={styles.emptyText}>No matching conversations</Text>
-              </View>
-            }
-          />
-        )}
-      </SafeAreaView>
+          {/* Conversations List */}
+          {state.conversations.length === 0 ? (
+            <View style={styles.emptyContainer}>
+              <Ionicons name="chatbubbles-outline" size={64} color={colors.textSecondary} />
+              <Text style={styles.emptyTitle}>No conversations yet</Text>
+              <Text style={styles.emptyText}>Start a conversation with someone!</Text>
+            </View>
+          ) : (
+            <FlatList
+              data={filteredConversations}
+              renderItem={renderConversationItem}
+              keyExtractor={item => item.id}
+              contentContainerStyle={styles.conversationsList}
+              showsVerticalScrollIndicator={false}
+              ListEmptyComponent={
+                <View style={styles.emptyContainer}>
+                  <Text style={styles.emptyText}>No matching conversations</Text>
+                </View>
+              }
+            />
+          )}
+        </SafeAreaView>
+      </View>
     );
   }
 
@@ -423,12 +532,23 @@ export const MessagesScreen = ({ navigation, route }: any) => {
   const otherUser = getUser(otherParticipant || '');
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={['left', 'right']}>
-      <KeyboardAvoidingView
-        style={styles.chatContainer}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
-      >
+    <KeyboardAvoidingView
+      style={styles.safeArea}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+    >
+    <View style={styles.safeArea}>
+        {/* Header */}
+        <View style={styles.conversationsHeader}>
+          <View style={styles.conversationsHeaderContent}>
+            <Text style={styles.conversationsHeaderTitle}>Messages</Text>
+            <View style={styles.headerRightContainer}>
+              <NotificationsButton navigation={navigation} colors={colors} />
+              <UserAvatar navigation={navigation} currentUser={currentUser} colors={colors} />
+            </View>
+          </View>
+        </View>
+
         {/* Chat Header */}
         <View style={styles.chatHeader}>
           <TouchableOpacity onPress={handleBackToConversations} style={styles.backButton}>
@@ -470,74 +590,76 @@ export const MessagesScreen = ({ navigation, route }: any) => {
           </TouchableOpacity>
         </View>
 
-        {/* Messages List */}
-        <View style={styles.messagesContainer}>
-          {state.loadingConversations.has(state.currentConversation.id) ? (
-            <View style={styles.emptyMessagesContainer}>
-              <ActivityIndicator size="large" color={colors.primary} />
-              <Text style={styles.loadingText}>Loading messages...</Text>
-            </View>
-          ) : state.messages.length === 0 ? (
-            <View style={styles.emptyMessagesContainer}>
-              <Ionicons name="chatbubble-outline" size={64} color={colors.textSecondary} />
-              <Text style={styles.emptyMessagesTitle}>No messages yet</Text>
-              <Text style={styles.emptyMessagesText}>Start the conversation!</Text>
-            </View>
-          ) : (
-            <FlatList
-              ref={flatListRef}
-              data={state.messages}
-              renderItem={renderMessage}
-              keyExtractor={item => item.id}
-              contentContainerStyle={styles.messagesList}
-              showsVerticalScrollIndicator={false}
-              onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
-              ListHeaderComponent={
-                state.hasMoreMessages ? (
-                  <TouchableOpacity
-                    style={styles.loadMoreButton}
-                    onPress={() => loadMoreMessages(state.currentConversation?.id || '')}
-                    disabled={state.isLoadingMore}
-                  >
-                    {state.isLoadingMore ? (
-                      <ActivityIndicator size="small" color={colors.primary} />
-                    ) : (
-                      <Text style={styles.loadMoreText}>Load More Messages</Text>
-                    )}
-                  </TouchableOpacity>
-                ) : null
-              }
-            />
-          )}
-        </View>
-
-        {/* Message Input */}
-        <View style={styles.inputContainer}>
-          <View style={styles.inputWrapper}>
-            <TextInput
-              ref={inputRef}
-              style={styles.input}
-              placeholder="Type a message..."
-              placeholderTextColor={colors.textSecondary}
-              value={messageInput}
-              onChangeText={setMessageInput}
-              multiline
-              maxLength={1000}
-            />
-          </View>
-          <TouchableOpacity
-            style={[styles.sendButton, !messageInput.trim() && styles.sendButtonDisabled]}
-            onPress={handleSendMessage}
-            disabled={!messageInput.trim() || sendingMessage}
-          >
-            {sendingMessage ? (
-              <ActivityIndicator size="small" color="#fff" />
+        {/* Content with SafeAreaView for bottom inset */}
+        <SafeAreaView style={styles.contentContainer} edges={[]}>
+          {/* Messages List */}
+          <View style={styles.messagesContainer}>
+            {state.loadingConversations.has(state.currentConversation.id) ? (
+              <View style={styles.emptyMessagesContainer}>
+                <ActivityIndicator size="large" color={colors.primary} />
+                <Text style={styles.loadingText}>Loading messages...</Text>
+              </View>
+            ) : state.messages.length === 0 ? (
+              <View style={styles.emptyMessagesContainer}>
+                <Ionicons name="chatbubble-outline" size={64} color={colors.textSecondary} />
+                <Text style={styles.emptyMessagesTitle}>No messages yet</Text>
+                <Text style={styles.emptyMessagesText}>Start the conversation!</Text>
+              </View>
             ) : (
-              <Ionicons name="send" size={20} color="#fff" />
+              <FlatList
+                ref={flatListRef}
+                data={state.messages}
+                renderItem={renderMessage}
+                keyExtractor={item => item.id}
+                contentContainerStyle={styles.messagesList}
+                showsVerticalScrollIndicator={false}
+                onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
+                ListHeaderComponent={
+                  state.hasMoreMessages ? (
+                    <TouchableOpacity
+                      style={styles.loadMoreButton}
+                      onPress={() => loadMoreMessages(state.currentConversation?.id || '')}
+                      disabled={state.isLoadingMore}
+                    >
+                      {state.isLoadingMore ? (
+                        <ActivityIndicator size="small" color={colors.primary} />
+                      ) : (
+                        <Text style={styles.loadMoreText}>Load More Messages</Text>
+                      )}
+                    </TouchableOpacity>
+                  ) : null
+                }
+              />
             )}
-          </TouchableOpacity>
-        </View>
-      </KeyboardAvoidingView>
+          </View>
+
+          {/* Message Input */}
+          <View style={styles.inputContainer}>
+            <View style={styles.inputWrapper}>
+              <TextInput
+                ref={inputRef}
+                style={styles.input}
+                placeholder="Type a message..."
+                placeholderTextColor={colors.textSecondary}
+                value={messageInput}
+                onChangeText={setMessageInput}
+                multiline
+                maxLength={1000}
+              />
+            </View>
+            <TouchableOpacity
+              style={[styles.sendButton, !messageInput.trim() && styles.sendButtonDisabled]}
+              onPress={handleSendMessage}
+              disabled={!messageInput.trim() || sendingMessage}
+            >
+              {sendingMessage ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Ionicons name="send" size={20} color="#fff" />
+              )}
+            </TouchableOpacity>
+          </View>
+        </SafeAreaView>
 
       {/* Delete Confirmation Modal */}
       <Modal visible={deleteModalVisible} transparent animationType="fade">
@@ -564,7 +686,8 @@ export const MessagesScreen = ({ navigation, route }: any) => {
           </View>
         </View>
       </Modal>
-    </SafeAreaView>
+    </View>
+    </KeyboardAvoidingView>
   );
 };
 
@@ -651,6 +774,7 @@ const getStyles = (themeColors: any) =>
       height: 40,
       color: themeColors.text,
       fontSize: 16,
+      fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
     },
     conversationsList: {
       paddingVertical: 8,
@@ -766,9 +890,10 @@ const getStyles = (themeColors: any) =>
       flexDirection: 'row',
       alignItems: 'center',
       paddingHorizontal: 8,
-      paddingVertical: 8,
+      paddingVertical: 12,
       backgroundColor: themeColors.primary,
       gap: 8,
+      minHeight: 56,
     },
     backButton: {
       padding: 8,
@@ -828,7 +953,7 @@ const getStyles = (themeColors: any) =>
     },
     messagesContainer: {
       flex: 1,
-      backgroundColor: '#0C1222',
+      backgroundColor: themeColors.background,
     },
     messagesList: {
       paddingHorizontal: 16,
@@ -1026,5 +1151,30 @@ const getStyles = (themeColors: any) =>
       color: '#fff',
       fontSize: 16,
       fontWeight: '600',
+    },
+    conversationsHeader: {
+      backgroundColor: themeColors.primary,
+      paddingTop: 50,
+      paddingBottom: 10,
+      paddingHorizontal: 16,
+    },
+    conversationsHeaderContent: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+    },
+    conversationsHeaderTitle: {
+      color: '#fff',
+      fontSize: 20,
+      fontWeight: '600',
+      fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    },
+    headerRightContainer: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 16,
+    },
+    contentContainer: {
+      flex: 1,
     },
   });

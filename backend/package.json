@@ -1,20 +1,25 @@
 {
-  "name": "novlnest-backend",
+  "name": "novlnest-pdf-backend",
   "version": "1.0.0",
-  "description": "NovlNest OAuth backend",
+  "description": "PDF processing backend for NovlNest",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js"
   },
-  "keywords": [],
+  "keywords": [
+    "pdf",
+    "processing",
+    "backend"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "express": "^4.18.2",
     "cors": "^2.8.5",
-    "axios": "^1.6.0",
-    "dotenv": "^16.3.1"
+    "expo-document-picker": "~14.0.8",
+    "express": "^4.18.2",
+    "multer": "^1.4.5-lts.1",
+    "pdf-parse": "^1.1.1"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"

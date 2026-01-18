@@ -1,5 +1,4 @@
 import React, { createContext, useContext, useEffect, useState } from "react"
-import { Alert } from "react-native"
 import {
   type User,
   signInWithEmailAndPassword,
@@ -10,15 +9,13 @@ import {
   sendPasswordResetEmail,
   sendEmailVerification,
   EmailAuthProvider,
+  GoogleAuthProvider,
   reauthenticateWithCredential,
   verifyBeforeUpdateEmail,
   applyActionCode,
   checkActionCode,
   updatePassword,
   deleteUser as firebaseDeleteUser,
-  GoogleAuthProvider,
-  signInWithCredential,
-  OAuthProvider,
 } from "firebase/auth"
 import {
   doc,
@@ -37,11 +34,6 @@ import {
 } from "firebase/firestore"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import { auth, db, actionCodeSettings } from "../firebase/config"
-import * as WebBrowser from 'expo-web-browser'
-import * as AuthSession from 'expo-auth-session'
-
-// Initialize WebBrowser for OAuth
-WebBrowser.maybeCompleteAuthSession()
 
 // Extend the Firebase User type with custom properties
 export interface ExtendedUser extends User {
@@ -84,7 +76,6 @@ interface AuthContextType {
     location: string
   ) => Promise<void>
   toggleFollow: (targetUserId: string, isFollowing: boolean) => Promise<void>
-  signInWithGoogle: () => Promise<void>
   updateUserLibrary: (novelId: string, add: boolean, novelTitle: string, novelAuthorId: string) => Promise<void>
   updatePoemLibrary: (poemId: string, add: boolean, poemTitle: string, poetId: string) => Promise<void>
   markNovelAsFinished: (novelId: string, novelTitle: string, novelAuthorId: string) => Promise<void>
@@ -323,7 +314,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const refreshUser = async () => {
     if (firebaseUser) {
-      await fetchUserData(firebaseUser)
+      // Reload the Firebase auth user to get latest data (especially email changes)
+      await firebaseUser.reload()
+      // Get the refreshed user from auth
+      const refreshedUser = auth.currentUser
+      if (refreshedUser) {
+        await fetchUserData(refreshedUser)
+      }
     }
   }
 
@@ -955,171 +952,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const reauthenticateWithGoogle = async () => {
     try {
-      // Use Vercel backend URL as redirect URI (must be registered in Google Cloud Console)
-      const redirectUri = 'https://novlnest-mobile.vercel.app/auth/google/callback'
-
-      // Create auth request
-      const request = new AuthSession.AuthRequest({
-        clientId: '171117861268-msg103kefn7trmdmsmj586t754h8fjh8.apps.googleusercontent.com',
-        redirectUri: redirectUri,
-        scopes: ['openid', 'profile', 'email'],
-        usePKCE: true,
-      })
-
-      // Prompt user to sign in
-      const result = await request.promptAsync({
-        authorizationEndpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
-      })
-
-      if (result.type !== 'success') {
-        throw new Error('Google sign-in was cancelled')
-      }
-
-      // Get authorization code
-      const { code } = result.params as any
-      if (!code) {
-        throw new Error('No authorization code received')
-      }
-
-      // Exchange code for ID token using your backend
-      const tokenResponse = await fetch('https://novlnest-mobile.vercel.app/auth/google/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, redirectUri, codeVerifier: request.codeVerifier }),
-      })
-
-      if (!tokenResponse.ok) {
-        const error = await tokenResponse.text()
-        throw new Error(`Token exchange failed: ${error}`)
-      }
-
-      const { id_token } = await tokenResponse.json()
-      if (!id_token) {
-        throw new Error('No ID token received')
-      }
-
-      // Reauthenticate with Firebase using the ID token
-      const credential = GoogleAuthProvider.credential(id_token)
-      const authUser = auth.currentUser
-      if (authUser) {
-        await reauthenticateWithCredential(authUser, credential)
-      }
-    } catch (error) {
-      console.error("Error reauthenticating with Google:", error)
-      throw error
-    }
-  }
-
-  const signInWithGoogle = async () => {
-    try {
-      // Use Vercel backend URL as redirect URI (must be registered in Google Cloud Console)
-      const redirectUri = 'https://novlnest-mobile.vercel.app/auth/google/callback'
-
-      // Create auth request
-      const request = new AuthSession.AuthRequest({
-        clientId: '171117861268-msg103kefn7trmdmsmj586t754h8fjh8.apps.googleusercontent.com',
-        redirectUri: redirectUri,
-        scopes: ['openid', 'profile', 'email'],
-        usePKCE: true,
-      })
-
-      // Prompt user to sign in
-      const result = await request.promptAsync({
-        authorizationEndpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
-      })
-
-      if (result.type !== 'success') {
-        throw new Error('Google sign-in was cancelled')
-      }
-
-      // Get authorization code
-      const { code } = result.params as any
-      if (!code) {
-        throw new Error('No authorization code received')
-      }
-
-      // Exchange code for ID token using your backend
-      const tokenResponse = await fetch('https://novlnest-mobile.vercel.app/auth/google/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, redirectUri, codeVerifier: request.codeVerifier }),
-      })
-
-      if (!tokenResponse.ok) {
-        const error = await tokenResponse.text()
-        throw new Error(`Token exchange failed: ${error}`)
-      }
-
-      const { id_token } = await tokenResponse.json()
-      if (!id_token) {
-        throw new Error('No ID token received')
-      }
-
-      // Sign in to Firebase with the ID token
-      const credential = GoogleAuthProvider.credential(id_token)
-      const firebaseResult = await signInWithCredential(auth, credential)
-      const user = firebaseResult.user
-
-      // Check if new user and create document
-      const userDoc = await getDoc(doc(db, "users", user.uid))
+      // Dynamically import Google Sign-In (only available in native builds)
+      const { GoogleSignin } = require('@react-native-google-signin/google-signin');
       
-      if (!userDoc.exists()) {
-        const googleDisplayName = user.displayName || user.email?.split("@")[0] || "User"
-        const trimmedDisplayName = googleDisplayName.trim()
-
-        if (trimmedDisplayName.length > 50) {
-          await firebaseDeleteUser(user)
-          throw new Error("Display name is too long (max 50 characters)")
-        }
-
-        const validNamePattern = /^[a-zA-Z0-9\s\-']+$/
-        if (!validNamePattern.test(trimmedDisplayName)) {
-          await firebaseDeleteUser(user)
-          throw new Error("Display name can only contain letters, numbers, spaces, hyphens, and apostrophes")
-        }
-
-        const normalizedGoogleName = trimmedDisplayName.toLowerCase().replace(/\s+/g, " ").trim()
-
-        const allUsersSnapshot = await getDocs(collection(db, "users"))
-        const displayNameExists = allUsersSnapshot.docs.some((doc) => {
-          const existingName = doc.data().displayName
-          if (!existingName) return false
-          const normalizedExistingName = existingName.toLowerCase().replace(/\s+/g, " ").trim()
-          return normalizedExistingName === normalizedGoogleName
-        })
-
-        if (displayNameExists) {
-          throw new Error("This display name is already taken. Try another one.")
-        }
-
-        const newUserData = {
-          uid: user.uid,
-          email: user.email,
-          displayName: trimmedDisplayName,
-          displayNameLower: normalizedGoogleName,
-          photoURL: user.photoURL || null,
-          isAdmin: false,
-          emailVisible: false,
-          createdAt: new Date().toISOString(),
-          bio: "",
-          followers: [],
-          following: [],
-          instagramUrl: "",
-          twitterUrl: "",
-          supportLink: "",
-          location: "",
-          library: [],
-          poemLibrary: [],
-          finishedReads: [],
-          pendingEmail: null,
-        }
-        await setDoc(doc(db, "users", user.uid), newUserData)
+      // Sign out first to force account picker
+      await GoogleSignin.signOut();
+      
+      // Check if device supports Google Play
+      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+      
+      // Get fresh sign-in credentials
+      const signInResult = await GoogleSignin.signIn();
+      const idToken = signInResult.data?.idToken;
+      
+      if (!idToken) {
+        throw new Error('No ID token found');
       }
       
-      await fetchUserData(user)
-    } catch (error) {
-      console.error("Error signing in with Google:", error)
-      throw error
+      // Create credential and reauthenticate
+      const googleCredential = GoogleAuthProvider.credential(idToken);
+      const authUser = auth.currentUser;
+      if (!authUser) {
+        throw new Error('No authenticated user');
+      }
+      
+      await reauthenticateWithCredential(authUser, googleCredential);
+    } catch (error: any) {
+      console.error('Google reauthentication error:', error);
+      if (error.message === 'Sign in action cancelled') {
+        throw new Error('Authentication cancelled. Please try again.');
+      }
+      throw error;
     }
   }
 
@@ -1187,6 +1050,41 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return unsubscribe
   }, [])
 
+  // Poll for email verification when there's a pending email change
+  useEffect(() => {
+    if (!currentUser?.pendingEmail || !firebaseUser) return
+
+    const checkEmailVerification = async () => {
+      try {
+        // Reload the Firebase auth user to get latest email
+        await firebaseUser.reload()
+        const refreshedUser = auth.currentUser
+        
+        if (refreshedUser && refreshedUser.email === currentUser.pendingEmail) {
+          // Email has been verified and updated!
+          // Clear the pendingEmail in Firestore
+          await updateDoc(doc(db, "users", currentUser.uid), {
+            pendingEmail: null,
+            updatedAt: new Date().toISOString(),
+          })
+          
+          // Refresh the user data to show the new email
+          await fetchUserData(refreshedUser)
+        }
+      } catch (error) {
+        console.error('Error checking email verification:', error)
+      }
+    }
+
+    // Check immediately
+    checkEmailVerification()
+    
+    // Then poll every 5 seconds
+    const interval = setInterval(checkEmailVerification, 5000)
+    
+    return () => clearInterval(interval)
+  }, [currentUser?.pendingEmail, firebaseUser])
+
   const value = {
     currentUser,
     login,
@@ -1201,7 +1099,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     updateUserPhoto,
     updateUserProfile,
     toggleFollow,
-    signInWithGoogle,
     updateUserLibrary,
     updatePoemLibrary,
     markNovelAsFinished,

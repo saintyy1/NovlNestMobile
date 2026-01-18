@@ -11,10 +11,16 @@ import {
   Alert,
   ActivityIndicator,
   ScrollView,
+  Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import Constants from 'expo-constants';
+import { GoogleAuthProvider, signInWithCredential } from 'firebase/auth';
 import { useAuth } from '../../contexts/AuthContext';
-import { colors, spacing, typography } from '../../theme';
+import { useTheme } from '../../contexts/ThemeContext';
+import { spacing, typography } from '../../theme';
+import { auth } from '../../firebase/config';
+import { trackSignUp } from '../../utils/Analytics-utils';
 
 export const SignupScreen = ({ navigation }: any) => {
   const [name, setName] = useState('');
@@ -23,14 +29,74 @@ export const SignupScreen = ({ navigation }: any) => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
-  const { register, loading, signInWithGoogle } = useAuth();
+  const { register, loading } = useAuth();
+  const { colors } = useTheme();
   const [isRegistering, setIsRegistering] = useState(false);
+  const [isGoogleSignInAvailable, setIsGoogleSignInAvailable] = useState(false);
+  
+  const styles = getStyles(colors);
+
+  // Configure Google Sign-In (only works in native builds, not Expo Go)
+  React.useEffect(() => {
+    const setupGoogleSignIn = async () => {
+      try {
+        // Check if we're in Expo Go (appOwnership === 'expo')
+        const isExpoGo = Constants.appOwnership === 'expo';
+        if (isExpoGo) {
+          console.log('Running in Expo Go - Google Sign-In disabled');
+          return;
+        }
+        
+        // Dynamically import Google Sign-In (only available in native builds)
+        const { GoogleSignin } = require('@react-native-google-signin/google-signin');
+        
+        await GoogleSignin.configure({
+          webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
+          offlineAccess: true,
+        });
+        setIsGoogleSignInAvailable(true);
+        console.log('Google Sign-In configured successfully');
+      } catch (error) {
+        console.log('Google Sign-In not available:', error);
+        setIsGoogleSignInAvailable(false);
+      }
+    };
+    
+    setupGoogleSignIn();
+  }, []);
 
   const handleGoogleSignUp = async () => {
     try {
-      await signInWithGoogle();
+      // Dynamically import Google Sign-In
+      const { GoogleSignin } = require('@react-native-google-signin/google-signin');
+      
+      // Sign out first to show account picker
+      await GoogleSignin.signOut();
+      
+      // Check if your device supports Google Play
+      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+      
+      // Get the users ID token
+      const signInResult = await GoogleSignin.signIn();
+
+      // Get ID token from the result
+      let idToken = signInResult.data?.idToken;
+      if (!idToken) {
+        throw new Error('No ID token found');
+      }
+
+      // Create a Google credential with the token
+      const googleCredential = GoogleAuthProvider.credential(idToken);
+
+      // Sign-in the user with the credential
+      const userCredential = await signInWithCredential(auth, googleCredential);
+      
+      // Track Google signup for analytics
+      trackSignUp('google', userCredential.user.uid);
+      
       // Navigation will happen automatically via auth state change
     } catch (error: any) {
+      console.error('Google Sign-Up Error:', error);
       Alert.alert('Error', error.message || 'Failed to sign up with Google');
     }
   };
@@ -54,6 +120,12 @@ export const SignupScreen = ({ navigation }: any) => {
     setIsRegistering(true);
     try {
       await register(email, password, name);
+      
+      // Track email signup for analytics
+      if (auth.currentUser) {
+        trackSignUp('email', auth.currentUser.uid);
+      }
+      
       Alert.alert(
         'Account Created!',
         'Please check your email to verify your account.',
@@ -94,18 +166,24 @@ export const SignupScreen = ({ navigation }: any) => {
         <View style={styles.content}>
         {/* Logo/Header */}
         <View style={styles.header}>
-          <Ionicons name="book" size={64} color={colors.primary} />
+          <Image 
+            source={require('../../../assets/images/logo.png')} 
+            style={styles.logo}
+            resizeMode="contain"
+          />
           <Text style={styles.title}>Create Account</Text>
           <Text style={styles.subtitle}>Join NovlNest today</Text>
         </View>
 
-        <TouchableOpacity 
-          style={styles.googleButton}
-          onPress={handleGoogleSignUp}
-        >
-          <Ionicons name="logo-google" size={20} color="#fff" />
-          <Text style={styles.googleButtonText}>Sign up with Google</Text>
-        </TouchableOpacity>
+        {isGoogleSignInAvailable && (
+          <TouchableOpacity 
+            style={styles.googleButton}
+            onPress={handleGoogleSignUp}
+          >
+            <Ionicons name="logo-google" size={20} color="#fff" />
+            <Text style={styles.googleButtonText}>Sign up with Google</Text>
+          </TouchableOpacity>
+        )}
 
         {/* Input Fields */}
           <View style={styles.inputContainer}>
@@ -207,10 +285,10 @@ export const SignupScreen = ({ navigation }: any) => {
   );
 };
 
-const styles = StyleSheet.create({
+const getStyles = (themeColors: any) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.background,
+    backgroundColor: themeColors.background,
   },
   scrollContent: {
     flexGrow: 1,
@@ -224,15 +302,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: spacing.xl * 2,
   },
+  logo: {
+    width: 80,
+    height: 80,
+  },
   title: {
     ...typography.h1,
-    color: colors.text,
+    color: themeColors.text,
     marginTop: spacing.md,
     marginBottom: spacing.xs,
   },
   subtitle: {
     ...typography.body,
-    color: colors.textSecondary,
+    color: themeColors.textSecondary,
   },
   googleButton: {
     flexDirection: 'row',
@@ -257,11 +339,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: themeColors.border,
     borderRadius: 10,
     marginBottom: spacing.md,
     paddingHorizontal: spacing.md,
-    backgroundColor: colors.backgroundSecondary,
+    backgroundColor: themeColors.surface,
   },
   inputIcon: {
     marginRight: spacing.sm,
@@ -270,10 +352,10 @@ const styles = StyleSheet.create({
     flex: 1,
     height: 50,
     fontSize: 16,
-    color: colors.text,
+    color: themeColors.text,
   },
   button: {
-    backgroundColor: colors.primary,
+    backgroundColor: themeColors.primary,
     padding: spacing.md,
     borderRadius: 10,
     alignItems: 'center',
@@ -294,11 +376,11 @@ const styles = StyleSheet.create({
   },
   footerText: {
     ...typography.body,
-    color: colors.textSecondary,
+    color: themeColors.textSecondary,
   },
   footerLink: {
     ...typography.body,
-    color: colors.primary,
+    color: themeColors.primary,
     fontWeight: '600',
   },
 });

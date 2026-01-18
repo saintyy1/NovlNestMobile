@@ -9,9 +9,16 @@ import {
     Alert
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { db } from '../../firebase/config';
 import { Ionicons } from '@expo/vector-icons';
+import type { Novel } from '../../types/novel';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
+import {
+    doc,
+    getDoc,
+    updateDoc,
+} from 'firebase/firestore';
 import { get } from 'react-native/Libraries/TurboModule/TurboModuleRegistry';
 
 interface Chapter {
@@ -127,6 +134,7 @@ const ChaptersListScreen = ({ route, navigation }: any) => {
                                     chapterNumber: getChapterNumber('chapter', index),
                                 })
                             }
+
                             onLongPress={() => {
                                 const isAuthor = novel.authorId === currentUser?.uid;
                                 if (isAuthor) {
@@ -136,22 +144,43 @@ const ChaptersListScreen = ({ route, navigation }: any) => {
                                         [
                                             {
                                                 text: 'Edit Chapter',
-                                                onPress: () => {
-                                                    navigation.goBack();
+                                                onPress: () =>
                                                     navigation.navigate('EditChapter', {
                                                         novelId: novel.id,
                                                         chapterIndex: index,
-                                                    });
-                                                },
+                                                    }),
                                             },
                                             {
-                                                text: 'Read Chapter',
+                                                text: 'Delete Chapter',
+                                                style: 'destructive',
                                                 onPress: () => {
-                                                    navigation.goBack();
-                                                    navigation.navigate('NovelReader', {
-                                                        novelId: novel.id,
-                                                        chapterNumber: getChapterNumber('chapter', index),
-                                                    });
+                                                    Alert.alert(
+                                                        'Confirm Deletion',
+                                                        'Are you sure you want to delete this chapter? This action cannot be undone.',
+                                                        [
+                                                            {
+                                                                text: 'Delete',
+                                                                style: 'destructive',
+                                                                onPress: async () => {
+                                                                    try {
+                                                                        const novelRef = doc(db, 'novels', novel.id);
+                                                                        const novelDoc = await getDoc(novelRef);
+                                                                        if (novelDoc.exists()) {
+                                                                            const novelData = novelDoc.data() as Novel;
+                                                                            const updatedChapters = [...(novelData.chapters || [])];
+                                                                            updatedChapters.splice(index, 1);
+                                                                            await updateDoc(novelRef, { chapters: updatedChapters });
+                                                                            Alert.alert('Success', 'Chapter deleted successfully!');
+                                                                        }
+                                                                    } catch (error) {
+                                                                        console.error('Error deleting chapter:', error);
+                                                                        Alert.alert('Error', 'Failed to delete chapter. Please try again.');
+                                                                    }
+                                                                },
+                                                            },
+                                                            { text: 'Cancel', style: 'cancel' },
+                                                        ]
+                                                    );
                                                 },
                                             },
                                             { text: 'Cancel', style: 'cancel' },

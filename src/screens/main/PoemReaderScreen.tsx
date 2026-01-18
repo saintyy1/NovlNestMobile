@@ -116,7 +116,7 @@ const PoemReaderScreen = ({ route, navigation }: Props) => {
         } catch (error) {
           console.error('Error sharing:', error);
         }
-      };
+    };
 
     if (loading) {
         return (
@@ -154,58 +154,38 @@ const PoemReaderScreen = ({ route, navigation }: Props) => {
     }
 
     return (
-        <View style={styles.container}>
-            <StatusBar
-                barStyle="light-content"
-                backgroundColor="transparent"
-                translucent
-            />
-
-            {/* Top Navigation Bar */}
-            <Animated.View
-                style={[
-                    styles.topBar,
-                    {
-                        opacity: controlsOpacity,
-                    },
-                ]}
+        <SafeAreaView style={styles.container}>
+            {/* Header */}
+        <View style={[styles.header, { backgroundColor: colors.background, borderBottomColor: colors.border }]}>
+            <TouchableOpacity
+                onPress={() => navigation.goBack()}
+                style={styles.topBarButton}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
             >
-                <SafeAreaView style={styles.topBarSafe}>
-                    <View style={styles.topBarContent}>
-                        <TouchableOpacity
-                            onPress={() => navigation.goBack()}
-                            style={styles.topBarButton}
-                            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                        >
-                            <Icon name="chevron-back" size={28} color="#8B5CF6" />
-                        </TouchableOpacity>
+                <Icon name="chevron-back" size={28} color="#8B5CF6" />
+            </TouchableOpacity>
+            <View style={styles.headerCenter}>
+            <Text style={[styles.headerTitle, { color: colors.text }]}>{poem.title}</Text>
+            <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>
+                by {poem.poetName}
+            </Text>
+            </View>
 
-                        <View style={styles.topBarCenter}>
-                            <Text style={styles.topBarTitle} numberOfLines={1}>
-                                {poem.title}
-                            </Text>
-                            <Text style={styles.topBarAuthor} numberOfLines={1}>
-                                by {poem.poetName}
-                            </Text>
-                        </View>
-
-                        <TouchableOpacity
-                            onPress={handleShare}
-                            style={styles.topBarButton}
-                            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                        >
-                            <Icon name="share-outline" size={24} color="#8B5CF6" />
-                        </TouchableOpacity>
-                    </View>
-                </SafeAreaView>
-            </Animated.View>
+        <TouchableOpacity
+          onPress={handleShare}
+          style={styles.topBarButton}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+      >
+          <Icon name="share-outline" size={24} color="#8B5CF6" />
+      </TouchableOpacity>
+      </View>
 
             {/* Poem Content */}
             <ScrollView
                 ref={scrollViewRef}
                 style={styles.scrollView}
-                contentContainerStyle={styles.scrollContent}
                 onScroll={handleScroll}
+                contentContainerStyle={styles.scrollContent}
                 scrollEventThrottle={16}
                 showsVerticalScrollIndicator={false}
             >
@@ -300,7 +280,7 @@ const PoemReaderScreen = ({ route, navigation }: Props) => {
             {!canCopyContent && (
                 <View style={styles.protectionOverlay} pointerEvents="none" />
             )}
-        </View>
+        </SafeAreaView>
     );
 };
 
@@ -309,6 +289,29 @@ const getStyles = (themeColors: any) => StyleSheet.create({
         flex: 1,
         backgroundColor: themeColors.background,
     },
+      headerCenter: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    textAlign: 'center',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  headerSubtitle: {
+    fontSize: 14,
+    marginTop: 2,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
     loadingContainer: {
         flex: 1,
         backgroundColor: themeColors.background,
@@ -380,7 +383,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
         left: 0,
         right: 0,
         zIndex: 99,
-        backgroundColor: themeColors.surface,
+        backgroundColor: themeColors.background,
         borderBottomWidth: StyleSheet.hairlineWidth,
         borderBottomColor: themeColors.border,
     },
@@ -423,7 +426,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
         flex: 1,
     },
     scrollContent: {
-        paddingTop: Platform.OS === 'ios' ? 125 : 125,
+        paddingTop: 16,
     },
     contentWrapper: {
         paddingHorizontal: 24,
@@ -481,7 +484,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
         bottom: 0,
         left: 0,
         right: 0,
-        backgroundColor: themeColors.surface,
+        backgroundColor: themeColors.background,
         paddingBottom: Platform.OS === 'ios' ? 34 : 34,
         paddingTop: 20,
         paddingHorizontal: 20,

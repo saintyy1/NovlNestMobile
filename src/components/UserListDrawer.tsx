@@ -182,16 +182,15 @@ const UserListDrawer: React.FC<UserListDrawerProps> = ({
       animationType="slide"
       transparent={false}
       onRequestClose={onClose}
+      presentationStyle={Platform.OS === 'ios' ? 'fullScreen' : 'overFullScreen'}
     >
-      <View style={[styles.modalWrapper, { backgroundColor: colors.background }]}>
-        <SafeAreaView style={styles.safeAreaContainer} edges={['top', 'left', 'right']}>
-          <View style={styles.header}>
-            <Text style={styles.headerTitle}>{title}</Text>
-            <TouchableOpacity onPress={onClose} style={styles.closeButton}>
-              <Ionicons name="close" size={28} color={colors.text} />
-            </TouchableOpacity>
-          </View>
-        </SafeAreaView>
+      <SafeAreaView style={[styles.modalWrapper, { backgroundColor: colors.background }]} edges={['top', 'left', 'right', 'bottom']}>
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>{title}</Text>
+          <TouchableOpacity onPress={onClose} style={styles.closeButton}>
+            <Ionicons name="close" size={28} color={colors.text} />
+          </TouchableOpacity>
+        </View>
 
         {/* Content */}
         <View style={styles.content}>
@@ -214,7 +213,7 @@ const UserListDrawer: React.FC<UserListDrawerProps> = ({
             />
           )}
         </View>
-      </View>
+      </SafeAreaView>
     </Modal>
   );
 };
@@ -228,12 +227,6 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     flex: 1,
     backgroundColor: themeColors.background,
   },
-  safeAreaContainer: {
-    backgroundColor: themeColors.surface,
-  },
-  safeArea: {
-    backgroundColor: themeColors.surface,
-  },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -241,7 +234,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     paddingBottom: 16,
     paddingHorizontal: 16,
     paddingTop: 12,
-    backgroundColor: themeColors.surface,
+    backgroundColor: themeColors.background,
     borderBottomWidth: 1,
     borderBottomColor: themeColors.border,
   },
@@ -249,6 +242,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     fontSize: 24,
     fontWeight: 'bold',
     color: themeColors.text,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   closeButton: {
     padding: 4,
@@ -314,11 +308,13 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     fontSize: 20,
     fontWeight: 'bold',
     color: '#fff',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   userName: {
     fontSize: 16,
     fontWeight: '600',
     color: themeColors.text,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
     flex: 1,
   },
   followButton: {
@@ -342,6 +338,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: '#fff',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
 });
 

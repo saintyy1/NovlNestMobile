@@ -20,4 +20,13 @@ export type RootStackParamList = {
   PoemOverview: { id: string};
   AddChapters: { novelId: string};
   EditChapter: { novelId: string; chapterId: string};
+  PromoteScreen: { novelId?: string };
+  PaymentCallback: { reference: string };
+  EmailAction: { mode: string; oobCode: string; apiKey?: string };
+  ChapterEditor: { 
+    chapterNumber: number; 
+    initialTitle?: string; 
+    initialContent?: string; 
+    onSave: (chapter: { title: string; content: string }) => void;
+  };
 }

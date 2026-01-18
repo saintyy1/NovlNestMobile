@@ -9,6 +9,7 @@ import {
   Switch,
   Alert,
   StyleSheet,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
@@ -16,7 +17,7 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 const SettingsScreen = ({ navigation }: any) => {
-  const { currentUser, logout, updateUserProfile, updateUserEmail } = useAuth();
+  const { currentUser, logout, updateUserProfile, updateUserEmail, changePassword, deleteUserAccount, refreshUser } = useAuth();
   const { theme, colors, toggleTheme } = useTheme();
   const [profileUser, setProfileUser] = useState<any>(null);
 
@@ -162,34 +163,7 @@ const SettingsScreen = ({ navigation }: any) => {
           text: 'Change',
           onPress: async () => {
             try {
-              // Import necessary Firebase functions
-              const { getAuth, EmailAuthProvider, reauthenticateWithCredential, updatePassword, reauthenticateWithPopup } = await import('firebase/auth');
-              const { googleProvider } = await import('../../firebase/config');
-              
-              const auth = getAuth();
-              if (!auth.currentUser) {
-                Alert.alert('Error', 'No authenticated user');
-                return;
-              }
-
-              // Reauthenticate first
-              if (isGoogleUser) {
-                await reauthenticateWithPopup(auth.currentUser, googleProvider);
-              } else {
-                if (!currentPassword) {
-                  Alert.alert('Error', 'Current password is required');
-                  return;
-                }
-                if (!auth.currentUser.email) {
-                  Alert.alert('Error', 'Email not found');
-                  return;
-                }
-                const credential = EmailAuthProvider.credential(auth.currentUser.email, currentPassword);
-                await reauthenticateWithCredential(auth.currentUser, credential);
-              }
-
-              // Update password
-              await updatePassword(auth.currentUser, newPassword);
+              await changePassword(currentPassword, newPassword);
               
               Alert.alert('Success', 'Password updated successfully');
               setShowChangePasswordModal(false);
@@ -234,11 +208,14 @@ const SettingsScreen = ({ navigation }: any) => {
               // Call updateUserEmail with new email
               await updateUserEmail(newEmail, confirmEmail, isGoogleUser ? undefined : emailPassword);
               
-              Alert.alert('Success', 'Email updated successfully. Please verify your new email address.');
+              Alert.alert('Success', 'Verification email sent. Please check your new email address and click the verification link. The app will automatically update once verified.');
               setShowChangeEmailModal(false);
               setNewEmail('');
               setConfirmEmail('');
               setEmailPassword('');
+              
+              // Refresh user data to show pending email
+              await refreshUser();
             } catch (error: any) {
               console.error('Email change error:', error);
               Alert.alert('Error', error?.message || 'Failed to update email');
@@ -265,83 +242,9 @@ const SettingsScreen = ({ navigation }: any) => {
           style: 'destructive',
           onPress: async () => {
             try {
-              // Import necessary Firebase functions
-              const { getAuth, EmailAuthProvider, reauthenticateWithCredential, deleteUser, reauthenticateWithPopup } = await import('firebase/auth');
-              const { db, googleProvider } = await import('../../firebase/config');
-              const { doc, deleteDoc, collection, query, where, getDocs, writeBatch } = await import('firebase/firestore');
+              await deleteUserAccount(isGoogleUser ? undefined : deletePassword);
               
-              const auth = getAuth();
-              if (!auth.currentUser) {
-                Alert.alert('Error', 'No authenticated user');
-                return;
-              }
-
-              // Reauthenticate first
-              if (isGoogleUser) {
-                await reauthenticateWithPopup(auth.currentUser, googleProvider);
-              } else {
-                if (!auth.currentUser.email) {
-                  Alert.alert('Error', 'Email not found');
-                  return;
-                }
-                const credential = EmailAuthProvider.credential(auth.currentUser.email, deletePassword);
-                await reauthenticateWithCredential(auth.currentUser, credential);
-              }
-
-              const userId = auth.currentUser.uid;
-
-              // Delete all novels authored by this user
-              const novelsRef = collection(db, 'novels');
-              const novelsQuery = query(novelsRef, where('authorId', '==', userId));
-              const novelsSnapshot = await getDocs(novelsQuery);
-              
-              if (!novelsSnapshot.empty) {
-                let batch = writeBatch(db);
-                let ops = 0;
-                for (const novelDoc of novelsSnapshot.docs) {
-                  batch.delete(novelDoc.ref);
-                  ops++;
-                  if (ops === 450) {
-                    await batch.commit();
-                    batch = writeBatch(db);
-                    ops = 0;
-                  }
-                }
-                if (ops > 0) {
-                  await batch.commit();
-                }
-              }
-
-              // Delete all poems authored by this user
-              const poemsRef = collection(db, 'poems');
-              const poemsQuery = query(poemsRef, where('poetId', '==', userId));
-              const poemsSnapshot = await getDocs(poemsQuery);
-              
-              if (!poemsSnapshot.empty) {
-                let batch = writeBatch(db);
-                let ops = 0;
-                for (const poemDoc of poemsSnapshot.docs) {
-                  batch.delete(poemDoc.ref);
-                  ops++;
-                  if (ops === 450) {
-                    await batch.commit();
-                    batch = writeBatch(db);
-                    ops = 0;
-                  }
-                }
-                if (ops > 0) {
-                  await batch.commit();
-                }
-              }
-
-              // Delete user document
-              await deleteDoc(doc(db, 'users', userId));
-
-              // Delete auth user
-              await deleteUser(auth.currentUser);
-
               Alert.alert('Success', 'Account deleted successfully');
-              await logout();
             } catch (error: any) {
               console.error('Account deletion error:', error);
               Alert.alert('Error', error?.message || 'Failed to delete account');
@@ -431,7 +334,11 @@ const SettingsScreen = ({ navigation }: any) => {
           <SettingItem
             icon="mail-outline"
             title="Email"
-            subtitle={currentUser?.email || 'Not set'}
+            subtitle={
+              currentUser?.pendingEmail 
+                ? `${currentUser.email} → ${currentUser.pendingEmail} (pending verification)` 
+                : currentUser?.email || 'Not set'
+            }
             onPress={() => setShowChangeEmailModal(true)}
           />
         </View>
@@ -439,8 +346,8 @@ const SettingsScreen = ({ navigation }: any) => {
         {/* Edit Profile Modal */}
         <Modal visible={showEditProfileModal} animationType="slide">
           <View style={[styles.modalWrapper, { backgroundColor: colors.background }]}>
-            <SafeAreaView style={[styles.safeAreaHeader, { backgroundColor: colors.surface }]} edges={['top', 'left', 'right']}>
-              <View style={[styles.modalHeader, { backgroundColor: colors.surface }]}>
+            <SafeAreaView style={[styles.safeAreaHeader, { backgroundColor: colors.background }]} edges={['top', 'left', 'right']}>
+              <View style={[styles.modalHeader, { backgroundColor: colors.background }]}>
                 <Text style={[styles.modalTitle, { color: colors.text }]}>Edit Profile</Text>
                 <TouchableOpacity onPress={() => setShowEditProfileModal(false)}>
                   <Ionicons name="close" size={24} color={colors.text} />
@@ -451,7 +358,7 @@ const SettingsScreen = ({ navigation }: any) => {
               <View style={styles.formGroup}>
                 <Text style={[styles.label, { color: colors.textSecondary }]}>Display Name</Text>
                 <TextInput
-                  style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+                  style={[styles.input, { color: colors.text, borderColor: colors.border, fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif' }]}
                   value={editDisplayName}
                   onChangeText={setEditDisplayName}
                   placeholder="Enter display name"
@@ -473,7 +380,7 @@ const SettingsScreen = ({ navigation }: any) => {
               <View style={styles.formGroup}>
                 <Text style={styles.label}>Instagram URL</Text>
                 <TextInput
-                  style={styles.input}
+                  style={[styles.input]}
                   value={editInstagram}
                   onChangeText={setEditInstagram}
                   placeholder="https://instagram.com/yourprofile"
@@ -795,12 +702,6 @@ const SettingsScreen = ({ navigation }: any) => {
         <SectionHeader title="ABOUT" />
         <View style={[styles.section, { backgroundColor: colors.surface }]}>
           <SettingItem
-            icon="information-circle-outline"
-            title="About NovlNest"
-            subtitle="Version 1.0.0"
-            showArrow={false}
-          />
-          <SettingItem
             icon="document-text-outline"
             title="Terms of Service"
             onPress={() => navigation.navigate('TermsOfService')}
@@ -846,7 +747,6 @@ const SettingsScreen = ({ navigation }: any) => {
   );
 };
 
-// Generate styles dynamically based on theme
 const getStyles = (colors: any) => StyleSheet.create({
   container: {
     flex: 1,
@@ -861,7 +761,7 @@ const getStyles = (colors: any) => StyleSheet.create({
     backgroundColor: colors.background,
   },
   safeAreaHeader: {
-    backgroundColor: colors.surface,
+    backgroundColor: colors.background,
   },
   modalHeader: {
     flexDirection: 'row' as const,
@@ -870,7 +770,7 @@ const getStyles = (colors: any) => StyleSheet.create({
     paddingBottom: 16,
     paddingHorizontal: 16,
     paddingTop: 12,
-    backgroundColor: colors.surface,
+    backgroundColor: colors.background,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
@@ -878,6 +778,7 @@ const getStyles = (colors: any) => StyleSheet.create({
     fontSize: 25,
     fontWeight: 'bold' as const,
     color: colors.text,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   modalContent: {
     flex: 1,
@@ -891,6 +792,7 @@ const getStyles = (colors: any) => StyleSheet.create({
     fontWeight: '600' as const,
     color: colors.textSecondary,
     marginBottom: 8,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   input: {
     backgroundColor: colors.surfaceSecondary,
@@ -900,6 +802,7 @@ const getStyles = (colors: any) => StyleSheet.create({
     fontSize: 14,
     borderWidth: 1,
     borderColor: colors.border,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   textArea: {
     minHeight: 80,
@@ -910,6 +813,7 @@ const getStyles = (colors: any) => StyleSheet.create({
     color: colors.textSecondary,
     marginTop: 4,
     textAlign: 'right' as const,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   pickerContainer: {
     flexDirection: 'row' as const,
@@ -933,6 +837,7 @@ const getStyles = (colors: any) => StyleSheet.create({
     fontSize: 14,
     fontWeight: '600' as const,
     color: colors.textSecondary,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   pickerTextActive: {
     color: '#fff',
@@ -997,6 +902,7 @@ const getStyles = (colors: any) => StyleSheet.create({
     paddingTop: 24,
     paddingBottom: 8,
     letterSpacing: 0.5,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   section: {
     backgroundColor: colors.surface,
@@ -1037,10 +943,12 @@ const getStyles = (colors: any) => StyleSheet.create({
     fontWeight: '500',
     color: colors.text,
     marginBottom: 2,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   settingSubtitle: {
     fontSize: 13,
     color: colors.textSecondary,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   dangerItem: {
     flexDirection: 'row',
@@ -1054,6 +962,7 @@ const getStyles = (colors: any) => StyleSheet.create({
     fontSize: 16,
     fontWeight: '500',
     color: colors.error,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
 });
 
