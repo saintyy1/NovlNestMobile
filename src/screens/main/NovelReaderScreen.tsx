@@ -719,6 +719,40 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     return <>{elements}</>;
   };
 
+  // Extract chat blocks from content
+  const extractChatBlocks = (content: string): Array<{ type: 'paragraph', data: string } | { type: 'chat', data: any }> => {
+    const result: Array<{ type: 'paragraph', data: string } | { type: 'chat', data: any }> = [];
+    const chatRegex = /\[CHAT_START\](.*?)\[CHAT_END\]/gs;
+    let lastIndex = 0;
+    let match;
+    while ((match = chatRegex.exec(content)) !== null) {
+      // Add paragraphs before chat block
+      if (match.index > lastIndex) {
+        const before = content.substring(lastIndex, match.index);
+        splitIntoSmartParagraphs(before).forEach(p => {
+          result.push({ type: 'paragraph', data: p });
+        });
+      }
+      // Add chat block
+      try {
+        const chatJson = match[1];
+        const messages = JSON.parse(chatJson);
+        result.push({ type: 'chat', data: messages });
+      } catch (e) {
+        result.push({ type: 'paragraph', data: match[0] });
+      }
+      lastIndex = match.index + match[0].length;
+    }
+    // Add remaining paragraphs after last chat block
+    if (lastIndex < content.length) {
+      const after = content.substring(lastIndex);
+      splitIntoSmartParagraphs(after).forEach(p => {
+        result.push({ type: 'paragraph', data: p });
+      });
+    }
+    return result;
+  };
+
   // Smart paragraph splitting function
   const splitIntoSmartParagraphs = (content: string): string[] => {
     // First, split by explicit paragraph breaks (double newlines)
@@ -985,14 +1019,44 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
           onScrollEndDrag={handleScrollEndDrag}
           scrollEventThrottle={16}
         >
-          {splitIntoSmartParagraphs(currentContentInfo.content).map((paragraph: string, index: number) => (
-              <Text
-                key={index}
-                style={[styles.paragraph, { color: colors.text }]}
-              >
-                {parseFormattedText(paragraph)}
-              </Text>
-            ))}
+          {extractChatBlocks(currentContentInfo.content).map((block, idx) => {
+            if (block.type === 'paragraph') {
+              return (
+                <Text
+                  key={idx}
+                  style={[styles.paragraph, { color: colors.text }]}
+                >
+                  {parseFormattedText(block.data)}
+                </Text>
+              );
+            } else if (block.type === 'chat') {
+              return (
+                <View key={idx} style={{ marginVertical: 16 }}>
+                  {block.data.map((msg: any, mIdx: number) => (
+                    <View
+                      key={mIdx}
+                      style={{
+                        alignSelf: msg.sender === novel?.authorName ? 'flex-end' : 'flex-start',
+                        backgroundColor: msg.sender === novel?.authorName ? colors.primary : colors.surface,
+                        borderRadius: 16,
+                        padding: 12,
+                        marginBottom: 8,
+                        maxWidth: '80%',
+                      }}
+                    >
+                      <Text style={{
+                        color: msg.sender === novel?.authorName ? '#fff' : colors.text,
+                        fontWeight: '600',
+                        marginBottom: 2,
+                      }}>{msg.sender}</Text>
+                      <Text style={{ color: msg.sender === novel?.authorName ? '#fff' : colors.text }}>{msg.text}</Text>
+                    </View>
+                  ))}
+                </View>
+              );
+            }
+            return null;
+          })}
           
           {/* End of chapter indicator */}
           <View style={styles.chapterEndContainer}>

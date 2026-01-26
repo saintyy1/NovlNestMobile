@@ -14,7 +14,8 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
-import { GoogleAuthProvider, signInWithCredential } from 'firebase/auth';
+import * as AppleAuthentication from 'expo-apple-authentication';
+import { GoogleAuthProvider, OAuthProvider, signInWithCredential } from 'firebase/auth';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { spacing, typography } from '../../theme';
@@ -60,6 +61,7 @@ export const LoginScreen = ({ navigation }: any) => {
     
     setupGoogleSignIn();
   }, []);
+
   const handleGoogleSignIn = async () => {
     try {
       // Dynamically import Google Sign-In
@@ -93,6 +95,47 @@ export const LoginScreen = ({ navigation }: any) => {
     } catch (error: any) {
       console.error('Google Sign-In Error:', error);
       Alert.alert('Error', error.message || 'Failed to sign in with Google');
+    }
+  };
+
+  const handleAppleSignIn = async () => {
+    try {
+      const credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+      });
+
+      if (!credential.identityToken) {
+        throw new Error('Apple Sign-In failed: no identity token');
+      }
+
+      // ✅ Firebase Apple OAuth provider
+      const provider = new OAuthProvider('apple.com');
+
+      const firebaseCredential = provider.credential({
+        idToken: credential.identityToken,
+      });
+
+      const userCredential = await signInWithCredential(
+        auth,
+        firebaseCredential
+      );
+
+      trackLogin('apple', userCredential.user.uid);
+
+    } catch (error: any) {
+      if (error.code === 'ERR_CANCELED') {
+        // User cancelled Apple login
+        return;
+      }
+
+      console.error('Apple Sign-In Error:', error);
+      Alert.alert(
+        'Sign in failed',
+        error.message || 'Unable to sign in with Apple'
+      );
     }
   };
 
@@ -142,7 +185,7 @@ export const LoginScreen = ({ navigation }: any) => {
         {/* Logo/Header */}
         <View style={styles.header}>
           <Image 
-            source={require('../../../assets/images/logo.png')} 
+            source={require('../../../assets/images/app-icon.png')} 
             style={styles.logo}
             resizeMode="contain"
           />
@@ -150,15 +193,33 @@ export const LoginScreen = ({ navigation }: any) => {
           <Text style={styles.subtitle}>Sign in to continue</Text>
         </View>
 
-        {isGoogleSignInAvailable && (
-          <TouchableOpacity 
-            style={styles.googleButton}
-            onPress={handleGoogleSignIn}
-          >
-            <Ionicons name="logo-google" size={20} color="#fff" />
-            <Text style={styles.googleButtonText}>Sign in with Google</Text>
-          </TouchableOpacity>
-        )}
+        <View style={styles.socialAuthContainer}>
+          {Platform.OS === 'ios' && (
+          <AppleAuthentication.AppleAuthenticationButton
+            buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
+            buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+            cornerRadius={6}
+            style={{ width: '100%', height: 44 }}
+            onPress={handleAppleSignIn}
+          />
+          )}
+
+          {isGoogleSignInAvailable && (
+            <TouchableOpacity
+              style={styles.googleButton}
+              onPress={handleGoogleSignIn}
+            >
+              <Ionicons name="logo-google" size={20} color="#fff" />
+              <Text style={styles.googleButtonText}>Sign in with Google</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+        
+        <View style={styles.orContainer}>
+          <View style={styles.orLine} />
+          <Text style={styles.orText}>or</Text>
+          <View style={styles.orLine} />
+        </View>
 
         {/* Input Fields */}
         <View style={styles.inputContainer}>
@@ -248,7 +309,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   },
   header: {
     alignItems: 'center',
-    marginBottom: spacing.xl * 2,
+    marginBottom: spacing.xl,
   },
   logo: {
     width: 80,
@@ -264,6 +325,10 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     ...typography.body,
     color: themeColors.textSecondary,
   },
+  socialAuthContainer: {
+    width: '100%',
+    gap: spacing.md,
+  },
   googleButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -273,12 +338,28 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     paddingHorizontal: 24,
     borderRadius: 8,
     gap: 8,
-    marginBottom: spacing.lg,
   },
   googleButtonText: {
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  orContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: spacing.md,
+
+  },
+  orLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#E5E7EB',
+  },
+  orText: {
+    marginHorizontal: 12,
+    fontSize: 14,
+    color: '#6B7280',
+    fontWeight: '500',
   },
   inputContainer: {
     marginBottom: spacing.md,

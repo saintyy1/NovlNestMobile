@@ -1,3 +1,4 @@
+// ...existing code...
 // src/screens/main/SubmitScreen.tsx
 import React, { useState, useEffect } from 'react';
 import {
@@ -11,6 +12,7 @@ import {
   ActivityIndicator,
   Alert,
   Platform,
+  Modal,
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -22,6 +24,8 @@ import { db, storage } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { spacing } from '../../theme';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getDrafts, saveDraft, deleteDraft, DraftData } from '../../utils/draftStorage';
 import { InlineChatEditor, type ChatMessage } from '../../components/InlineChatEditor';
 import { trackContentCreate } from '../../utils/Analytics-utils';
 
@@ -45,10 +49,50 @@ interface Chapter {
 }
 
 export const SubmitScreen = () => {
+    // Draft state
+    const [draftId, setDraftId] = useState<string | null>(null);
+    const [drafts, setDrafts] = useState<DraftData[]>([]);
+
+    // (moved) Load drafts on mount and when user changes
+
+    // Save as draft handler
+    const handleSaveDraft = async () => {
+      if (!submitType) return;
+      // If existing draftId belongs to the same submitType, reuse it.
+      // Otherwise create a new id so we don't overwrite a draft of another type.
+      const newId = (draftId && draftId.startsWith(`${submitType}-`)) ? draftId : `${submitType}-${Date.now()}`;
+
+      // Preserve createdAt if we're updating an existing draft
+      const existing = (drafts || []).find(d => d.id === newId);
+      const createdAt = existing?.createdAt || new Date().toISOString();
+
+      const draft: DraftData = {
+        id: newId,
+        type: submitType,
+        createdAt,
+        updatedAt: new Date().toISOString(),
+        data: submitType === 'novel' ? {
+          title, description, summary, authorsNote, prologue, genres, coverImage, hasGraphicContent, chapters
+        } : {
+          title, description, content, genres, coverImage
+        }
+      };
+
+      await saveDraft(draft, currentUser?.uid);
+      setDraftId(newId);
+      Alert.alert('Draft Saved', 'You can continue this draft later from the Drafts section.');
+      setDrafts(await getDrafts(currentUser?.uid));
+    };
+    const [showDraftsModal, setShowDraftsModal] = useState(false);
   const navigation = useNavigation<any>();
   const route = useRoute();
   const { currentUser } = useAuth();
   const { colors } = useTheme();
+  
+  // Load drafts when current user changes
+  useEffect(() => {
+    getDrafts(currentUser?.uid).then(setDrafts);
+  }, [currentUser?.uid]);
   
   const [submitType, setSubmitType] = useState<SubmitType>(null);
   
@@ -297,6 +341,23 @@ export const SubmitScreen = () => {
     }
   };
 
+  const startNewWork = (type: Exclude<SubmitType, null>) => {
+    // clear any draft selection and reset form fields for a fresh start
+    setDraftId(null);
+    setTitle('');
+    setDescription('');
+    setGenres([]);
+    setCoverImage(null);
+    setSummary('');
+    setAuthorsNote('');
+    setPrologue('');
+    setHasGraphicContent(false);
+    setChapters([]);
+    setContent('');
+    setShowDraftsModal(false);
+    setSubmitType(type);
+  };
+
   const handleSubmit = async () => {
     if (genres.length === 0) {
       setError('Please select at least one genre');
@@ -464,6 +525,99 @@ export const SubmitScreen = () => {
           contentContainerStyle={styles.selectionContainer}
           showsVerticalScrollIndicator={false}
         >
+          {/* Draft top card on selection screen */}
+          {drafts && drafts.length > 0 && (() => {
+            const sorted = [...drafts].sort((a, b) => {
+              const ta = a.updatedAt || a.createdAt || '';
+              const tb = b.updatedAt || b.createdAt || '';
+              return tb.localeCompare(ta);
+            });
+            const latest = sorted[0];
+            return (
+              <TouchableOpacity
+                key={latest.id}
+                style={styles.selectionDraftCard}
+                onPress={() => setShowDraftsModal(true)}
+                onLongPress={async () => {
+                  Alert.alert('Delete Draft', 'Delete this draft?', [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Delete', style: 'destructive', onPress: async () => { await deleteDraft(latest.id, currentUser?.uid); setDrafts(await getDrafts(currentUser?.uid)); } }
+                  ]);
+                }}
+              >
+                <View style={styles.selectionDraftThumb}>
+                  {latest.data.coverImage ? (
+                    <Image source={{ uri: latest.data.coverImage }} style={styles.selectionDraftThumbImage} />
+                  ) : (
+                    <View style={[styles.selectionDraftThumbImage, { backgroundColor: colors.primary + '22', justifyContent: 'center', alignItems: 'center' }]}>
+                      <Text style={{ color: colors.primary, fontWeight: '800' }}>{(latest.data.title || 'R').charAt(0).toUpperCase()}</Text>
+                    </View>
+                  )}
+                </View>
+                <View style={styles.selectionDraftContent}>
+                  <Text style={[styles.selectionDraftSmall, { color: colors.textSecondary }]}>Continue writing</Text>
+                  <Text style={[styles.selectionDraftTitle, { color: colors.text }]} numberOfLines={2}>{latest.data.title || 'Untitled'}</Text>
+                  <Text style={[styles.selectionDraftMeta, { color: colors.textSecondary }]}>{sorted.length} draft{sorted.length !== 1 ? 's' : ''}</Text>
+                </View>
+              </TouchableOpacity>
+            );
+          })()}
+
+          {/* Drafts list modal */}
+          <Modal visible={showDraftsModal} animationType="slide" onRequestClose={() => setShowDraftsModal(false)}>
+            <View style={[styles.modalContainer, { backgroundColor: colors.background }]}> 
+              <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}> 
+                <Text style={[styles.modalTitle, { color: colors.text }]}>Your Drafts</Text>
+                <TouchableOpacity onPress={() => setShowDraftsModal(false)}>
+                  <Ionicons name="close" size={24} color={colors.text} />
+                </TouchableOpacity>
+              </View>
+              <ScrollView style={{ padding: spacing.lg }}>
+                {drafts.length === 0 ? (
+                  <Text style={{ color: colors.textSecondary }}>No drafts</Text>
+                ) : (
+                  drafts.map((d) => (
+                    <View key={d.id} style={styles.draftListItem}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.draftListTitle, { color: colors.text }]} numberOfLines={1}>{d.data.title || '(Untitled)'}</Text>
+                        <Text style={[styles.draftListMeta, { color: colors.textSecondary }]}>{d.type === 'novel' ? 'Novel Draft' : 'Poem Draft'} • {d.updatedAt ? new Date(d.updatedAt).toLocaleString() : ''}</Text>
+                      </View>
+                      <View style={styles.draftActionRow}>
+                        <TouchableOpacity style={styles.draftActionButton} onPress={() => {
+                          // Continue editing
+                          setSubmitType(d.type);
+                          setDraftId(d.id);
+                          if (d.type === 'novel') {
+                            setTitle(d.data.title || '');
+                            setDescription(d.data.description || '');
+                            setSummary(d.data.summary || '');
+                            setAuthorsNote(d.data.authorsNote || '');
+                            setPrologue(d.data.prologue || '');
+                            setGenres(d.data.genres || []);
+                            setCoverImage(d.data.coverImage || null);
+                            setHasGraphicContent(!!d.data.hasGraphicContent);
+                            setChapters(d.data.chapters || []);
+                          } else {
+                            setTitle(d.data.title || '');
+                            setDescription(d.data.description || '');
+                            setContent(d.data.content || '');
+                            setGenres(d.data.genres || []);
+                            setCoverImage(d.data.coverImage || null);
+                          }
+                          setShowDraftsModal(false);
+                        }}>
+                          <Text style={[styles.draftActionText, { color: colors.primary }]}>Continue</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.draftActionButton} onPress={async () => { await deleteDraft(d.id, currentUser?.uid); setDrafts(await getDrafts(currentUser?.uid)); }}>
+                          <Text style={[styles.draftActionText, { color: colors.error }]}>Delete</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  ))
+                )}
+              </ScrollView>
+            </View>
+          </Modal>
           {/* Header Section */}
           <View style={styles.selectionHeader}>
             <View style={styles.headerIconContainer}>
@@ -480,7 +634,7 @@ export const SubmitScreen = () => {
             {/* Novel Card */}
             <TouchableOpacity
               style={styles.selectionCard}
-              onPress={() => setSubmitType('novel')}
+              onPress={() => startNewWork('novel')}
               activeOpacity={0.7}
             >
               <View style={styles.cardGradient}>
@@ -518,7 +672,7 @@ export const SubmitScreen = () => {
             {/* Poem Card */}
             <TouchableOpacity
               style={styles.selectionCard}
-              onPress={() => setSubmitType('poem')}
+              onPress={() => startNewWork('poem')}
               activeOpacity={0.7}
             >
               <View style={styles.cardGradient}>
@@ -930,23 +1084,38 @@ export const SubmitScreen = () => {
           </View>
         )}
 
-        {/* Submit Button */}
-        <TouchableOpacity
-          style={[styles.submitButton, loading && styles.submitButtonDisabled]}
-          onPress={handleSubmit}
-          disabled={loading}
-        >
-          {loading ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <>
-              <Ionicons name="cloud-upload-outline" size={20} color="#fff" />
-              <Text style={styles.submitButtonText}>
-                Publish {submitType === 'novel' ? 'Novel' : 'Poem'}
-              </Text>
-            </>
-          )}
-        </TouchableOpacity>
+        {/* Save as Draft & Submit Buttons */}
+        <View style={styles.actionsRow}>
+          <View style={styles.actionWrapper}>
+            <TouchableOpacity
+              style={[styles.draftButton, loading && styles.submitButtonDisabled]}
+              onPress={handleSaveDraft}
+              disabled={loading}
+            >
+              <Ionicons name="save-outline" size={18} color={colors.primary} />
+              <Text style={[styles.draftButtonText]}>Save as Draft</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.actionWrapper}>
+            <TouchableOpacity
+              style={[styles.publishButton, loading && styles.submitButtonDisabled]}
+              onPress={handleSubmit}
+              disabled={loading}
+            >
+              {loading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <>
+                  <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
+                  <Text style={styles.submitButtonText}>
+                    Publish {submitType === 'novel' ? 'Novel' : 'Poem'}
+                  </Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
 
         <View style={styles.bottomSpacing} />
       </ScrollView>
@@ -1624,9 +1793,7 @@ const getStyles = (themeColors : any) => StyleSheet.create({
     backgroundColor: themeColors.primary,
     borderRadius: 16,
     padding: spacing.lg + 2,
-    marginHorizontal: spacing.lg,
-    marginTop: spacing.xl,
-    marginBottom: spacing.md,
+    // margin handled by actionsRow
     gap: spacing.sm,
     shadowColor: themeColors.primary,
     shadowOffset: { width: 0, height: 4 },
@@ -1645,5 +1812,141 @@ const getStyles = (themeColors : any) => StyleSheet.create({
   },
   bottomSpacing: {
     height: spacing.xl * 2,
+  },
+  actionsRow: {
+    flexDirection: 'row',
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.xl,
+    marginBottom: spacing.md,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  actionWrapper: {
+    flex: 1,
+    paddingHorizontal: spacing.xs,
+  },
+  draftButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'transparent',
+    borderRadius: 16,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md,
+    borderWidth: 1,
+    borderColor: themeColors.primary,
+    gap: spacing.sm,
+  },
+  draftButtonText: {
+    fontSize: 17,
+    color: themeColors.primary,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+    marginLeft: 8,
+  },
+  publishButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: themeColors.primary,
+    borderRadius: 16,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md,
+    gap: spacing.sm,
+    shadowColor: themeColors.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  selectionDraftCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: spacing.lg,
+    padding: spacing.lg,
+    borderRadius: 16,
+    backgroundColor: themeColors.surface,
+    borderWidth: 1,
+    borderColor: themeColors.border,
+    marginBottom: spacing.lg,
+  },
+  selectionDraftThumb: {
+    width: 80,
+    height: 110,
+    borderRadius: 8,
+    overflow: 'hidden',
+    marginRight: spacing.lg,
+  },
+  selectionDraftThumbImage: {
+    width: '100%',
+    height: '100%',
+  },
+  selectionDraftContent: {
+    flex: 1,
+  },
+  selectionDraftSmall: {
+    fontSize: 13,
+    marginBottom: 6,
+    fontWeight: '600',
+  },
+  selectionDraftTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    marginBottom: 6,
+  },
+  selectionDraftMeta: {
+    fontSize: 13,
+  },
+  /* Modal & Draft list styles */
+  modalContainer: {
+    flex: 1,
+    paddingTop: spacing.md,
+    backgroundColor: themeColors.background,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderBottomWidth: 1,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  draftListItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: spacing.md,
+    borderRadius: 12,
+    backgroundColor: themeColors.surface,
+    borderWidth: 1,
+    borderColor: themeColors.border,
+    marginBottom: spacing.sm,
+  },
+  draftListTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: spacing.xs,
+  },
+  draftListMeta: {
+    fontSize: 12,
+    color: themeColors.textSecondary,
+  },
+  draftActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginLeft: spacing.md,
+  },
+  draftActionButton: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm - 2,
+    borderRadius: 10,
+  },
+  draftActionText: {
+    fontSize: 14,
+    fontWeight: '700',
   },
 });

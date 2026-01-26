@@ -198,7 +198,7 @@ export const NotificationsScreen = ({ navigation }: any) => {
         case 'comment_like':
         case 'comment_reply':
           if (notification.poemId) {
-            navigation.navigate('PoemDetails', { poemId: notification.poemId });
+            navigation.navigate('PoemOverview', { poemId: notification.poemId });
           } else if (notification.novelId) {
             if (notification.chapterNumber) {
               navigation.navigate('NovelReader', { 
@@ -206,7 +206,7 @@ export const NotificationsScreen = ({ navigation }: any) => {
                 chapterNumber: notification.chapterNumber 
               });
             } else {
-              navigation.navigate('NovelDetails', { novelId: notification.novelId });
+              navigation.navigate('NovelOverview', { novelId: notification.novelId });
             }
           }
           break;
@@ -216,7 +216,7 @@ export const NotificationsScreen = ({ navigation }: any) => {
         case 'poem_reply':
         case 'poem_added_to_library':
           if (notification.poemId) {
-            navigation.navigate('PoemDetails', { poemId: notification.poemId });
+            navigation.navigate('PoemOverview', { poemId: notification.poemId });
           }
           break;
 

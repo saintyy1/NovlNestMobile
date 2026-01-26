@@ -217,7 +217,7 @@ export const MainTabNavigator = () => {
               <View style={styles.headerContent}>
                 <View style={styles.logoContainer}>
                   <Image 
-                    source={require('../../../assets/images/logo.png')} 
+                    source={require('../../../assets/images/app-icon.png')} 
                     style={styles.logoImage}
                     resizeMode="contain"
                   />

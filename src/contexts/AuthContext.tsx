@@ -536,7 +536,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       await batch.commit()
 
-      await AsyncStorage.clear()
+      // Preserve local app data (drafts, preferences) across logout.
+      // Do not clear AsyncStorage here to avoid deleting user drafts.
 
       await firebaseDeleteUser(authUser)
 
@@ -913,7 +914,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setCurrentUser(null)
       setFirebaseUser(null)
 
-      await AsyncStorage.clear()
+      // Do NOT clear AsyncStorage on logout; this wipes all local data including drafts.
+      // Remove this line to preserve user drafts and local preferences.
 
       followCooldowns.forEach((timeout) => clearTimeout(timeout))
       followCooldowns.clear()

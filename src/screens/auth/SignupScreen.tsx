@@ -15,7 +15,8 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
-import { GoogleAuthProvider, signInWithCredential } from 'firebase/auth';
+import * as AppleAuthentication from 'expo-apple-authentication';
+import { GoogleAuthProvider, OAuthProvider, signInWithCredential } from 'firebase/auth';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { spacing, typography } from '../../theme';
@@ -33,7 +34,7 @@ export const SignupScreen = ({ navigation }: any) => {
   const { colors } = useTheme();
   const [isRegistering, setIsRegistering] = useState(false);
   const [isGoogleSignInAvailable, setIsGoogleSignInAvailable] = useState(false);
-  
+
   const styles = getStyles(colors);
 
   // Configure Google Sign-In (only works in native builds, not Expo Go)
@@ -46,10 +47,10 @@ export const SignupScreen = ({ navigation }: any) => {
           console.log('Running in Expo Go - Google Sign-In disabled');
           return;
         }
-        
+
         // Dynamically import Google Sign-In (only available in native builds)
         const { GoogleSignin } = require('@react-native-google-signin/google-signin');
-        
+
         await GoogleSignin.configure({
           webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
           offlineAccess: true,
@@ -61,21 +62,63 @@ export const SignupScreen = ({ navigation }: any) => {
         setIsGoogleSignInAvailable(false);
       }
     };
-    
+
     setupGoogleSignIn();
   }, []);
+
+  const handleAppleSignIn = async () => {
+    try {
+      const credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+      });
+
+      if (!credential.identityToken) {
+        throw new Error('Apple Sign-In failed: no identity token');
+      }
+
+      // ✅ Firebase Apple OAuth provider
+      const provider = new OAuthProvider('apple.com');
+
+      const firebaseCredential = provider.credential({
+        idToken: credential.identityToken,
+      });
+
+      const userCredential = await signInWithCredential(
+        auth,
+        firebaseCredential
+      );
+
+      trackSignUp('apple', userCredential.user.uid);
+
+    } catch (error: any) {
+      if (error.code === 'ERR_CANCELED') {
+        // User cancelled Apple login
+        return;
+      }
+
+      console.error('Apple Sign-In Error:', error);
+      Alert.alert(
+        'Sign in failed',
+        error.message || 'Unable to sign in with Apple'
+      );
+    }
+  };
+
 
   const handleGoogleSignUp = async () => {
     try {
       // Dynamically import Google Sign-In
       const { GoogleSignin } = require('@react-native-google-signin/google-signin');
-      
+
       // Sign out first to show account picker
       await GoogleSignin.signOut();
-      
+
       // Check if your device supports Google Play
       await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
-      
+
       // Get the users ID token
       const signInResult = await GoogleSignin.signIn();
 
@@ -90,10 +133,10 @@ export const SignupScreen = ({ navigation }: any) => {
 
       // Sign-in the user with the credential
       const userCredential = await signInWithCredential(auth, googleCredential);
-      
+
       // Track Google signup for analytics
       trackSignUp('google', userCredential.user.uid);
-      
+
       // Navigation will happen automatically via auth state change
     } catch (error: any) {
       console.error('Google Sign-Up Error:', error);
@@ -120,12 +163,12 @@ export const SignupScreen = ({ navigation }: any) => {
     setIsRegistering(true);
     try {
       await register(email, password, name);
-      
+
       // Track email signup for analytics
       if (auth.currentUser) {
         trackSignUp('email', auth.currentUser.uid);
       }
-      
+
       Alert.alert(
         'Account Created!',
         'Please check your email to verify your account.',
@@ -134,7 +177,7 @@ export const SignupScreen = ({ navigation }: any) => {
       // Navigation will happen automatically via auth state listener
     } catch (error: any) {
       let errorMessage = 'Failed to create account';
-      
+
       if (error.message === 'This display name is already taken. Try another one.') {
         errorMessage = error.message;
       } else if (error.message === 'Display name must be at least 2 characters long') {
@@ -150,7 +193,7 @@ export const SignupScreen = ({ navigation }: any) => {
       } else if (error.code === 'auth/weak-password') {
         errorMessage = 'Password is too weak';
       }
-      
+
       Alert.alert('Signup Failed', errorMessage);
     } finally {
       setIsRegistering(false);
@@ -164,28 +207,47 @@ export const SignupScreen = ({ navigation }: any) => {
     >
       <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
         <View style={styles.content}>
-        {/* Logo/Header */}
-        <View style={styles.header}>
-          <Image 
-            source={require('../../../assets/images/logo.png')} 
-            style={styles.logo}
-            resizeMode="contain"
-          />
-          <Text style={styles.title}>Create Account</Text>
-          <Text style={styles.subtitle}>Join NovlNest today</Text>
-        </View>
+          {/* Logo/Header */}
+          <View style={styles.header}>
+            <Image
+              source={require('../../../assets/images/app-icon.png')}
+              style={styles.logo}
+              resizeMode="contain"
+            />
+            <Text style={styles.title}>Create Account</Text>
+            <Text style={styles.subtitle}>Join NovlNest today</Text>
+          </View>
 
-        {isGoogleSignInAvailable && (
-          <TouchableOpacity 
-            style={styles.googleButton}
-            onPress={handleGoogleSignUp}
-          >
-            <Ionicons name="logo-google" size={20} color="#fff" />
-            <Text style={styles.googleButtonText}>Sign up with Google</Text>
-          </TouchableOpacity>
-        )}
 
-        {/* Input Fields */}
+          <View style={styles.socialAuthContainer}>
+            {Platform.OS === 'ios' && (
+            <AppleAuthentication.AppleAuthenticationButton
+              buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_UP}
+              buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+              cornerRadius={6}
+              style={{ width: '100%', height: 44 }}
+              onPress={handleAppleSignIn}
+            />
+            )}
+
+            {isGoogleSignInAvailable && (
+              <TouchableOpacity
+                style={styles.googleButton}
+                onPress={handleGoogleSignUp}
+              >
+                <Ionicons name="logo-google" size={20} color="#fff" />
+                <Text style={styles.googleButtonText}>Sign up with Google</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+
+          <View style={styles.orContainer}>
+            <View style={styles.orLine} />
+            <Text style={styles.orText}>or</Text>
+            <View style={styles.orLine} />
+          </View>
+
+          {/* Input Fields */}
           <View style={styles.inputContainer}>
             <View style={styles.inputWrapper}>
               <Ionicons name="person-outline" size={20} color={colors.textSecondary} style={styles.inputIcon} />
@@ -227,10 +289,10 @@ export const SignupScreen = ({ navigation }: any) => {
                 placeholderTextColor={colors.textSecondary}
               />
               <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
-                <Ionicons 
-                  name={showPassword ? "eye-outline" : "eye-off-outline"} 
-                  size={20} 
-                  color={colors.textSecondary} 
+                <Ionicons
+                  name={showPassword ? "eye-outline" : "eye-off-outline"}
+                  size={20}
+                  color={colors.textSecondary}
                 />
               </TouchableOpacity>
             </View>
@@ -247,10 +309,10 @@ export const SignupScreen = ({ navigation }: any) => {
                 placeholderTextColor={colors.textSecondary}
               />
               <TouchableOpacity onPress={() => setShowConfirmPassword(!showConfirmPassword)}>
-                <Ionicons 
-                  name={showConfirmPassword ? "eye-outline" : "eye-off-outline"} 
-                  size={20} 
-                  color={colors.textSecondary} 
+                <Ionicons
+                  name={showConfirmPassword ? "eye-outline" : "eye-off-outline"}
+                  size={20}
+                  color={colors.textSecondary}
                 />
               </TouchableOpacity>
             </View>
@@ -272,7 +334,7 @@ export const SignupScreen = ({ navigation }: any) => {
           {/* Login Link */}
           <View style={styles.footer}>
             <Text style={styles.footerText}>Already have an account? </Text>
-            <TouchableOpacity 
+            <TouchableOpacity
               onPress={() => navigation.navigate('Login')}
               disabled={isRegistering}
             >
@@ -300,7 +362,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   },
   header: {
     alignItems: 'center',
-    marginBottom: spacing.xl * 2,
+    marginBottom: spacing.xl,
   },
   logo: {
     width: 80,
@@ -309,12 +371,15 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   title: {
     ...typography.h1,
     color: themeColors.text,
-    marginTop: spacing.md,
     marginBottom: spacing.xs,
   },
   subtitle: {
     ...typography.body,
     color: themeColors.textSecondary,
+  },
+  socialAuthContainer: {
+    width: '100%',
+    gap: spacing.md,
   },
   googleButton: {
     flexDirection: 'row',
@@ -325,13 +390,32 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     paddingHorizontal: 24,
     borderRadius: 8,
     gap: 8,
-    marginBottom: spacing.lg,
   },
   googleButtonText: {
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
   },
+  orContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: spacing.md,
+
+  },
+
+  orLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#E5E7EB', // light gray
+  },
+
+  orText: {
+    marginHorizontal: 12,
+    fontSize: 14,
+    color: '#6B7280', // muted gray
+    fontWeight: '500',
+  },
+
   inputContainer: {
     marginBottom: spacing.lg,
   },

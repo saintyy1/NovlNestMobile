@@ -1,5 +1,5 @@
 // src/screens/main/HomeScreen.tsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy } from 'react';
 import {
   View,
   Text,
@@ -209,25 +209,25 @@ export const HomeScreen = ({ navigation }: any) => {
   const bannerSlides = [
   {
     id: "banner-1",
-    image: require("../../../assets/images/writers-comp.png"),
+    image: require("../../../assets/images/writers-comp.webp"),
     externalLink: "https://discord.gg/rMasj5PDPe",
     alt: "Discord Community Banner",
   },
   {
     id: "banner-2",
-    image: require("../../../assets/images/dec-comp-winner.png"),
+    image: require("../../../assets/images/dec-comp-winner.webp"),
     novelId: "xeypggSi2BR7dYzp7NhO",
     alt: "Dec Comp Banner",
   },
   {
     id: "banner-3",
-    image: require("../../../assets/images/his-dangerous-truth.png"),
+    image: require("../../../assets/images/his-dangerous-truth.webp"),
     novelId: "erpas9As02OQgKGlXtJ7",
     alt: "Promotion Banner",
   },
   {
     id: "banner-4",
-    image: require("../../../assets/images/the-accidental-landlord.png"),
+    image: require("../../../assets/images/the-accidental-landlord.webp"),
     novelId: "OgrUd6n4cLlAbh3aKMrm",
     alt: "Promotion Banner",
   },
