@@ -24,6 +24,7 @@ import { db, storage } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { spacing } from '../../theme';
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getDrafts, saveDraft, deleteDraft, DraftData } from '../../utils/draftStorage';
 import { InlineChatEditor, type ChatMessage } from '../../components/InlineChatEditor';
@@ -52,9 +53,8 @@ export const SubmitScreen = () => {
     // Draft state
     const [draftId, setDraftId] = useState<string | null>(null);
     const [drafts, setDrafts] = useState<DraftData[]>([]);
-
-    // (moved) Load drafts on mount and when user changes
-
+    const insets = useSafeAreaInsets();
+    
     // Save as draft handler
     const handleSaveDraft = async () => {
       if (!submitType) return;
@@ -565,7 +565,15 @@ export const SubmitScreen = () => {
 
           {/* Drafts list modal */}
           <Modal visible={showDraftsModal} animationType="slide" onRequestClose={() => setShowDraftsModal(false)}>
-            <View style={[styles.modalContainer, { backgroundColor: colors.background }]}> 
+            <View
+              style={[
+                styles.modalContainer,
+                {
+                  backgroundColor: colors.surface,
+                  paddingTop: insets.top,
+                },
+              ]}
+            >
               <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}> 
                 <Text style={[styles.modalTitle, { color: colors.text }]}>Your Drafts</Text>
                 <TouchableOpacity onPress={() => setShowDraftsModal(false)}>

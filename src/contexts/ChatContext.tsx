@@ -543,7 +543,13 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
         where('__name__', '==', conversationId)
       ))
 
-      if (conversationDoc.empty) return
+      if (conversationDoc.empty) {
+        // Conversation does not exist yet (new conversation), so clear loading and set empty messages
+        dispatch({ type: 'MESSAGES_LOADED', payload: { conversationId, messages: [] } });
+        dispatch({ type: 'SET_CONVERSATION_LOADING', payload: { conversationId, isLoading: false } });
+        dispatch({ type: 'SET_HAS_MORE_MESSAGES', payload: { conversationId, hasMore: false } });
+        return;
+      }
 
       const conversationData = conversationDoc.docs[0].data()
       const participants = conversationData.participants || []
@@ -552,6 +558,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
       if (!participants.includes(currentUser.uid)) {
         console.error('Unauthorized access attempt to conversation:', conversationId)
         dispatch({ type: 'SET_ERROR', payload: 'Unauthorized access to conversation' })
+        dispatch({ type: 'SET_CONVERSATION_LOADING', payload: { conversationId, isLoading: false } });
         return
       }
 

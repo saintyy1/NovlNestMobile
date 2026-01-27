@@ -456,7 +456,11 @@ export const MessagesScreen = ({ navigation, route }: any) => {
     );
   }
 
-  if (state.isLoading && state.conversations.length === 0) {
+  if (
+  state.isLoading &&
+  state.conversations.length === 0 &&
+  !state.currentConversation
+) {
     return (
       <View style={styles.safeArea}>
         <View style={styles.loadingContainer}>
@@ -594,7 +598,8 @@ export const MessagesScreen = ({ navigation, route }: any) => {
         <SafeAreaView style={styles.contentContainer} edges={[]}>
           {/* Messages List */}
           <View style={styles.messagesContainer}>
-            {state.loadingConversations.has(state.currentConversation.id) ? (
+            {state.loadingConversations.has(state.currentConversation.id) &&
+            state.messages.length === 0 ? (
               <View style={styles.emptyMessagesContainer}>
                 <ActivityIndicator size="large" color={colors.primary} />
                 <Text style={styles.loadingText}>Loading messages...</Text>

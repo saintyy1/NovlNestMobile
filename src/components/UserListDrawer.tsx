@@ -10,7 +10,7 @@ import {
   StyleSheet,
   Platform,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase/config';
@@ -42,6 +42,7 @@ const UserListDrawer: React.FC<UserListDrawerProps> = ({
   const { currentUser, toggleFollow } = useAuth();
   const { colors } = useTheme();
   const styles = getStyles(colors);
+  const insets = useSafeAreaInsets();
   const [usersToDisplay, setUsersToDisplay] = useState<UserDisplayInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [togglingFollowId, setTogglingFollowId] = useState<string | null>(null);
@@ -184,7 +185,15 @@ const UserListDrawer: React.FC<UserListDrawerProps> = ({
       onRequestClose={onClose}
       presentationStyle={Platform.OS === 'ios' ? 'fullScreen' : 'overFullScreen'}
     >
-      <SafeAreaView style={[styles.modalWrapper, { backgroundColor: colors.background }]} edges={['top', 'left', 'right', 'bottom']}>
+      <View
+        style={[
+          styles.modalWrapper,
+          {
+            backgroundColor: colors.background,
+            paddingTop: insets.top,
+          },
+        ]}
+      >
         <View style={styles.header}>
           <Text style={styles.headerTitle}>{title}</Text>
           <TouchableOpacity onPress={onClose} style={styles.closeButton}>
@@ -213,7 +222,7 @@ const UserListDrawer: React.FC<UserListDrawerProps> = ({
             />
           )}
         </View>
-      </SafeAreaView>
+      </View>
     </Modal>
   );
 };

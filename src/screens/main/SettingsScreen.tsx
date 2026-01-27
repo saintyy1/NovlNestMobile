@@ -15,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 const SettingsScreen = ({ navigation }: any) => {
   const { currentUser, logout, updateUserProfile, updateUserEmail, changePassword, deleteUserAccount, refreshUser } = useAuth();
@@ -319,6 +320,8 @@ const SettingsScreen = ({ navigation }: any) => {
     );
   };
 
+  const insets = useSafeAreaInsets()
+
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <ScrollView showsVerticalScrollIndicator={false}>
@@ -346,14 +349,22 @@ const SettingsScreen = ({ navigation }: any) => {
         {/* Edit Profile Modal */}
         <Modal visible={showEditProfileModal} animationType="slide">
           <View style={[styles.modalWrapper, { backgroundColor: colors.background }]}>
-            <SafeAreaView style={[styles.safeAreaHeader, { backgroundColor: colors.background }]} edges={['top', 'left', 'right']}>
+            <View
+              style={[
+                styles.safeAreaHeader,
+                {
+                  backgroundColor: colors.background,
+                  paddingTop: insets.top,
+                },
+              ]}
+            >
               <View style={[styles.modalHeader, { backgroundColor: colors.background }]}>
                 <Text style={[styles.modalTitle, { color: colors.text }]}>Edit Profile</Text>
                 <TouchableOpacity onPress={() => setShowEditProfileModal(false)}>
                   <Ionicons name="close" size={24} color={colors.text} />
                 </TouchableOpacity>
               </View>
-            </SafeAreaView>
+            </View>
             <ScrollView style={styles.modalContent}>
               <View style={styles.formGroup}>
                 <Text style={[styles.label, { color: colors.textSecondary }]}>Display Name</Text>
@@ -477,19 +488,33 @@ const SettingsScreen = ({ navigation }: any) => {
         {/* Change Email Modal */}
         <Modal visible={showChangeEmailModal} animationType="slide">
           <View style={[styles.modalWrapper, { backgroundColor: colors.background }]}>
-            <SafeAreaView style={[styles.safeAreaHeader, { backgroundColor: colors.surface }]} edges={['top', 'left', 'right']}>
-              <View style={[styles.modalHeader, { backgroundColor: colors.surface }]}>
-                <Text style={[styles.modalTitle, { color: colors.text }]}>Change Email</Text>
-                <TouchableOpacity onPress={() => {
-                  setShowChangeEmailModal(false);
-                  setNewEmail('');
-                  setConfirmEmail('');
-                  setEmailPassword('');
-                }}>
+            <View
+              style={[
+                styles.safeAreaHeader,
+                {
+                  backgroundColor: colors.background,
+                  paddingTop: insets.top,
+                },
+              ]}
+            >
+              <View style={[styles.modalHeader, { backgroundColor: colors.background }]}>
+                <Text style={[styles.modalTitle, { color: colors.text }]}>
+                  Change Email
+                </Text>
+
+                <TouchableOpacity
+                  onPress={() => {
+                    setShowChangeEmailModal(false)
+                    setNewEmail('')
+                    setConfirmEmail('')
+                    setEmailPassword('')
+                  }}
+                >
                   <Ionicons name="close" size={24} color={colors.text} />
                 </TouchableOpacity>
               </View>
-            </SafeAreaView>
+            </View>
+
             <ScrollView style={styles.modalContent}>
               {isGoogleUser ? (
                 <View style={styles.infoBox}>
@@ -545,8 +570,16 @@ const SettingsScreen = ({ navigation }: any) => {
         {/* Change Password Modal */}
         <Modal visible={showChangePasswordModal} animationType="slide">
           <View style={[styles.modalWrapper, { backgroundColor: colors.background }]}>
-            <SafeAreaView style={[styles.safeAreaHeader, { backgroundColor: colors.surface }]} edges={['top', 'left', 'right']}>
-              <View style={[styles.modalHeader, { backgroundColor: colors.surface }]}>
+            <View
+              style={[
+                styles.safeAreaHeader,
+                {
+                  backgroundColor: colors.background,
+                  paddingTop: insets.top,
+                },
+              ]}
+            >
+              <View style={[styles.modalHeader, { backgroundColor: colors.background }]}>
                 <Text style={[styles.modalTitle, { color: colors.text }]}>Change Password</Text>
                 <TouchableOpacity onPress={() => {
                   setShowChangePasswordModal(false);
@@ -557,7 +590,7 @@ const SettingsScreen = ({ navigation }: any) => {
                   <Ionicons name="close" size={24} color={colors.text} />
                 </TouchableOpacity>
               </View>
-            </SafeAreaView>
+            </View>
             <ScrollView style={styles.modalContent}>
               {isGoogleUser ? (
                 <View style={styles.infoBox}>
@@ -611,7 +644,15 @@ const SettingsScreen = ({ navigation }: any) => {
         {/* Delete Account Modal */}
         <Modal visible={showDeleteAccountModal} animationType="slide">
           <View style={[styles.modalWrapper, { backgroundColor: colors.background }]}>
-            <SafeAreaView style={[styles.safeAreaHeader, { backgroundColor: colors.error }]} edges={['top', 'left', 'right']}>
+            <View
+              style={[
+                styles.safeAreaHeader,
+                {
+                  backgroundColor: colors.error,
+                  paddingTop: insets.top,
+                },
+              ]}
+            >
               <View style={[styles.modalHeader, styles.dangerModalHeader, { backgroundColor: colors.error }]}>
                 <Text style={[styles.modalTitle, { color: '#fff' }]}>Delete Account</Text>
                 <TouchableOpacity onPress={() => {
@@ -621,7 +662,7 @@ const SettingsScreen = ({ navigation }: any) => {
                   <Ionicons name="close" size={24} color="#fff" />
                 </TouchableOpacity>
               </View>
-            </SafeAreaView>
+            </View>
             <ScrollView style={styles.modalContent}>
               <View style={[styles.infoBox, styles.dangerInfoBox]}>
                 <Ionicons name="warning" size={24} color="#EF4444" />
