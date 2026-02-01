@@ -19,6 +19,7 @@ import {
   Share as RNShare,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons';
 import Icon from '@expo/vector-icons/Ionicons';
 import {
@@ -63,6 +64,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
   const { novelId, chapterNumber } = route.params;
   const { currentUser } = useAuth();
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets()
 
   const [novel, setNovel] = useState<Novel | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1112,17 +1114,15 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
       </View>
 
       <Modal visible={showComments} animationType="slide" onRequestClose={() => setShowComments(false)}>
-        <View style={[styles.modalContainer, { backgroundColor: colors.background }]}>
-          <SafeAreaView style={{ backgroundColor: colors.background }} edges={['top']}>
-            <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
-              <Text style={[styles.modalTitle, { color: colors.text }]}>
-                Comments ({comments.reduce((total, c) => total + 1 + (c.replies?.length || 0), 0)})
-              </Text>
-              <TouchableOpacity onPress={() => setShowComments(false)} style={styles.modalCloseButton}>
-                <Ionicons name="close" size={24} color={colors.text} />
-              </TouchableOpacity>
-            </View>
-          </SafeAreaView>
+        <View style={[styles.modalContainer, { backgroundColor: colors.background, paddingTop: insets.top }]}>
+          <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>
+              Comments ({comments.reduce((total, c) => total + 1 + (c.replies?.length || 0), 0)})
+            </Text>
+            <TouchableOpacity onPress={() => setShowComments(false)} style={styles.modalCloseButton}>
+              <Ionicons name="close" size={24} color={colors.text} />
+            </TouchableOpacity>
+          </View>
 
           <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
             <ScrollView style={styles.commentsList} showsVerticalScrollIndicator={false}>
@@ -1138,7 +1138,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
             </ScrollView>
 
             {currentUser && (
-              <View style={[styles.commentForm, { borderTopColor: colors.border }]}>
+              <View style={[styles.commentForm, { borderTopColor: colors.border}]}>
                 <TextInput
                   value={newComment}
                   onChangeText={setNewComment}

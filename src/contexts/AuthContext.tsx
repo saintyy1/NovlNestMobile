@@ -10,6 +10,7 @@ import {
   sendEmailVerification,
   EmailAuthProvider,
   GoogleAuthProvider,
+  OAuthProvider,
   reauthenticateWithCredential,
   verifyBeforeUpdateEmail,
   applyActionCode,
@@ -32,6 +33,7 @@ import {
   orderBy,
   writeBatch,
 } from "firebase/firestore"
+import * as AppleAuthentication from "expo-apple-authentication"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import { auth, db, actionCodeSettings } from "../firebase/config"
 
@@ -394,7 +396,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     try {
-      const isGoogleUser = authUser.providerData.some((p) => p.providerId.includes("google"))
+      const providers = authUser.providerData.map(p => p.providerId)
+      const isGoogleUser = providers.includes("google.com")
+      const isAppleUser = providers.includes("apple.com") && !providers.includes("password")
+
+      if (isAppleUser) {
+        throw new Error("You signed in with Apple. Email changes are managed by Apple.")
+      }
 
       if (isGoogleUser) {
         await reauthenticateWithGoogle()
@@ -446,7 +454,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     try {
-      const isGoogleUser = authUser.providerData.some((p) => p.providerId.includes("google"))
+      const providers = authUser.providerData.map(p => p.providerId)
+
+      const isGoogleUser = providers.includes("google.com")
+      const isAppleUser = providers.includes("apple.com") && !providers.includes("password")
+
+      if (isAppleUser) {
+        throw new Error("You signed in with Apple. Password changes are not available for Apple accounts.")
+      }
 
       if (isGoogleUser) {
         // For Google users, reauthenticate with Google first
@@ -483,10 +498,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!authUser) throw new Error("No authenticated user")
 
     try {
-      const isGoogleUser = authUser.providerData.some((p) => p.providerId.includes("google"))
+      const providers = authUser.providerData.map(p => p.providerId)
+
+      const isGoogleUser = providers.includes("google.com")
+      const isAppleUser = providers.includes("apple.com") && !providers.includes("password")
 
       if (isGoogleUser) {
         await reauthenticateWithGoogle()
+      } else if (isAppleUser) {
+        await reauthenticateWithApple()
       } else {
         if (!password) {
           throw new Error("Password is required to delete account")
@@ -986,6 +1006,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       throw error;
     }
+  }
+
+  const reauthenticateWithApple = async () => {
+    const appleAuth = await AppleAuthentication.signInAsync({
+      requestedScopes: [
+        AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+      ],
+    })
+
+    if (!appleAuth.identityToken) {
+      throw new Error("Apple authentication failed")
+    }
+
+    const provider = new OAuthProvider("apple.com")
+    const credential = provider.credential({
+      idToken: appleAuth.identityToken,
+    })
+
+    await reauthenticateWithCredential(auth.currentUser!, credential)
   }
 
   const markAllNotificationsAsRead = async () => {

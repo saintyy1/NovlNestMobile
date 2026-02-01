@@ -14,7 +14,6 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 const SettingsScreen = ({ navigation }: any) => {
@@ -52,7 +51,14 @@ const SettingsScreen = ({ navigation }: any) => {
 
   // Check if user is Google user
   const isGoogleUser = React.useMemo(() => {
-    return (currentUser?.providerData || []).some((p: any) => p.providerId.includes('google'));
+    const providers = (currentUser?.providerData || []).map((p: any) => p.providerId);
+    return providers.includes('google.com');
+  }, [currentUser]);
+
+  // Check if user is Apple user
+  const isAppleUser = React.useMemo(() => {
+    const providers = (currentUser?.providerData || []).map((p: any) => p.providerId);
+    return providers.includes('apple.com') && !providers.includes('password');
   }, [currentUser]);
 
   // Fetch user data
@@ -165,7 +171,7 @@ const SettingsScreen = ({ navigation }: any) => {
           onPress: async () => {
             try {
               await changePassword(currentPassword, newPassword);
-              
+
               Alert.alert('Success', 'Password updated successfully');
               setShowChangePasswordModal(false);
               setCurrentPassword('');
@@ -208,13 +214,13 @@ const SettingsScreen = ({ navigation }: any) => {
             try {
               // Call updateUserEmail with new email
               await updateUserEmail(newEmail, confirmEmail, isGoogleUser ? undefined : emailPassword);
-              
+
               Alert.alert('Success', 'Verification email sent. Please check your new email address and click the verification link. The app will automatically update once verified.');
               setShowChangeEmailModal(false);
               setNewEmail('');
               setConfirmEmail('');
               setEmailPassword('');
-              
+
               // Refresh user data to show pending email
               await refreshUser();
             } catch (error: any) {
@@ -244,7 +250,7 @@ const SettingsScreen = ({ navigation }: any) => {
           onPress: async () => {
             try {
               await deleteUserAccount(isGoogleUser ? undefined : deletePassword);
-              
+
               Alert.alert('Success', 'Account deleted successfully');
             } catch (error: any) {
               console.error('Account deletion error:', error);
@@ -256,18 +262,18 @@ const SettingsScreen = ({ navigation }: any) => {
     );
   };
 
-  const SettingItem = ({ 
-    icon, 
-    title, 
-    subtitle, 
-    onPress, 
+  const SettingItem = ({
+    icon,
+    title,
+    subtitle,
+    onPress,
     showArrow = true,
-    rightComponent 
+    rightComponent
   }: any) => {
     const { colors } = useTheme();
     return (
-      <TouchableOpacity 
-        style={[styles.settingItem, { borderBottomColor: colors.border }]} 
+      <TouchableOpacity
+        style={[styles.settingItem, { borderBottomColor: colors.border }]}
         onPress={onPress}
         disabled={!onPress && !rightComponent}
       >
@@ -301,7 +307,7 @@ const SettingsScreen = ({ navigation }: any) => {
         {...props}
         style={[
           styles.input,
-          { 
+          {
             color: colors.text,
             backgroundColor: colors.surfaceSecondary,
             borderColor: colors.border,
@@ -338,8 +344,8 @@ const SettingsScreen = ({ navigation }: any) => {
             icon="mail-outline"
             title="Email"
             subtitle={
-              currentUser?.pendingEmail 
-                ? `${currentUser.email} → ${currentUser.pendingEmail} (pending verification)` 
+              currentUser?.pendingEmail
+                ? `${currentUser.email} → ${currentUser.pendingEmail} (pending verification)`
                 : currentUser?.email || 'Not set'
             }
             onPress={() => setShowChangeEmailModal(true)}
@@ -523,6 +529,13 @@ const SettingsScreen = ({ navigation }: any) => {
                     Using Google sign-in. You will be asked to reauthenticate via Google popup to verify your identity.
                   </Text>
                 </View>
+              ) : isAppleUser ? (
+                <View style={styles.infoBox}>
+                  <Ionicons name="information-circle" size={20} color="#8B5CF6" />
+                  <Text style={styles.infoText}>
+                    Using Sign in with Apple. You will be asked to confirm with Apple to verify your identity.
+                  </Text>
+                </View>
               ) : (
                 <View style={styles.formGroup}>
                   <Text style={styles.label}>Current Password</Text>
@@ -536,6 +549,8 @@ const SettingsScreen = ({ navigation }: any) => {
                   />
                 </View>
               )}
+
+              {/* New email fields */}
               <View style={styles.formGroup}>
                 <Text style={styles.label}>New Email</Text>
                 <TextInput
@@ -548,6 +563,7 @@ const SettingsScreen = ({ navigation }: any) => {
                   autoCapitalize="none"
                 />
               </View>
+
               <View style={styles.formGroup}>
                 <Text style={styles.label}>Confirm Email</Text>
                 <TextInput
@@ -560,6 +576,7 @@ const SettingsScreen = ({ navigation }: any) => {
                   autoCapitalize="none"
                 />
               </View>
+
               <TouchableOpacity style={styles.saveButton} onPress={handleChangeEmail}>
                 <Text style={styles.saveButtonText}>Change Email</Text>
               </TouchableOpacity>
@@ -597,6 +614,13 @@ const SettingsScreen = ({ navigation }: any) => {
                   <Ionicons name="information-circle" size={20} color="#8B5CF6" />
                   <Text style={styles.infoText}>
                     Using Google sign-in. You will be asked to reauthenticate via Google popup to verify your identity.
+                  </Text>
+                </View>
+              ) : isAppleUser ? (
+                <View style={styles.infoBox}>
+                  <Ionicons name="information-circle" size={20} color="#8B5CF6" />
+                  <Text style={styles.infoText}>
+                    Using Sign in with Apple. You will be asked to confirm with Apple to verify your identity.
                   </Text>
                 </View>
               ) : (
@@ -675,6 +699,13 @@ const SettingsScreen = ({ navigation }: any) => {
                   <Ionicons name="information-circle" size={20} color="#8B5CF6" />
                   <Text style={styles.infoText}>
                     Using Google sign-in. You will be asked to reauthenticate via Google popup to verify your identity.
+                  </Text>
+                </View>
+              ) : isAppleUser ? (
+                <View style={styles.infoBox}>
+                  <Ionicons name="information-circle" size={20} color="#8B5CF6" />
+                  <Text style={styles.infoText}>
+                    Using Sign in with Apple. You will be asked to confirm with Apple to verify your identity.
                   </Text>
                 </View>
               ) : (
@@ -770,7 +801,7 @@ const SettingsScreen = ({ navigation }: any) => {
               <Text style={styles.dangerText}>Logout</Text>
             </View>
           </TouchableOpacity>
-          
+
           <TouchableOpacity style={styles.dangerItem} onPress={() => setShowDeleteAccountModal(true)}>
             <View style={styles.settingLeft}>
               <View style={[styles.iconContainer, styles.dangerIconContainer]}>
@@ -1007,7 +1038,7 @@ const getStyles = (colors: any) => StyleSheet.create({
   },
 });
 
-const styles = getStyles({ 
+const styles = getStyles({
   background: '#111827',
   surface: '#1F2937',
   surfaceSecondary: '#374151',
