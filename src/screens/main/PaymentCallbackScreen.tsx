@@ -5,7 +5,7 @@ import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useTheme } from '../../contexts/ThemeContext';
-import { addDoc, collection } from 'firebase/firestore';
+import { sendPromotionApprovedNotification } from '../../services/notificationServices';
 import * as Linking from 'expo-linking';
 
 const PaymentCallbackScreen = ({ route, navigation }: any) => {
@@ -147,33 +147,6 @@ const PaymentCallbackScreen = ({ route, navigation }: any) => {
       subscription.remove();
     };
   }, []);
-
-  const sendPromotionApprovedNotification = async (
-    userId: string,
-    bookId: string,
-    novelTitle: string,
-    planName: string,
-    planDuration: string
-  ) => {
-    try {
-      await addDoc(collection(db, 'notifications'), {
-        toUserId: userId,
-        fromUserId: 'system',
-        fromUserName: 'NovlNest',
-        type: 'promotion_approved',
-        bookId,
-        novelTitle,
-        planName,
-        planDuration,
-        message: `Your novel "${novelTitle}" has been promoted with ${planName} plan for ${planDuration}!`,
-        createdAt: new Date().toISOString(),
-        read: false,
-      });
-    } catch (error) {
-      console.error('Error creating notification:', error);
-      throw error;
-    }
-  };
 
   const handleReturnHome = () => {
     navigation.navigate('MainTabs', { screen: 'Home' });

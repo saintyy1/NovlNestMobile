@@ -152,6 +152,15 @@ const SettingsScreen = ({ navigation }: any) => {
   };
 
   const handleChangePassword = async () => {
+    // 🚫 Apple users
+    if (isAppleUser) {
+      Alert.alert(
+        'Not Allowed',
+        'Apple ID users cannot change password. Please manage your password via Apple ID.'
+      );
+      return;
+    }
+    
     if (!newPassword || newPassword.length < 6) {
       Alert.alert('Error', 'Password must be at least 6 characters');
       return;
@@ -188,6 +197,15 @@ const SettingsScreen = ({ navigation }: any) => {
   };
 
   const handleChangeEmail = async () => {
+    // 🚫 Apple users
+    if (isAppleUser) {
+      Alert.alert(
+        'Not Allowed',
+        'Apple ID users cannot change email. Please manage your email via Apple ID.'
+      );
+      return;
+    }
+
     if (!newEmail || !confirmEmail) {
       Alert.alert('Error', 'Please enter your new email address');
       return;
@@ -234,7 +252,7 @@ const SettingsScreen = ({ navigation }: any) => {
   };
 
   const handleDeleteAccount = async () => {
-    if (!isGoogleUser && !deletePassword) {
+    if (!isGoogleUser && !isAppleUser && !deletePassword) {
       Alert.alert('Error', 'Password is required to delete account');
       return;
     }
@@ -249,7 +267,7 @@ const SettingsScreen = ({ navigation }: any) => {
           style: 'destructive',
           onPress: async () => {
             try {
-              await deleteUserAccount(isGoogleUser ? undefined : deletePassword);
+              await deleteUserAccount(isGoogleUser || isAppleUser ? undefined : deletePassword);
 
               Alert.alert('Success', 'Account deleted successfully');
             } catch (error: any) {
@@ -522,21 +540,25 @@ const SettingsScreen = ({ navigation }: any) => {
             </View>
 
             <ScrollView style={styles.modalContent}>
-              {isGoogleUser ? (
+              {isGoogleUser && (
                 <View style={styles.infoBox}>
                   <Ionicons name="information-circle" size={20} color="#8B5CF6" />
                   <Text style={styles.infoText}>
                     Using Google sign-in. You will be asked to reauthenticate via Google popup to verify your identity.
                   </Text>
                 </View>
-              ) : isAppleUser ? (
+              )}
+
+              {isAppleUser && (
                 <View style={styles.infoBox}>
                   <Ionicons name="information-circle" size={20} color="#8B5CF6" />
                   <Text style={styles.infoText}>
                     Using Sign in with Apple. You will be asked to confirm with Apple to verify your identity.
                   </Text>
                 </View>
-              ) : (
+              )}
+
+              {!isGoogleUser && !isAppleUser && (
                 <View style={styles.formGroup}>
                   <Text style={styles.label}>Current Password</Text>
                   <TextInput
@@ -551,31 +573,35 @@ const SettingsScreen = ({ navigation }: any) => {
               )}
 
               {/* New email fields */}
-              <View style={styles.formGroup}>
-                <Text style={styles.label}>New Email</Text>
-                <TextInput
-                  style={styles.input}
-                  value={newEmail}
-                  onChangeText={setNewEmail}
-                  placeholder="Enter new email address"
-                  placeholderTextColor="#6B7280"
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                />
-              </View>
+              {!isAppleUser && (
+                <>
+                  <View style={styles.formGroup}>
+                    <Text style={styles.label}>New Email</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={newEmail}
+                      onChangeText={setNewEmail}
+                      placeholder="Enter new email address"
+                      placeholderTextColor="#6B7280"
+                      keyboardType="email-address"
+                      autoCapitalize="none"
+                    />
+                  </View>
 
-              <View style={styles.formGroup}>
-                <Text style={styles.label}>Confirm Email</Text>
-                <TextInput
-                  style={styles.input}
-                  value={confirmEmail}
-                  onChangeText={setConfirmEmail}
-                  placeholder="Confirm email address"
-                  placeholderTextColor="#6B7280"
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                />
-              </View>
+                  <View style={styles.formGroup}>
+                    <Text style={styles.label}>Confirm Email</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={confirmEmail}
+                      onChangeText={setConfirmEmail}
+                      placeholder="Confirm email address"
+                      placeholderTextColor="#6B7280"
+                      keyboardType="email-address"
+                      autoCapitalize="none"
+                    />
+                  </View>
+                </>
+              )}
 
               <TouchableOpacity style={styles.saveButton} onPress={handleChangeEmail}>
                 <Text style={styles.saveButtonText}>Change Email</Text>
@@ -609,21 +635,26 @@ const SettingsScreen = ({ navigation }: any) => {
               </View>
             </View>
             <ScrollView style={styles.modalContent}>
-              {isGoogleUser ? (
+
+              {isGoogleUser && (
                 <View style={styles.infoBox}>
                   <Ionicons name="information-circle" size={20} color="#8B5CF6" />
                   <Text style={styles.infoText}>
-                    Using Google sign-in. You will be asked to reauthenticate via Google popup to verify your identity.
+                    Using Google sign-in. You will be asked to reauthenticate via Google to verify your identity.
                   </Text>
                 </View>
-              ) : isAppleUser ? (
+              )}
+
+              {isAppleUser && (
                 <View style={styles.infoBox}>
                   <Ionicons name="information-circle" size={20} color="#8B5CF6" />
                   <Text style={styles.infoText}>
-                    Using Sign in with Apple. You will be asked to confirm with Apple to verify your identity.
+                    Using Sign in with Apple. Passwords are managed by Apple. You will be asked to confirm your identity with Apple.
                   </Text>
                 </View>
-              ) : (
+              )}
+
+              {!isGoogleUser && !isAppleUser && (
                 <View style={styles.formGroup}>
                   <Text style={styles.label}>Current Password</Text>
                   <TextInput
@@ -636,32 +667,41 @@ const SettingsScreen = ({ navigation }: any) => {
                   />
                 </View>
               )}
-              <View style={styles.formGroup}>
-                <Text style={styles.label}>New Password</Text>
-                <TextInput
-                  style={styles.input}
-                  value={newPassword}
-                  onChangeText={setNewPassword}
-                  placeholder="Enter new password (min 6 characters)"
-                  placeholderTextColor="#6B7280"
-                  secureTextEntry
-                />
-              </View>
-              <View style={styles.formGroup}>
-                <Text style={styles.label}>Confirm New Password</Text>
-                <TextInput
-                  style={styles.input}
-                  value={confirmNewPassword}
-                  onChangeText={setConfirmNewPassword}
-                  placeholder="Confirm new password"
-                  placeholderTextColor="#6B7280"
-                  secureTextEntry
-                />
-              </View>
+
+              {!isAppleUser && (
+                <>
+                  <View style={styles.formGroup}>
+                    <Text style={styles.label}>New Password</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={newPassword}
+                      onChangeText={setNewPassword}
+                      placeholder="Enter new password (min 6 characters)"
+                      placeholderTextColor="#6B7280"
+                      secureTextEntry
+                    />
+                  </View>
+
+                  <View style={styles.formGroup}>
+                    <Text style={styles.label}>Confirm New Password</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={confirmNewPassword}
+                      onChangeText={setConfirmNewPassword}
+                      placeholder="Confirm new password"
+                      placeholderTextColor="#6B7280"
+                      secureTextEntry
+                    />
+                  </View>
+                </>
+              )}
+
+              {/* ACTION BUTTON — ALWAYS VISIBLE */}
               <TouchableOpacity style={styles.saveButton} onPress={handleChangePassword}>
                 <Text style={styles.saveButtonText}>Change Password</Text>
               </TouchableOpacity>
             </ScrollView>
+
           </View>
         </Modal>
 

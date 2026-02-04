@@ -148,7 +148,7 @@ export const BrowseScreen = () => {
     setLoading(true);
     try {
       const novelsRef = collection(db, 'novels');
-      const queryConstraints: QueryConstraint[] = [];
+      const queryConstraints: QueryConstraint[] = [where('published', '==', true)];
 
       if (selectedGenre !== 'All') {
         queryConstraints.push(where('genres', 'array-contains', selectedGenre));
@@ -214,7 +214,7 @@ export const BrowseScreen = () => {
     setLoading(true);
     try {
       const poemsRef = collection(db, 'poems');
-      const queryConstraints: QueryConstraint[] = [];
+      const queryConstraints: QueryConstraint[] = [where('published', '==', true)];
 
       if (selectedGenre !== 'All') {
         queryConstraints.push(where('genres', 'array-contains', selectedGenre));

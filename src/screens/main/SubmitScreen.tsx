@@ -201,38 +201,9 @@ export const SubmitScreen = () => {
     }
   };
 
-  const addChapter = () => {
-    setChapters([...chapters, { title: '', content: '', chatMessages: [] }]);
-  };
-
   const removeChapter = (index: number) => {
     const newChapters = [...chapters];
     newChapters.splice(index, 1);
-    setChapters(newChapters);
-  };
-
-  const handleChapterTitleChange = (index: number, title: string) => {
-    const newChapters = [...chapters];
-    newChapters[index].title = title;
-    setChapters(newChapters);
-  };
-
-  const handleChapterContentChange = (index: number, content: string) => {
-    const newChapters = [...chapters];
-    newChapters[index].content = content;
-    setChapters(newChapters);
-  };
-
-  const insertChatIntoChapter = (index: number, messages: ChatMessage[]) => {
-    const newChapters = [...chapters];
-    const currentContent = newChapters[index].content;
-
-    // Create simple JSON marker for chat messages
-    const chatData = `[CHAT_START]${JSON.stringify(messages)}[CHAT_END]`;
-
-    // Insert at end of content
-    newChapters[index].content = currentContent + (currentContent ? '\n\n' : '') + chatData;
-    newChapters[index].chatMessages = messages;
     setChapters(newChapters);
   };
 

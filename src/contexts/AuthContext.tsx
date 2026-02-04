@@ -371,7 +371,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           await updateDoc(novelRef, { authorName: displayName })
         }
       }
-      setCurrentUser((prev) => 
+      setCurrentUser((prev) =>
         prev ? { ...prev, displayName, bio, instagramUrl, twitterUrl, supportLink, location } : null
       )
     } catch (error) {
@@ -380,48 +380,72 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }
 
-  const updateUserEmail = async (newEmail: string, confirmEmail: string, password?: string) => {
+  const updateUserEmail = async (
+    newEmail: string,
+    confirmEmail: string,
+    password?: string
+  ) => {
     if (!currentUser) throw new Error("No user logged in")
     const authUser = auth.currentUser
     if (!authUser) throw new Error("No authenticated user")
 
-    if (newEmail !== confirmEmail) {
-      throw new Error("Email addresses do not match")
-    }
-    if (!newEmail.includes("@")) {
-      throw new Error("Please enter a valid email address")
-    }
-    if (newEmail === currentUser.email) {
-      throw new Error("New email must be different from current email")
-    }
-
     try {
       const providers = authUser.providerData.map(p => p.providerId)
-      const isGoogleUser = providers.includes("google.com")
-      const isAppleUser = providers.includes("apple.com") && !providers.includes("password")
 
-      if (isAppleUser) {
-        throw new Error("You signed in with Apple. Email changes are managed by Apple.")
+      const isAppleUser = providers.includes("apple.com")
+      const isGoogleUser = providers.includes("google.com")
+      const isEmailUser = providers.includes("password")
+
+      // 🍎 Apple users — EXIT IMMEDIATELY
+      if (isAppleUser && !isEmailUser) {
+        throw new Error(
+          "You signed in with Apple. Email changes are managed by Apple."
+        )
       }
 
+      // ✅ Validate email ONLY for non-Apple users
+      if (newEmail !== confirmEmail) {
+        throw new Error("Email addresses do not match")
+      }
+
+      if (!newEmail.includes("@")) {
+        throw new Error("Please enter a valid email address")
+      }
+
+      if (newEmail === currentUser.email) {
+        throw new Error("New email must be different from current email")
+      }
+
+      // 🔵 Google users
       if (isGoogleUser) {
         await reauthenticateWithGoogle()
-      } else {
+      }
+
+      // ✉️ Email/password users
+      else if (isEmailUser) {
         if (!password) {
           throw new Error("Password is required to change email")
         }
+
         if (!authUser.email) {
           throw new Error("Current user email not found")
         }
-        const credential = EmailAuthProvider.credential(authUser.email, password)
+
+        const credential = EmailAuthProvider.credential(
+          authUser.email,
+          password
+        )
         await reauthenticateWithCredential(authUser, credential)
       }
 
+      // 📧 Send verification + update
       try {
         await verifyBeforeUpdateEmail(authUser, newEmail)
       } catch (e) {
         console.error("Failed to send email change verification:", e)
-        throw new Error("Could not send verification email to new address. Please check if the email address is valid.")
+        throw new Error(
+          "Could not send verification email to new address. Please check if the email address is valid."
+        )
       }
 
       await updateDoc(doc(db, "users", currentUser.uid), {
@@ -429,53 +453,71 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         updatedAt: new Date().toISOString(),
       })
 
-      setCurrentUser((prev) => (prev ? { ...prev, pendingEmail: newEmail } : null))
+      setCurrentUser(prev =>
+        prev ? { ...prev, pendingEmail: newEmail } : null
+      )
     } catch (error) {
       console.error("Error updating email:", error)
+
       if (error instanceof Error) {
         if (error.message.includes("operation-not-allowed")) {
-          throw new Error("Email verification is required. Please check your email and click the verification link.")
+          throw new Error(
+            "Email verification is required. Please check your email and click the verification link."
+          )
         }
         if (error.message.includes("user-mismatch")) {
-          throw new Error("Please use your current email and password for verification.")
+          throw new Error(
+            "Please use your current email and password for verification."
+          )
         }
       }
+
       throw error
     }
   }
 
-  const changePassword = async (currentPassword: string, newPassword: string) => {
+  const changePassword = async (
+    currentPassword: string,
+    newPassword: string
+  ) => {
     if (!currentUser) throw new Error("No user logged in")
     const authUser = auth.currentUser
     if (!authUser) throw new Error("No authenticated user")
 
-    if (newPassword.length < 6) {
-      throw new Error("New password must be at least 6 characters long")
-    }
-
     try {
       const providers = authUser.providerData.map(p => p.providerId)
 
+      const isAppleUser = providers.includes("apple.com")
       const isGoogleUser = providers.includes("google.com")
-      const isAppleUser = providers.includes("apple.com") && !providers.includes("password")
+      const isEmailUser = providers.includes("password")
 
-      if (isAppleUser) {
-        throw new Error("You signed in with Apple. Password changes are not available for Apple accounts.")
+      if (isAppleUser && !isEmailUser) {
+        throw new Error(
+          "You signed in with Apple. Password changes are not available for Apple accounts."
+        )
       }
 
       if (isGoogleUser) {
-        // For Google users, reauthenticate with Google first
         await reauthenticateWithGoogle()
-      } else {
-        // For email users, reauthenticate with current password
+      }
+
+      if (isEmailUser) {
+        if (newPassword.length < 6) {
+          throw new Error("New password must be at least 6 characters long")
+        }
+
         if (!authUser.email) {
           throw new Error("Current user email not found")
         }
-        const credential = EmailAuthProvider.credential(authUser.email, currentPassword)
+
+        const credential = EmailAuthProvider.credential(
+          authUser.email,
+          currentPassword
+        )
         await reauthenticateWithCredential(authUser, credential)
       }
 
-      // Now update the password
+      // 🔐 Update password (email users only)
       await updatePassword(authUser, newPassword)
 
       await updateDoc(doc(db, "users", currentUser.uid), {
@@ -483,11 +525,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       })
     } catch (error) {
       console.error("Error changing password:", error)
+
       if (error instanceof Error) {
-        if (error.message.includes("wrong-password") || error.message.includes("invalid-credential")) {
+        if (
+          error.message.includes("wrong-password") ||
+          error.message.includes("invalid-credential")
+        ) {
           throw new Error("Current password is incorrect")
         }
       }
+
       throw error
     }
   }
@@ -501,20 +548,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const providers = authUser.providerData.map(p => p.providerId)
 
       const isGoogleUser = providers.includes("google.com")
-      const isAppleUser = providers.includes("apple.com") && !providers.includes("password")
+      const isAppleUser = providers.includes("apple.com")
+      const isEmailUser = providers.includes("password")
 
-      if (isGoogleUser) {
-        await reauthenticateWithGoogle()
-      } else if (isAppleUser) {
+
+      if (isAppleUser && !isEmailUser) {
         await reauthenticateWithApple()
-      } else {
+      }
+
+      if (isGoogleUser && !isEmailUser) {
+        await reauthenticateWithGoogle()
+      }
+
+      if (isEmailUser) {
         if (!password) {
           throw new Error("Password is required to delete account")
         }
         if (!authUser.email) {
           throw new Error("Current user email not found")
         }
-        const credential = EmailAuthProvider.credential(authUser.email, password)
+
+        const credential = EmailAuthProvider.credential(
+          authUser.email,
+          password
+        )
         await reauthenticateWithCredential(authUser, credential)
       }
 
@@ -677,9 +734,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setCurrentUser((prev) =>
         prev
           ? {
-              ...prev,
-              library: add ? [...(prev.library || []), novelId] : (prev.library || []).filter((id) => id !== novelId),
-            }
+            ...prev,
+            library: add ? [...(prev.library || []), novelId] : (prev.library || []).filter((id) => id !== novelId),
+          }
           : null
       )
 
@@ -750,10 +807,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setCurrentUser((prev) =>
           prev
             ? {
-                ...prev,
-                finishedReads: [...(prev.finishedReads || []), novelId],
-                library: (prev.library || []).filter((id) => id !== novelId),
-              }
+              ...prev,
+              finishedReads: [...(prev.finishedReads || []), novelId],
+              library: (prev.library || []).filter((id) => id !== novelId),
+            }
             : null
         )
       } else {
@@ -765,10 +822,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setCurrentUser((prev) =>
           prev
             ? {
-                ...prev,
-                finishedReads: (prev.finishedReads || []).filter((id) => id !== novelId),
-                library: [...(prev.library || []), novelId],
-              }
+              ...prev,
+              finishedReads: (prev.finishedReads || []).filter((id) => id !== novelId),
+              library: [...(prev.library || []), novelId],
+            }
             : null
         )
       }
@@ -789,11 +846,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setCurrentUser((prev) =>
         prev
           ? {
-              ...prev,
-              poemLibrary: add 
-                ? [...(prev.poemLibrary || []), poemId] 
-                : (prev.poemLibrary || []).filter((id) => id !== poemId),
-            }
+            ...prev,
+            poemLibrary: add
+              ? [...(prev.poemLibrary || []), poemId]
+              : (prev.poemLibrary || []).filter((id) => id !== poemId),
+          }
           : null
       )
 
@@ -976,28 +1033,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       // Dynamically import Google Sign-In (only available in native builds)
       const { GoogleSignin } = require('@react-native-google-signin/google-signin');
-      
+
       // Sign out first to force account picker
       await GoogleSignin.signOut();
-      
+
       // Check if device supports Google Play
       await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
-      
+
       // Get fresh sign-in credentials
       const signInResult = await GoogleSignin.signIn();
       const idToken = signInResult.data?.idToken;
-      
+
       if (!idToken) {
         throw new Error('No ID token found');
       }
-      
+
       // Create credential and reauthenticate
       const googleCredential = GoogleAuthProvider.credential(idToken);
       const authUser = auth.currentUser;
       if (!authUser) {
         throw new Error('No authenticated user');
       }
-      
+
       await reauthenticateWithCredential(authUser, googleCredential);
     } catch (error: any) {
       console.error('Google reauthentication error:', error);
@@ -1057,7 +1114,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     try {
       const notificationsQuery = query(
-        collection(db, "notifications"), 
+        collection(db, "notifications"),
         where("toUserId", "==", currentUser.uid)
       )
 
@@ -1101,7 +1158,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Reload the Firebase auth user to get latest email
         await firebaseUser.reload()
         const refreshedUser = auth.currentUser
-        
+
         if (refreshedUser && refreshedUser.email === currentUser.pendingEmail) {
           // Email has been verified and updated!
           // Clear the pendingEmail in Firestore
@@ -1109,7 +1166,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             pendingEmail: null,
             updatedAt: new Date().toISOString(),
           })
-          
+
           // Refresh the user data to show the new email
           await fetchUserData(refreshedUser)
         }
@@ -1120,10 +1177,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // Check immediately
     checkEmailVerification()
-    
+
     // Then poll every 5 seconds
     const interval = setInterval(checkEmailVerification, 5000)
-    
+
     return () => clearInterval(interval)
   }, [currentUser?.pendingEmail, firebaseUser])
 

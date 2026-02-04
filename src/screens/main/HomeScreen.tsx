@@ -1,5 +1,5 @@
 // src/screens/main/HomeScreen.tsx
-import React, { useState, useEffect, lazy } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -11,13 +11,14 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { collection, query, orderBy, limit, getDocs, where } from 'firebase/firestore';
+import { collection, query, orderBy, limit, getDocs, where, updateDoc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import type { Novel } from '../../types/novel';
-import type { Poem } from '../../types/poem';
+import type { Poem } from '../../types/poem'; 
 import HeroBanner from '../../components/HeroBanner';
 import { useTheme } from '../../contexts/ThemeContext';
 import { spacing, typography } from '../../theme';
+import { sendPromotionEndedNotification } from "../../services/notificationServices";
 
 export const HomeScreen = ({ navigation }: any) => {
   const { colors } = useTheme();
@@ -90,40 +91,59 @@ export const HomeScreen = ({ navigation }: any) => {
       const q = query(
         novelsRef,
         where('isPromoted', '==', true),
-        orderBy('views', 'desc'),
+        where('published', '==', true),
+        orderBy("createdAt", "desc"),
         limit(7)
       );
       const querySnapshot = await getDocs(q);
+      const promotionalData: Novel[] = [];
 
-      const novels: Novel[] = [];
-      querySnapshot.forEach((doc) => {
-        novels.push({ id: doc.id, ...doc.data() } as Novel);
-      });
+      const now = new Date()
 
-      setPromotedNovels(novels);
+        for (const docSnap of querySnapshot.docs) {
+          const data = docSnap.data() as any
+          const endDate = data.promotionEndDate?.toDate?.() || data.promotionEndDate
+
+          if (endDate && endDate < now) {
+            // Send notification to the author that their promotion has ended
+            // Only send once - check if notification hasn't been sent yet
+            if (!data.promotionEndNotificationSent) {
+              try {
+                await sendPromotionEndedNotification(
+                  data.authorId,
+                  docSnap.id,
+                  data.title
+                )
+                console.log(`Promotion ended notification sent for novel: ${data.title}`)
+              } catch (error) {
+                console.error("Error sending promotion ended notification:", error)
+              }
+            }
+
+            // Mark that notification has been sent
+            await updateDoc(docSnap.ref, {
+              isPromoted: false,
+              promotionStartDate: null,
+              promotionEndDate: null,
+              reference: null,
+              promotionPlan: null,
+              promotionEndNotificationSent: true
+            })
+          } else {
+            promotionalData.push({ id: docSnap.id, ...data } as Novel)
+          }
+        }
+
+      setPromotedNovels(promotionalData);
     } catch (error) {
       console.error('Error fetching promoted novels:', error);
-      try {
-        const novelsRef = collection(db, 'novels');
-        const q = query(novelsRef, orderBy('views', 'desc'), limit(7));
-        const querySnapshot = await getDocs(q);
-
-        const novels: Novel[] = [];
-        querySnapshot.forEach((doc) => {
-          novels.push({ id: doc.id, ...doc.data() } as Novel);
-        });
-
-        setPromotedNovels(novels);
-      } catch (fallbackError) {
-        console.error('Fallback error:', fallbackError);
-      }
     }
   };
 
   const fetchTrendingNovels = async () => {
     try {
       const novelsRef = collection(db, 'novels');
-      const q = query(novelsRef, orderBy('views', 'desc'));
+      const q = query(novelsRef, where('published', '==', true), orderBy('views', 'desc'));
       const querySnapshot = await getDocs(q);
 
       const novels: Novel[] = [];
@@ -145,7 +165,7 @@ export const HomeScreen = ({ navigation }: any) => {
   const fetchNewReleases = async () => {
     try {
       const novelsRef = collection(db, 'novels');
-      const q = query(novelsRef, orderBy('createdAt', 'desc'), limit(7));
+      const q = query(novelsRef, where('published', '==', true), orderBy('createdAt', 'desc'), limit(7));
       const querySnapshot = await getDocs(q);
 
       const novels: Novel[] = [];
@@ -162,7 +182,7 @@ export const HomeScreen = ({ navigation }: any) => {
   const fetchTrendingPoems = async () => {
     try {
       const poemsRef = collection(db, 'poems');
-      const q = query(poemsRef, orderBy('views', 'desc'), limit(7));
+      const q = query(poemsRef, where('published', '==', true), orderBy('views', 'desc'), limit(7));
       const querySnapshot = await getDocs(q);
 
       const poems: Poem[] = [];
