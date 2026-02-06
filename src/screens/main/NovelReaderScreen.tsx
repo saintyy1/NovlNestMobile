@@ -61,7 +61,7 @@ interface Comment {
 }
 
 const NovelReaderScreen = ({ route, navigation }: any) => {
-  const { novelId, chapterNumber } = route.params;
+  const { novelId, chapterNumber, chapterIndex } = route.params || {};
   const { currentUser } = useAuth();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets()
@@ -69,7 +69,8 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
   const [novel, setNovel] = useState<Novel | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [currentChapter, setCurrentChapter] = useState(chapterNumber || 0);
+  const initialChapter = typeof chapterIndex !== 'undefined' ? chapterIndex : (typeof chapterNumber !== 'undefined' ? chapterNumber : 0);
+  const [currentChapter, setCurrentChapter] = useState<number>(initialChapter);
   const [showComments, setShowComments] = useState(false);
   const [chapterLiked, setChapterLiked] = useState(false);
   const [chapterLikes, setChapterLikes] = useState(0);

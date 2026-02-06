@@ -188,10 +188,14 @@ export const NotificationsScreen = ({ navigation }: any) => {
         case 'novel_comment':
         case 'novel_reply':
           if (notification.novelId) {
+            if (notification.chapterNumber) {
             navigation.navigate('NovelReader', { 
               novelId: notification.novelId,
-              chapterNumber: notification.chapterNumber 
+              chapterIndex: notification.chapterNumber - 1,
             });
+            } else {
+              navigation.navigate('NovelOverview', { novelId: notification.novelId });
+            }
           }
           break;
 
@@ -203,7 +207,7 @@ export const NotificationsScreen = ({ navigation }: any) => {
             if (notification.chapterNumber) {
               navigation.navigate('NovelReader', { 
                 novelId: notification.novelId,
-                chapterNumber: notification.chapterNumber 
+                chapterIndex: notification.chapterNumber - 1,
               });
             } else {
               navigation.navigate('NovelOverview', { novelId: notification.novelId });
