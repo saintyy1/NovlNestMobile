@@ -14,6 +14,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import CachedImage from '../../components/CachedImage';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -658,13 +659,13 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
       <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
         {/* Cover and Info */}
         <View style={styles.coverSection}>
-          {novel.coverImage ? (
-            <Image
-              source={{ uri: getFirebaseDownloadUrl(novel.coverImage) }}
-              style={styles.coverImage}
-              resizeMode="cover"
-            />
-          ) : (
+                {novel.coverImage ? (
+                  <CachedImage
+                    uri={getFirebaseDownloadUrl(novel.coverImage)}
+                    style={styles.coverImage}
+                    resizeMode="cover"
+                  />
+                ) : (
             <View style={styles.placeholderCover}>
               <Ionicons name="book" size={60} color="#9CA3AF" />
             </View>

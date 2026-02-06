@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { Ionicons } from '@expo/vector-icons';
+import CachedImage from '../../components/CachedImage';
 import { collection, query, where, getDocs, doc, updateDoc } from 'firebase/firestore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { db } from '../../firebase/config';
@@ -394,12 +395,8 @@ export const PromoteScreen = ({ navigation }: any) => {
                   onPress={() => handleBookSelect(book)}
                   activeOpacity={0.7}
                 >
-                  <Image
-                    source={{
-                      uri: getFirebaseDownloadUrl(
-                        book.coverSmallImage || book.coverImage || ''
-                      ),
-                    }}
+                  <CachedImage
+                    uri={getFirebaseDownloadUrl(book.coverSmallImage || book.coverImage || '')}
                     style={styles.bookCover}
                     resizeMode="cover"
                   />
@@ -444,12 +441,8 @@ export const PromoteScreen = ({ navigation }: any) => {
             </TouchableOpacity>
 
             <View style={styles.selectedBookContent}>
-              <Image
-                source={{
-                  uri: getFirebaseDownloadUrl(
-                    selectedBook.coverSmallImage || selectedBook.coverImage || ''
-                  ),
-                }}
+              <CachedImage
+                uri={getFirebaseDownloadUrl(selectedBook.coverSmallImage || selectedBook.coverImage || '')}
                 style={styles.selectedBookCover}
                 resizeMode="cover"
               />

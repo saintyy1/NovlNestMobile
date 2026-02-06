@@ -11,6 +11,7 @@ import {
   Alert,
   Platform,
 } from 'react-native';
+import CachedImage from '../../components/CachedImage';
 import { Ionicons } from '@expo/vector-icons';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
@@ -222,10 +223,11 @@ export const LibraryScreen = ({ navigation }: any) => {
       >
         <View style={styles.cardImageContainer}>
           {hasImage ? (
-            <Image
-              source={{ uri: getFirebaseDownloadUrl(novel.coverSmallImage || novel.coverImage || '') }}
+            <CachedImage
+              uri={getFirebaseDownloadUrl(novel.coverSmallImage || novel.coverImage || '')}
               style={styles.cardImage}
               onError={() => handleImageError(novel.id)}
+              resizeMode="cover"
             />
           ) : (
             <View style={[styles.cardImageFallback, { backgroundColor: getGenreColor(novel.genres) }]}>
@@ -275,10 +277,11 @@ export const LibraryScreen = ({ navigation }: any) => {
       >
         <View style={styles.cardImageContainer}>
           {hasImage ? (
-            <Image
-              source={{ uri: getFirebaseDownloadUrl(poem.coverSmallImage || poem.coverImage || '') }}
+            <CachedImage
+              uri={getFirebaseDownloadUrl(poem.coverSmallImage || poem.coverImage || '')}
               style={styles.cardImage}
               onError={() => handleImageError(poem.id)}
+              resizeMode="cover"
             />
           ) : (
             <View style={[styles.cardImageFallback, { backgroundColor: getGenreColor(poem.genres) }]}>

@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
   Platform,
 } from 'react-native';
+import CachedImage from '../../components/CachedImage';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -326,6 +327,10 @@ export const BrowseScreen = () => {
     setImageErrors(prev => ({ ...prev, [id]: true }));
   };
 
+  // Cached image component
+  // Importing dynamically to keep top-level imports minimal.
+  // We'll use a static import at top of file for readability.
+
   const renderNovelCard = (novel: Novel) => {
     const hasImage = (novel.coverSmallImage || novel.coverImage) && !imageErrors[novel.id];
 
@@ -338,10 +343,11 @@ export const BrowseScreen = () => {
       >
         <View style={styles.listItemCover}>
           {hasImage ? (
-            <Image
-              source={{ uri: getFirebaseDownloadUrl(novel.coverSmallImage || novel.coverImage || '') }}
+            <CachedImage
+              uri={getFirebaseDownloadUrl(novel.coverSmallImage || novel.coverImage || '')}
               style={styles.listItemImage}
               onError={() => handleImageError(novel.id)}
+              resizeMode="cover"
             />
           ) : (
             <View style={[styles.listItemImageFallback, { backgroundColor: getGenreColor(novel.genres) }]}>
@@ -394,10 +400,11 @@ export const BrowseScreen = () => {
       >
         <View style={styles.listItemCover}>
           {hasImage ? (
-            <Image
-              source={{ uri: getFirebaseDownloadUrl(poem.coverSmallImage || poem.coverImage || '') }}
+            <CachedImage
+              uri={getFirebaseDownloadUrl(poem.coverSmallImage || poem.coverImage || '')}
               style={styles.listItemImage}
               onError={() => handleImageError(poem.id)}
+              resizeMode="cover"
             />
           ) : (
             <View style={[styles.listItemImageFallback, { backgroundColor: getGenreColor(poem.genres) }]}>

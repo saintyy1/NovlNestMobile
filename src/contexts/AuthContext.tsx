@@ -397,7 +397,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const isEmailUser = providers.includes("password")
 
       // 🍎 Apple users — EXIT IMMEDIATELY
-      if (isAppleUser && !isEmailUser) {
+      if (isAppleUser) {
         throw new Error(
           "You signed in with Apple. Email changes are managed by Apple."
         )
@@ -491,7 +491,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const isGoogleUser = providers.includes("google.com")
       const isEmailUser = providers.includes("password")
 
-      if (isAppleUser && !isEmailUser) {
+      if (isAppleUser) {
         throw new Error(
           "You signed in with Apple. Password changes are not available for Apple accounts."
         )
@@ -552,11 +552,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const isEmailUser = providers.includes("password")
 
 
-      if (isAppleUser && !isEmailUser) {
+      if (isAppleUser) {
         await reauthenticateWithApple()
       }
 
-      if (isGoogleUser && !isEmailUser) {
+      if (isGoogleUser) {
         await reauthenticateWithGoogle()
       }
 

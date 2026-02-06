@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import CachedImage from '../../components/CachedImage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import {
@@ -652,8 +653,8 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
             {/* Cover and Info */}
             <View style={styles.coverSection}>
               {poem.coverImage ? (
-                <Image
-                  source={{ uri: getFirebaseDownloadUrl(poem.coverImage) }}
+                <CachedImage
+                  uri={getFirebaseDownloadUrl(poem.coverImage)}
                   style={styles.coverImage}
                   resizeMode="cover"
                 />

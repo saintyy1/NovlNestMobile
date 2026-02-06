@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   Platform,
 } from 'react-native';
+import CachedImage from '../../components/CachedImage';
 import { Ionicons } from '@expo/vector-icons';
 import { collection, query, orderBy, limit, getDocs, where, updateDoc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
@@ -278,10 +279,11 @@ export const HomeScreen = ({ navigation }: any) => {
         onPress={() => {navigation.navigate('NovelOverview', {novelId: novel.id });}}
       >
         {hasImage ? (
-          <Image
-            source={{ uri: getFirebaseDownloadUrl(novel.coverSmallImage || novel.coverImage || '') }}
+          <CachedImage
+            uri={getFirebaseDownloadUrl(novel.coverSmallImage || novel.coverImage || '')}
             style={styles.novelCover}
             onError={() => handleImageError(novel.id)}
+            resizeMode="cover"
           />
         ) : (
           <View style={[styles.novelCover, { backgroundColor: getGenreColor(novel.genres) }]}>
@@ -320,10 +322,11 @@ export const HomeScreen = ({ navigation }: any) => {
         }}
       >
         {hasImage ? (
-          <Image
-            source={{ uri: getFirebaseDownloadUrl(poem.coverSmallImage || poem.coverImage || '') }}
+          <CachedImage
+            uri={getFirebaseDownloadUrl(poem.coverSmallImage || poem.coverImage || '')}
             style={styles.novelCover}
             onError={() => handleImageError(poem.id)}
+            resizeMode="cover"
           />
         ) : (
           <View style={[styles.novelCover, { backgroundColor: getGenreColor(poem.genres) }]}>

@@ -242,7 +242,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     alignItems: 'center',
     paddingBottom: 16,
     paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingTop: Platform.OS === 'ios' ? 12 : 0,
     backgroundColor: themeColors.background,
     borderBottomWidth: 1,
     borderBottomColor: themeColors.border,

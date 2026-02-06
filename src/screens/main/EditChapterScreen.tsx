@@ -11,6 +11,7 @@ import {
   Alert,
   Platform,
 } from 'react-native';
+import CachedImage from '../../components/CachedImage';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
@@ -259,12 +260,12 @@ const EditChapterScreen = ({ route, navigation }: any) => {
         {/* Novel Info Card */}
         <View style={styles.novelCard}>
           <View style={styles.novelInfo}>
-            {novel?.coverImage && (
-              <Image
-                source={{ uri: getFirebaseDownloadUrl(novel.coverImage) }}
-                style={styles.coverImage}
-              />
-            )}
+                {novel?.coverImage && (
+                  <CachedImage
+                    uri={getFirebaseDownloadUrl(novel.coverImage)}
+                    style={styles.coverImage}
+                  />
+                )}
             <View style={styles.novelDetails}>
               <Text style={styles.novelTitle} numberOfLines={2}>
                 {novel?.title}

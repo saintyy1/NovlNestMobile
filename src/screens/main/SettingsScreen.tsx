@@ -881,7 +881,7 @@ const getStyles = (colors: any) => StyleSheet.create({
     alignItems: 'center' as const,
     paddingBottom: 16,
     paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingTop: Platform.OS === 'ios' ? 12 : 0,
     backgroundColor: colors.background,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,

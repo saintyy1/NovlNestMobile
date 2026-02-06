@@ -39,6 +39,7 @@ import {
 import { db } from '../../firebase/config';
 import { ref, uploadBytes, deleteObject } from 'firebase/storage';
 import { storage } from '../../firebase/config';
+import CachedImage from '../../components/CachedImage';
 
 const { width } = Dimensions.get('window');
 const CARD_WIDTH = (width - 48) / 2; // 2 columns with spacing
@@ -1077,8 +1078,8 @@ const ProfileScreen = ({ route, navigation }: any) => {
                     }}
                   >
                     {(novel.coverSmallImage || novel.coverImage) ? (
-                      <Image 
-                        source={{ uri: getFirebaseDownloadUrl(novel.coverSmallImage || novel.coverImage || '') }} 
+                      <CachedImage
+                        uri={getFirebaseDownloadUrl(novel.coverSmallImage || novel.coverImage || '')}
                         style={styles.cover}
                         resizeMode="cover"
                       />
@@ -1126,8 +1127,8 @@ const ProfileScreen = ({ route, navigation }: any) => {
                     }}
                   >
                     {(poem.coverSmallImage || poem.coverImage) ? (
-                      <Image 
-                        source={{ uri: getFirebaseDownloadUrl(poem.coverSmallImage || poem.coverImage || '') }} 
+                      <CachedImage
+                        uri={getFirebaseDownloadUrl(poem.coverSmallImage || poem.coverImage || '')}
                         style={styles.cover}
                         resizeMode="cover"
                       />
@@ -1163,7 +1164,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
           <TouchableOpacity style={styles.modalClose} onPress={() => setShowPhotoModal(false)}>
             <Ionicons name="close" size={32} color="#fff" />
           </TouchableOpacity>
-          <Image source={{ uri: profileUser?.photoURL }} style={styles.fullPhoto} resizeMode="contain" />
+          <CachedImage uri={profileUser?.photoURL} style={styles.fullPhoto} resizeMode="contain" />
         </View>
       </Modal>
 
@@ -1197,8 +1198,8 @@ const ProfileScreen = ({ route, navigation }: any) => {
                   onPress={handleEditCoverUpload}
                 >
                   {selectedNovel?.coverImage ? (
-                    <Image
-                      source={{ uri: getFirebaseDownloadUrl(selectedNovel.coverImage) }}
+                    <CachedImage
+                      uri={getFirebaseDownloadUrl(selectedNovel.coverImage)}
                       style={styles.coverImage}
                     />
                   ) : (
@@ -1328,8 +1329,8 @@ const ProfileScreen = ({ route, navigation }: any) => {
                   onPress={handleEditPoemCoverUpload}
                 >
                   {selectedPoem?.coverImage ? (
-                    <Image
-                      source={{ uri: getFirebaseDownloadUrl(selectedPoem.coverImage) }}
+                    <CachedImage
+                      uri={getFirebaseDownloadUrl(selectedPoem.coverImage)}
                       style={styles.coverImage}
                     />
                   ) : (
