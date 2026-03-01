@@ -12,14 +12,23 @@ import {
 } from 'react-native';
 import CachedImage from '../../components/CachedImage';
 import { Ionicons } from '@expo/vector-icons';
-import { collection, query, orderBy, limit, getDocs, where, updateDoc } from 'firebase/firestore';
+import { collection, query, orderBy, limit, getDocs, where, updateDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import type { Novel } from '../../types/novel';
-import type { Poem } from '../../types/poem'; 
+import type { Poem } from '../../types/poem';
 import HeroBanner from '../../components/HeroBanner';
 import { useTheme } from '../../contexts/ThemeContext';
 import { spacing, typography } from '../../theme';
 import { sendPromotionEndedNotification } from "../../services/notificationServices";
+
+interface BannerSlide {
+  id: string
+  imageUrl: string
+  novelId?: string
+  externalLink?: string
+  title?: string
+  alt?: string
+}
 
 export const HomeScreen = ({ navigation }: any) => {
   const { colors } = useTheme();
@@ -29,11 +38,33 @@ export const HomeScreen = ({ navigation }: any) => {
   const [newReleases, setNewReleases] = useState<Novel[]>([]);
   const [loading, setLoading] = useState(true);
   const [imageErrors, setImageErrors] = useState<Record<string, boolean>>({});
+  const [banners, setBanners] = useState<BannerSlide[]>([])
+  const [loadingBanners, setLoadingBanners] = useState(true)
 
   const styles = getStyles(colors);
 
+  useEffect(() => {
+    const q = query(
+      collection(db, "banners"),
+      where("isActive", "==", true),
+      orderBy("priority", "asc")
+    )
+
+    const unsubscribe = onSnapshot(q, snapshot => {
+      const data = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+      })) as BannerSlide[]
+
+      setBanners(data)
+      setLoadingBanners(false)
+    })
+
+    return () => unsubscribe()
+  }, [])
+
   const handleGenreClick = (genre: string) => {
-    navigation.navigate('Browse', { 
+    navigation.navigate('Browse', {
       selectedGenre: genre,
       browseType: 'novels'
     });
@@ -101,39 +132,39 @@ export const HomeScreen = ({ navigation }: any) => {
 
       const now = new Date()
 
-        for (const docSnap of querySnapshot.docs) {
-          const data = docSnap.data() as any
-          const endDate = data.promotionEndDate?.toDate?.() || data.promotionEndDate
+      for (const docSnap of querySnapshot.docs) {
+        const data = docSnap.data() as any
+        const endDate = data.promotionEndDate?.toDate?.() || data.promotionEndDate
 
-          if (endDate && endDate < now) {
-            // Send notification to the author that their promotion has ended
-            // Only send once - check if notification hasn't been sent yet
-            if (!data.promotionEndNotificationSent) {
-              try {
-                await sendPromotionEndedNotification(
-                  data.authorId,
-                  docSnap.id,
-                  data.title
-                )
-                console.log(`Promotion ended notification sent for novel: ${data.title}`)
-              } catch (error) {
-                console.error("Error sending promotion ended notification:", error)
-              }
+        if (endDate && endDate < now) {
+          // Send notification to the author that their promotion has ended
+          // Only send once - check if notification hasn't been sent yet
+          if (!data.promotionEndNotificationSent) {
+            try {
+              await sendPromotionEndedNotification(
+                data.authorId,
+                docSnap.id,
+                data.title
+              )
+              console.log(`Promotion ended notification sent for novel: ${data.title}`)
+            } catch (error) {
+              console.error("Error sending promotion ended notification:", error)
             }
-
-            // Mark that notification has been sent
-            await updateDoc(docSnap.ref, {
-              isPromoted: false,
-              promotionStartDate: null,
-              promotionEndDate: null,
-              reference: null,
-              promotionPlan: null,
-              promotionEndNotificationSent: true
-            })
-          } else {
-            promotionalData.push({ id: docSnap.id, ...data } as Novel)
           }
+
+          // Mark that notification has been sent
+          await updateDoc(docSnap.ref, {
+            isPromoted: false,
+            promotionStartDate: null,
+            promotionEndDate: null,
+            reference: null,
+            promotionPlan: null,
+            promotionEndNotificationSent: true
+          })
+        } else {
+          promotionalData.push({ id: docSnap.id, ...data } as Novel)
         }
+      }
 
       setPromotedNovels(promotionalData);
     } catch (error) {
@@ -227,34 +258,6 @@ export const HomeScreen = ({ navigation }: any) => {
     fetchData();
   }, []);
 
-  const bannerSlides = [
-  {
-    id: "banner-1",
-    image: require("../../../assets/images/writers-comp.webp"),
-    externalLink: "https://discord.gg/rMasj5PDPe",
-    alt: "Discord Community Banner",
-  },
-  {
-    id: "banner-2",
-    image: require("../../../assets/images/dec-comp-winner.webp"),
-    novelId: "xeypggSi2BR7dYzp7NhO",
-    alt: "Dec Comp Banner",
-  },
-  {
-    id: "banner-3",
-    image: require("../../../assets/images/his-dangerous-truth.webp"),
-    novelId: "erpas9As02OQgKGlXtJ7",
-    alt: "Promotion Banner",
-  },
-  {
-    id: "banner-4",
-    image: require("../../../assets/images/the-accidental-landlord.webp"),
-    novelId: "OgrUd6n4cLlAbh3aKMrm",
-    alt: "Promotion Banner",
-  },
-];
-
-
   const handleImageError = (novelId: string) => {
     setImageErrors(prev => ({ ...prev, [novelId]: true }));
   };
@@ -276,7 +279,7 @@ export const HomeScreen = ({ navigation }: any) => {
       <TouchableOpacity
         key={novel.id}
         style={styles.novelCard}
-        onPress={() => {navigation.navigate('NovelOverview', {novelId: novel.id });}}
+        onPress={() => { navigation.navigate('NovelOverview', { novelId: novel.id }); }}
       >
         {hasImage ? (
           <CachedImage
@@ -318,7 +321,7 @@ export const HomeScreen = ({ navigation }: any) => {
         key={poem.id}
         style={styles.novelCard}
         onPress={() => {
-          navigation.navigate('PoemOverview', {poemId: poem.id });
+          navigation.navigate('PoemOverview', { poemId: poem.id });
         }}
       >
         {hasImage ? (
@@ -366,7 +369,11 @@ export const HomeScreen = ({ navigation }: any) => {
     <ScrollView style={[styles.container, { backgroundColor: colors.background }]} showsVerticalScrollIndicator={false}>
 
       {/* Hero Banner Section */}
-      <HeroBanner slides={bannerSlides} autoSlideInterval={5000} />
+      {loadingBanners ? (
+        <ActivityIndicator size="large" />
+      ) : (
+        <HeroBanner slides={banners} autoSlideInterval={5000} />
+      )}
 
       {promotedNovels.length > 0 && (
         <View style={styles.section}>

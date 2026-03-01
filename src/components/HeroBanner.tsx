@@ -12,6 +12,7 @@ import {
 } from "react-native"
 import { useNavigation, NavigationProp } from "@react-navigation/native"
 import { useTheme } from "../contexts/ThemeContext"
+import CachedImage from "./CachedImage"
 
 /* ---------------- Types ---------------- */
 
@@ -22,7 +23,7 @@ type RootStackParamList = {
 
 interface BannerSlide {
   id: string
-  image: string | number
+  imageUrl: string
   novelId?: string
   externalLink?: string
   title?: string
@@ -188,12 +189,8 @@ const HeroBanner = ({ slides, autoSlideInterval = 4000 }: HeroBannerProps) => {
                       <ActivityIndicator size="small" color={colors.primary} />
                     </View>
                   )}
-                  <Image
-                    source={
-                      typeof slide.image === "string"
-                        ? { uri: slide.image }
-                        : slide.image
-                    }
+                  <CachedImage
+                    uri={slide.imageUrl}
                     style={[styles.image, !loadedImages[slide.id] && styles.hiddenImage]}
                     resizeMode="cover"
                     onLoad={() => handleImageLoad(slide.id)}
@@ -248,12 +245,8 @@ const HeroBanner = ({ slides, autoSlideInterval = 4000 }: HeroBannerProps) => {
                       <ActivityIndicator size="small" color={colors.primary} />
                     </View>
                   )}
-                  <Image
-                    source={
-                      typeof slide.image === "string"
-                        ? { uri: slide.image }
-                        : slide.image
-                    }
+                  <CachedImage
+                    uri={slide.imageUrl}
                     style={[styles.image, !loadedImages[slide.id] && styles.hiddenImage]}
                     resizeMode="cover"
                     onLoad={() => handleImageLoad(slide.id)}
