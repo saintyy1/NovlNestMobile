@@ -1,5 +1,7 @@
 // src/utils/draftStorage.ts
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { db } from '../../src/firebase/config';
+import { doc, deleteDoc } from 'firebase/firestore';
 
 export type DraftType = 'novel' | 'poem';
 
@@ -43,6 +45,13 @@ export async function deleteDraft(id: string, userId?: string): Promise<void> {
   const drafts = await getDrafts(userId);
   const filtered = drafts.filter(d => d.id !== id);
   await AsyncStorage.setItem(key, JSON.stringify(filtered));
+
+  try {
+    const docRef = doc(db, 'drafts', id);
+    await deleteDoc(docRef);
+  } catch (error) {
+    console.error('Failed to delete draft from Firestore:', error);
+  }
 }
 
 export async function clearAllDrafts(userId?: string): Promise<void> {

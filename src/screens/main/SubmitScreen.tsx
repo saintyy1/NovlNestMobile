@@ -1,5 +1,3 @@
-// ...existing code...
-// src/screens/main/SubmitScreen.tsx
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -27,6 +25,7 @@ import { spacing } from '../../theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getDrafts, saveDraft, deleteDraft, DraftData } from '../../utils/draftStorage';
+import { useDraftAutoSave } from '../../hooks/useDraftAutoSave';
 import { InlineChatEditor, type ChatMessage } from '../../components/InlineChatEditor';
 import { trackContentCreate } from '../../utils/Analytics-utils';
 
@@ -50,52 +49,25 @@ interface Chapter {
 }
 
 export const SubmitScreen = () => {
-    // Draft state
-    const [draftId, setDraftId] = useState<string | null>(null);
-    const [drafts, setDrafts] = useState<DraftData[]>([]);
-    const insets = useSafeAreaInsets();
-    
-    // Save as draft handler
-    const handleSaveDraft = async () => {
-      if (!submitType) return;
-      // If existing draftId belongs to the same submitType, reuse it.
-      // Otherwise create a new id so we don't overwrite a draft of another type.
-      const newId = (draftId && draftId.startsWith(`${submitType}-`)) ? draftId : `${submitType}-${Date.now()}`;
+  // Draft state
+  const [draftId, setDraftId] = useState<string | null>(null);
+  const [drafts, setDrafts] = useState<DraftData[]>([]);
+  const insets = useSafeAreaInsets();
 
-      // Preserve createdAt if we're updating an existing draft
-      const existing = (drafts || []).find(d => d.id === newId);
-      const createdAt = existing?.createdAt || new Date().toISOString();
-
-      const draft: DraftData = {
-        id: newId,
-        type: submitType,
-        createdAt,
-        updatedAt: new Date().toISOString(),
-        data: submitType === 'novel' ? {
-          title, description, summary, authorsNote, prologue, genres, coverImage, hasGraphicContent, chapters
-        } : {
-          title, description, content, genres, coverImage
-        }
-      };
-
-      await saveDraft(draft, currentUser?.uid);
-      setDraftId(newId);
-      Alert.alert('Draft Saved', 'You can continue this draft later from the Drafts section.');
-      setDrafts(await getDrafts(currentUser?.uid));
-    };
-    const [showDraftsModal, setShowDraftsModal] = useState(false);
+  // Save is handled automatically
+  const [showDraftsModal, setShowDraftsModal] = useState(false);
   const navigation = useNavigation<any>();
   const route = useRoute();
   const { currentUser } = useAuth();
   const { colors } = useTheme();
-  
+
   // Load drafts when current user changes
   useEffect(() => {
     getDrafts(currentUser?.uid).then(setDrafts);
   }, [currentUser?.uid]);
-  
+
   const [submitType, setSubmitType] = useState<SubmitType>(null);
-  
+
   // Common fields
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -103,23 +75,62 @@ export const SubmitScreen = () => {
   const [coverImage, setCoverImage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  
+
   // Novel-specific fields
   const [summary, setSummary] = useState('');
   const [authorsNote, setAuthorsNote] = useState('');
   const [prologue, setPrologue] = useState('');
   const [hasGraphicContent, setHasGraphicContent] = useState(false);
   const [chapters, setChapters] = useState<Chapter[]>([]);
-  const [chapterSelections, setChapterSelections] = useState<{[key: number]: {start: number, end: number}}>({}); 
+  const [chapterSelections, setChapterSelections] = useState<{ [key: number]: { start: number, end: number } }>({});
   const [isParsing, setIsParsing] = useState(false);
   const [parseError, setParseError] = useState('');
   const [uploadingPdf, setUploadingPdf] = useState(false);
   const [pdfProcessing, setPdfProcessing] = useState(false);
   const [pdfFileName, setPdfFileName] = useState<string | null>(null);
-  
+
   // Poem-specific fields
   const [content, setContent] = useState('');
   const [showPreview, setShowPreview] = useState(false);
+
+  const draftData = submitType === 'novel' ? {
+    title, description, summary, authorsNote, prologue, genres, coverImage, hasGraphicContent, chapters
+  } : {
+    title, description, content, genres, coverImage
+  };
+
+  const { saveStatus } = useDraftAutoSave({
+    draftId,
+    setDraftId,
+    submitType,
+    currentUser,
+    draftData
+  });
+
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', (e: any) => {
+      if (saveStatus !== 'Saving...') {
+        return;
+      }
+
+      e.preventDefault();
+
+      Alert.alert(
+        'Saving in Progress',
+        'You have unsaved changes. Leave anyway?',
+        [
+          { text: "Don't leave", style: 'cancel', onPress: () => { } },
+          {
+            text: 'Leave',
+            style: 'destructive',
+            onPress: () => navigation.dispatch(e.data.action),
+          },
+        ]
+      );
+    });
+
+    return unsubscribe;
+  }, [navigation, saveStatus]);
 
   const styles = getStyles(colors);
 
@@ -156,12 +167,19 @@ export const SubmitScreen = () => {
     }
   }, [route.params]);
 
+  // Refetch drafts whenever the selection screen is shown (submitType is null)
+  useEffect(() => {
+    if (submitType === null && currentUser?.uid) {
+      getDrafts(currentUser.uid).then(setDrafts);
+    }
+  }, [submitType, currentUser?.uid]);
+
   // Update header based on submit type
   useEffect(() => {
     const headerTitleStyle = {
       fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
     };
-    
+
     if (submitType === 'novel') {
       navigation.setOptions({ title: 'Write Novel', headerTitleStyle });
       navigation.setParams({ showBackButton: true } as any);
@@ -184,7 +202,7 @@ export const SubmitScreen = () => {
 
   const handleImagePick = async () => {
     const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    
+
     if (permissionResult.granted === false) {
       Alert.alert('Permission Required', 'Permission to access camera roll is required!');
       return;
@@ -231,20 +249,20 @@ export const SubmitScreen = () => {
 
       // Send PDF to backend for processing
       const formData = new FormData();
-      
+
       // React Native requires this specific format for file uploads
       const fileToUpload: any = {
         uri: Platform.OS === 'android' ? file.uri : file.uri.replace('file://', ''),
         type: 'application/pdf',
         name: file.name,
       };
-      
+
       formData.append('pdf', fileToUpload);
 
       const BACKEND_URL = 'https://novlnest-pdf-parser.vercel.app';
-      
+
       console.log('Uploading to:', `${BACKEND_URL}/api/process-pdf`);
-      
+
       const response = await fetch(`${BACKEND_URL}/api/process-pdf`, {
         method: 'POST',
         body: formData,
@@ -296,9 +314,9 @@ export const SubmitScreen = () => {
       console.error('PDF import error:', error);
       setUploadingPdf(false);
       setPdfProcessing(false);
-      
+
       let errorMessage = 'Failed to import PDF. ';
-      
+
       if (error.message?.includes('Network request failed')) {
         errorMessage += 'Cannot connect to backend server. Make sure it is running.';
       } else if (error.message?.includes('timeout')) {
@@ -306,7 +324,7 @@ export const SubmitScreen = () => {
       } else {
         errorMessage += error.message || 'Please try again or add chapters manually.';
       }
-      
+
       setParseError(errorMessage);
       Alert.alert('Import Failed', errorMessage);
     }
@@ -362,7 +380,7 @@ export const SubmitScreen = () => {
 
       let coverUrl = null;
       let coverSmallUrl = null;
-      
+
       const collectionName = submitType === 'novel' ? 'novels' : 'poems';
       const docRef = doc(collection(db, collectionName));
 
@@ -371,10 +389,10 @@ export const SubmitScreen = () => {
         try {
           const response = await fetch(coverImage);
           const blob = await response.blob();
-          
+
           const storageFolder = submitType === 'novel' ? 'covers-large' : 'poem-covers-large';
           const storageSmallFolder = submitType === 'novel' ? 'covers-small' : 'poem-covers-small';
-          
+
           const coverRef = ref(storage, `${storageFolder}/${docRef.id}.jpg`);
           const coverSmallRef = ref(storage, `${storageSmallFolder}/${docRef.id}.jpg`);
 
@@ -412,7 +430,7 @@ export const SubmitScreen = () => {
           likes: 0,
           views: 0,
         });
-        
+
         // Track novel creation for analytics
         trackContentCreate({
           contentType: 'novel',
@@ -439,7 +457,7 @@ export const SubmitScreen = () => {
           likes: 0,
           views: 0,
         });
-        
+
         // Track poem creation for analytics
         trackContentCreate({
           contentType: 'poem',
@@ -454,22 +472,24 @@ export const SubmitScreen = () => {
       Alert.alert(
         'Success',
         `Your ${submitType} has been submitted for review!`,
-        [{ text: 'OK', onPress: () => {
-          setSubmitType(null);
-          // Reset form
-          setTitle('');
-          setDescription('');
-          setGenres([]);
-          setCoverImage(null);
-          setSummary('');
-          setAuthorsNote('');
-          setPrologue('');
-          setHasGraphicContent(false);
-          setChapters([]);
-          setContent('');
-        }}]
+        [{
+          text: 'OK', onPress: () => {
+            setSubmitType(null);
+            // Reset form
+            setTitle('');
+            setDescription('');
+            setGenres([]);
+            setCoverImage(null);
+            setSummary('');
+            setAuthorsNote('');
+            setPrologue('');
+            setHasGraphicContent(false);
+            setChapters([]);
+            setContent('');
+          }
+        }]
       );
-      
+
     } catch (error) {
       console.error('Error submitting:', error);
       setError(`Failed to submit ${submitType}. Please try again.`);
@@ -492,7 +512,7 @@ export const SubmitScreen = () => {
   if (submitType === null) {
     return (
       <View style={styles.container}>
-        <ScrollView 
+        <ScrollView
           contentContainerStyle={styles.selectionContainer}
           showsVerticalScrollIndicator={false}
         >
@@ -545,7 +565,7 @@ export const SubmitScreen = () => {
                 },
               ]}
             >
-              <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}> 
+              <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
                 <Text style={[styles.modalTitle, { color: colors.text }]}>Your Drafts</Text>
                 <TouchableOpacity onPress={() => setShowDraftsModal(false)}>
                   <Ionicons name="close" size={24} color={colors.text} />
@@ -622,7 +642,7 @@ export const SubmitScreen = () => {
                     <Ionicons name="book" size={32} color="#fff" />
                   </View>
                 </View>
-                
+
                 <View style={styles.cardContent}>
                   <Text style={styles.cardTitle}>Novel</Text>
                   <Text style={styles.cardDescription}>
@@ -660,7 +680,7 @@ export const SubmitScreen = () => {
                     <Ionicons name="rose" size={32} color="#fff" />
                   </View>
                 </View>
-                
+
                 <View style={styles.cardContent}>
                   <Text style={styles.cardTitle}>Poem</Text>
                   <Text style={styles.cardDescription}>
@@ -703,6 +723,16 @@ export const SubmitScreen = () => {
   return (
     <View style={styles.container}>
       <ScrollView showsVerticalScrollIndicator={false}>
+        {/* Save Status Indicator */}
+        {saveStatus && (
+          <View style={styles.saveStatusContainer}>
+            {saveStatus === 'Saving...' && <ActivityIndicator size="small" color={colors.textSecondary} style={{ marginRight: 6 }} />}
+            {saveStatus === 'Saved' && <Ionicons name="checkmark-circle" size={16} color={colors.primary} style={{ marginRight: 6 }} />}
+            {saveStatus === 'Offline — saving locally' && <Ionicons name="cloud-offline" size={16} color={colors.textSecondary} style={{ marginRight: 6 }} />}
+            <Text style={styles.saveStatusText}>{saveStatus}</Text>
+          </View>
+        )}
+
         {error ? (
           <View style={styles.errorBanner}>
             <Text style={styles.errorText}>{error}</Text>
@@ -789,14 +819,14 @@ export const SubmitScreen = () => {
           <View style={styles.section}>
             <View style={styles.poemHeader}>
               <Text style={styles.label}>Your Poem *</Text>
-              <TouchableOpacity 
+              <TouchableOpacity
                 style={styles.previewToggle}
                 onPress={() => setShowPreview(!showPreview)}
               >
-                <Ionicons 
-                  name={showPreview ? 'eye-off-outline' : 'eye-outline'} 
-                  size={18} 
-                  color={colors.primary} 
+                <Ionicons
+                  name={showPreview ? 'eye-off-outline' : 'eye-outline'}
+                  size={18}
+                  color={colors.primary}
                 />
                 <Text style={styles.previewToggleText}>
                   {showPreview ? 'Edit' : 'Preview'}
@@ -970,8 +1000,8 @@ export const SubmitScreen = () => {
 
             <View style={styles.chaptersHeader}>
               <Text style={styles.sectionTitle}>Chapters</Text>
-              <TouchableOpacity 
-                style={styles.addButton} 
+              <TouchableOpacity
+                style={styles.addButton}
                 onPress={() => {
                   const chapterNumber = chapters.length + 1;
                   navigation.navigate('ChapterEditor', {
@@ -979,6 +1009,13 @@ export const SubmitScreen = () => {
                     initialTitle: '',
                     initialContent: '',
                     onSave: (newChapter: { title: string; content: string }) => {
+                      setChapters([...chapters, {
+                        title: newChapter.title,
+                        content: newChapter.content,
+                        chatMessages: []
+                      }]);
+                    },
+                    onAutoSave: (newChapter: { title: string; content: string }) => {
                       setChapters([...chapters, {
                         title: newChapter.title,
                         content: newChapter.content,
@@ -1019,6 +1056,15 @@ export const SubmitScreen = () => {
                           content: updatedChapter.content
                         };
                         setChapters(newChapters);
+                      },
+                      onAutoSave: (updatedChapter: { title: string; content: string }) => {
+                        const newChapters = [...chapters];
+                        newChapters[index] = {
+                          ...newChapters[index],
+                          title: updatedChapter.title,
+                          content: updatedChapter.content
+                        };
+                        setChapters(newChapters);
                       }
                     });
                   }}
@@ -1029,18 +1075,18 @@ export const SubmitScreen = () => {
                       <Text style={styles.chapterNumber}>Chapter {index + 1}</Text>
                       <Ionicons name="create-outline" size={16} color={colors.primary} />
                     </View>
-                    <TouchableOpacity 
+                    <TouchableOpacity
                       onPress={() => removeChapter(index)}
                       hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                     >
                       <Ionicons name="trash-outline" size={20} color={colors.error} />
                     </TouchableOpacity>
                   </View>
-                  
+
                   <Text style={styles.chapterTitleText} numberOfLines={2}>
                     {chapter.title || `Chapter ${index + 1} (Untitled)`}
                   </Text>
-                  
+
                   <Text style={styles.chapterPreview} numberOfLines={3}>
                     {chapter.content || 'No content yet. Tap to edit.'}
                   </Text>
@@ -1063,22 +1109,11 @@ export const SubmitScreen = () => {
           </View>
         )}
 
-        {/* Save as Draft & Submit Buttons */}
+        {/* Submit Button */}
         <View style={styles.actionsRow}>
           <View style={styles.actionWrapper}>
             <TouchableOpacity
-              style={[styles.draftButton, loading && styles.submitButtonDisabled]}
-              onPress={handleSaveDraft}
-              disabled={loading}
-            >
-              <Ionicons name="save-outline" size={18} color={colors.primary} />
-              <Text style={[styles.draftButtonText]}>Save as Draft</Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.actionWrapper}>
-            <TouchableOpacity
-              style={[styles.publishButton, loading && styles.submitButtonDisabled]}
+              style={[styles.publishButton, loading && styles.submitButtonDisabled, { width: '100%' }]}
               onPress={handleSubmit}
               disabled={loading}
             >
@@ -1102,7 +1137,7 @@ export const SubmitScreen = () => {
   );
 };
 
-const getStyles = (themeColors : any) => StyleSheet.create({
+const getStyles = (themeColors: any) => StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: themeColors.background,
@@ -1927,5 +1962,25 @@ const getStyles = (themeColors : any) => StyleSheet.create({
   draftActionText: {
     fontSize: 14,
     fontWeight: '700',
+  },
+  saveStatusContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    backgroundColor: themeColors.surface,
+    borderRadius: 20,
+    alignSelf: 'center',
+    marginTop: spacing.md,
+    marginBottom: spacing.xs,
+    borderWidth: 1,
+    borderColor: themeColors.border,
+  },
+  saveStatusText: {
+    fontSize: 13,
+    color: themeColors.textSecondary,
+    fontWeight: '600',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
 });

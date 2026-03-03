@@ -9,6 +9,8 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  DeviceEventEmitter,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -22,14 +24,35 @@ interface ChapterEditorScreenProps {
 
 export const ChapterEditorScreen: React.FC<ChapterEditorScreenProps> = ({ navigation, route }) => {
   const { colors } = useTheme();
-  const { chapterNumber, initialTitle = '', initialContent = '', onSave } = route.params;
-  
+  const { chapterNumber, initialTitle = '', initialContent = '', onSave, onAutoSave } = route.params;
+
   const [title, setTitle] = useState(initialTitle);
   const [content, setContent] = useState(initialContent);
   const [selection, setSelection] = useState({ start: 0, end: 0 });
   const [isPreview, setIsPreview] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    const subscription = DeviceEventEmitter.addListener('draftSaveStatus', (status) => {
+      setSaveStatus(status);
+    });
+    return () => subscription.remove();
+  }, []);
 
   const styles = getStyles(colors);
+
+  React.useEffect(() => {
+    // Only auto-save if something has actually changed from initial load
+    if (title !== initialTitle || content !== initialContent) {
+      const timer = setTimeout(() => {
+        if (onAutoSave) {
+          onAutoSave({ title: title.trim(), content: content.trim() });
+        }
+      }, 1500);
+
+      return () => clearTimeout(timer);
+    }
+  }, [title, content, initialTitle, initialContent, onAutoSave]);
 
   const handleSave = () => {
     if (!title.trim()) {
@@ -62,13 +85,13 @@ export const ChapterEditorScreen: React.FC<ChapterEditorScreenProps> = ({ naviga
           </Text>
         );
       }
-      
+
       // Process bold and italic in text
       const parts: Array<{ text: string; bold?: boolean; italic?: boolean }> = [];
       let currentText = line;
       let buffer = '';
       let i = 0;
-      
+
       while (i < currentText.length) {
         if (currentText.substring(i, i + 2) === '**') {
           if (buffer) parts.push({ text: buffer });
@@ -98,7 +121,7 @@ export const ChapterEditorScreen: React.FC<ChapterEditorScreenProps> = ({ naviga
         }
       }
       if (buffer) parts.push({ text: buffer });
-      
+
       return (
         <Text key={index} style={styles.previewText}>
           {parts.map((part, idx) => (
@@ -120,14 +143,14 @@ export const ChapterEditorScreen: React.FC<ChapterEditorScreenProps> = ({ naviga
 
   const applyMarkdownFormat = (format: 'bold' | 'italic' | 'heading') => {
     const { start, end } = selection;
-    
+
     const beforeText = content.substring(0, start);
     const selectedText = content.substring(start, end);
     const afterText = content.substring(end);
-    
+
     let formattedText = selectedText;
     let newCursorPos = end;
-    
+
     if (format === 'bold') {
       formattedText = selectedText ? `**${selectedText}**` : '**bold**';
       newCursorPos = start + (selectedText ? selectedText.length + 4 : 8);
@@ -138,7 +161,7 @@ export const ChapterEditorScreen: React.FC<ChapterEditorScreenProps> = ({ naviga
       formattedText = selectedText ? `### ${selectedText}` : '### Heading';
       newCursorPos = start + (selectedText ? selectedText.length + 4 : 11);
     }
-    
+
     const newContent = beforeText + formattedText + afterText;
     setContent(newContent);
     setSelection({ start: newCursorPos, end: newCursorPos });
@@ -169,123 +192,122 @@ export const ChapterEditorScreen: React.FC<ChapterEditorScreenProps> = ({ naviga
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
       >
-        <ScrollView 
+        <ScrollView
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-        {/* Chapter Title */}
-        <View style={styles.section}>
-          <Text style={styles.label}>Chapter Title</Text>
-          <TextInput
-            style={styles.titleInput}
-            value={title}
-            onChangeText={setTitle}
-            placeholder={`Chapter ${chapterNumber} title`}
-            placeholderTextColor={colors.textSecondary}
-            autoFocus
-          />
-        </View>
+          {/* Save Status Indicator */}
+          {saveStatus && (
+            <View style={styles.saveStatusContainer}>
+              {saveStatus === 'Saving...' && <ActivityIndicator size="small" color={colors.textSecondary} style={{ marginRight: 6 }} />}
+              {saveStatus === 'Saved' && <Ionicons name="checkmark-circle" size={16} color={colors.primary} style={{ marginRight: 6 }} />}
+              {saveStatus === 'Offline — saving locally' && <Ionicons name="cloud-offline" size={16} color={colors.textSecondary} style={{ marginRight: 6 }} />}
+              <Text style={styles.saveStatusText}>{saveStatus}</Text>
+            </View>
+          )}
 
-        {/* Toolbar */}
-        <View style={styles.toolbar}>
-          <InlineChatEditor onAddChat={insertChatIntoContent} />
-          <View style={styles.markdownButtons}>
-            <TouchableOpacity
-              style={styles.formatButton}
-              onPress={() => applyMarkdownFormat('bold')}
-            >
-              <Text style={styles.formatButtonText}>B</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.formatButton}
-              onPress={() => applyMarkdownFormat('italic')}
-            >
-              <Text style={[styles.formatButtonText, { fontStyle: 'italic' }]}>I</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.formatButton}
-              onPress={() => applyMarkdownFormat('heading')}
-            >
-              <Text style={styles.formatButtonText}>H</Text>
-            </TouchableOpacity>
+          {/* Chapter Title */}
+          <View style={styles.section}>
+            <Text style={styles.label}>Chapter Title</Text>
+            <TextInput
+              style={styles.titleInput}
+              value={title}
+              onChangeText={setTitle}
+              placeholder={`Chapter ${chapterNumber} title`}
+              placeholderTextColor={colors.textSecondary}
+              autoFocus
+            />
           </View>
-        </View>
 
-        {/* Chapter Content */}
-        <View style={styles.section}>
-          <View style={styles.labelRow}>
-            <Text style={styles.label}>Content</Text>
-            <TouchableOpacity
-              style={styles.previewButton}
-              onPress={() => setIsPreview(!isPreview)}
-            >
-              <Ionicons
-                name={isPreview ? 'create-outline' : 'eye-outline'}
-                size={18}
-                color={colors.primary}
-              />
-              <Text style={styles.previewButtonText}>
-                {isPreview ? 'Edit' : 'Preview'}
-              </Text>
-            </TouchableOpacity>
+          {/* Toolbar */}
+          <View style={styles.toolbar}>
+            <InlineChatEditor onAddChat={insertChatIntoContent} />
+            <View style={styles.markdownButtons}>
+              <TouchableOpacity
+                style={styles.formatButton}
+                onPress={() => applyMarkdownFormat('bold')}
+              >
+                <Text style={styles.formatButtonText}>B</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.formatButton}
+                onPress={() => applyMarkdownFormat('italic')}
+              >
+                <Text style={[styles.formatButtonText, { fontStyle: 'italic' }]}>I</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.formatButton}
+                onPress={() => applyMarkdownFormat('heading')}
+              >
+                <Text style={styles.formatButtonText}>H</Text>
+              </TouchableOpacity>
+            </View>
           </View>
-          <View style={styles.contentContainer}>
-            {isPreview ? (
-              <View style={styles.previewContainer}>
-                {content.trim() ? (
-                  renderMarkdownPreview()
-                ) : (
-                  <Text style={[styles.previewText, { color: colors.textSecondary }]}>
-                    No content to preview
-                  </Text>
-                )}
+
+          {/* Chapter Content */}
+          <View style={styles.section}>
+            <View style={styles.labelRow}>
+              <Text style={styles.label}>Content</Text>
+              <TouchableOpacity
+                style={styles.previewButton}
+                onPress={() => setIsPreview(!isPreview)}
+              >
+                <Ionicons
+                  name={isPreview ? 'create-outline' : 'eye-outline'}
+                  size={18}
+                  color={colors.primary}
+                />
+                <Text style={styles.previewButtonText}>
+                  {isPreview ? 'Edit' : 'Preview'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.contentContainer}>
+              {isPreview ? (
+                <View style={styles.previewContainer}>
+                  {content.trim() ? (
+                    renderMarkdownPreview()
+                  ) : (
+                    <Text style={[styles.previewText, { color: colors.textSecondary }]}>
+                      No content to preview
+                    </Text>
+                  )}
+                </View>
+              ) : (
+                <TextInput
+                  style={styles.contentInput}
+                  value={content}
+                  onChangeText={setContent}
+                  onSelectionChange={(event) => setSelection(event.nativeEvent.selection)}
+                  selection={selection}
+                  placeholder="Write your chapter content here... Highlight your words or sentences and tap the purple buttons above to format: **bold**, *italic*, ### headings"
+                  placeholderTextColor={colors.textSecondary}
+                  multiline
+                  scrollEnabled={false}
+                  textAlignVertical="top"
+                />
+              )}
+            </View>
+            <View style={styles.statsBar}>
+              <View style={styles.statItem}>
+                <Ionicons name="text-outline" size={14} color={colors.textSecondary} />
+                <Text style={styles.statText}>{content.length} characters</Text>
               </View>
-            ) : (
-              <TextInput
-                style={styles.contentInput}
-                value={content}
-                onChangeText={setContent}
-                onSelectionChange={(event) => setSelection(event.nativeEvent.selection)}
-                selection={selection}
-                placeholder="Write your chapter content here... Highlight your words or sentences and tap the purple buttons above to format: **bold**, *italic*, ### headings"
-                placeholderTextColor={colors.textSecondary}
-                multiline
-                scrollEnabled={false}
-                textAlignVertical="top"
-              />
-            )}
-          </View>
-          <View style={styles.statsBar}>
-            <View style={styles.statItem}>
-              <Ionicons name="text-outline" size={14} color={colors.textSecondary} />
-              <Text style={styles.statText}>{content.length} characters</Text>
-            </View>
-            <View style={styles.statItem}>
-              <Ionicons name="document-text-outline" size={14} color={colors.textSecondary} />
-              <Text style={styles.statText}>
-                {content.trim().split(/\s+/).filter((w: string) => w).length} words
-              </Text>
+              <View style={styles.statItem}>
+                <Ionicons name="document-text-outline" size={14} color={colors.textSecondary} />
+                <Text style={styles.statText}>
+                  {content.trim().split(/\s+/).filter((w: string) => w).length} words
+                </Text>
+              </View>
             </View>
           </View>
-        </View>
 
-        <View style={styles.bottomSpacing} />
-      </ScrollView>
+          <View style={styles.bottomSpacing} />
+        </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* Floating Save Button */}
-      <View style={styles.floatingButtonContainer}>
-        <TouchableOpacity
-          style={styles.saveButton}
-          onPress={handleSave}
-          activeOpacity={0.8}
-        >
-          <Ionicons name="save" size={20} color="#fff" />
-          <Text style={styles.saveButtonText}>Save Chapter</Text>
-        </TouchableOpacity>
-      </View>
     </View>
   );
 };
@@ -299,6 +321,20 @@ const getStyles = (colors: any) => StyleSheet.create({
   },
   scrollContent: {
     paddingBottom: 100,
+  },
+  saveStatusContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  saveStatusText: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    fontWeight: '600',
   },
   headerButton: {
     marginRight: spacing.md,
