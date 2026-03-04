@@ -189,8 +189,8 @@ const HeroBanner = ({ slides, autoSlideInterval = 4000 }: HeroBannerProps) => {
                       <ActivityIndicator size="small" color={colors.primary} />
                     </View>
                   )}
-                  <CachedImage
-                    uri={slide.imageUrl}
+                  <Image
+                    source={{ uri: slide.imageUrl }}
                     style={[styles.image, !loadedImages[slide.id] && styles.hiddenImage]}
                     resizeMode="cover"
                     onLoad={() => handleImageLoad(slide.id)}
@@ -245,8 +245,8 @@ const HeroBanner = ({ slides, autoSlideInterval = 4000 }: HeroBannerProps) => {
                       <ActivityIndicator size="small" color={colors.primary} />
                     </View>
                   )}
-                  <CachedImage
-                    uri={slide.imageUrl}
+                  <Image
+                    source={{ uri: slide.imageUrl }}
                     style={[styles.image, !loadedImages[slide.id] && styles.hiddenImage]}
                     resizeMode="cover"
                     onLoad={() => handleImageLoad(slide.id)}

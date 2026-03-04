@@ -1,9 +1,10 @@
 import React, { useRef } from "react"
 import { View, Text, TouchableOpacity, Image, StyleSheet, Platform } from "react-native"
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs"
-import { CommonActions } from "@react-navigation/native"
 import { Ionicons } from "@expo/vector-icons"
+import { CommonActions } from "@react-navigation/native"
 import { useAuth } from "../../contexts/AuthContext"
+import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useNotifications } from "../../contexts/NotificationContext"
 import { useChat } from "../../contexts/ChatContext"
 import { useTheme } from "../../contexts/ThemeContext"
@@ -58,6 +59,7 @@ const SubmitBackButton = ({ navigation, route }: any) => {
 export const MainTabNavigator = () => {
   const { colors } = useTheme()
   const { unreadCount } = useChat()
+  const insets = useSafeAreaInsets()
   const previousTabRef = useRef<string>('Home')
 
   const styles = getStyles(colors)
@@ -122,19 +124,19 @@ export const MainTabNavigator = () => {
       screenListeners={({ navigation, route }) => ({
         tabPress: (e) => {
           const tabName = e.target?.split('-')[0] || ''
-          
+
           // Track tab navigation for analytics
           if (tabName && tabName !== previousTabRef.current) {
             trackTabNavigation(tabName, previousTabRef.current)
             previousTabRef.current = tabName
           }
-          
+
           // If tapping on the already active tab, reset to the root of that tab
           const isFocused = navigation.isFocused()
           if (isFocused) {
             // Prevent default behavior
             e.preventDefault()
-            
+
             // Reset the tab's navigation stack to the initial route
             navigation.dispatch(
               CommonActions.reset({
@@ -189,7 +191,8 @@ export const MainTabNavigator = () => {
           tabBarInactiveTintColor: colors.textSecondary,
           tabBarStyle: {
             paddingTop: 5,
-            height: 80,
+            paddingBottom: Platform.OS === 'android' ? Math.max(insets.bottom, 10) : insets.bottom,
+            height: 60 + (Platform.OS === 'android' ? Math.max(insets.bottom, 10) : insets.bottom),
             backgroundColor: colors.surface,
             borderTopColor: colors.border,
           },
@@ -216,8 +219,8 @@ export const MainTabNavigator = () => {
             <View style={styles.headerContainer}>
               <View style={styles.headerContent}>
                 <View style={styles.logoContainer}>
-                  <Image 
-                    source={require('../../../assets/images/app-icon.png')} 
+                  <Image
+                    source={require('../../../assets/images/app-icon.png')}
                     style={styles.logoImage}
                     resizeMode="contain"
                   />
@@ -284,7 +287,8 @@ export const MainTabNavigator = () => {
           headerShown: false,
           tabBarStyle: {
             paddingTop: 5,
-            height: 80,
+            paddingBottom: Platform.OS === 'android' ? Math.max(insets.bottom, 10) : insets.bottom,
+            height: 60 + (Platform.OS === 'android' ? Math.max(insets.bottom, 10) : insets.bottom),
             backgroundColor: colors.surface,
             borderTopColor: colors.border,
             display: "flex", // Force tab bar to always be visible

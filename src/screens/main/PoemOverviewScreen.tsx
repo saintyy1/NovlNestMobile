@@ -64,7 +64,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
   const { poemId } = route.params;
   const { currentUser, updatePoemLibrary } = useAuth();
   const { colors } = useTheme();
-  
+
   const [poem, setPoem] = useState<Poem | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -73,7 +73,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
   const [liked, setLiked] = useState(false);
   const [isSummaryExpanded, setIsSummaryExpanded] = useState(false);
   const [authorData, setAuthorData] = useState<AuthorData | null>(null);
-  
+
   // Comment states
   const [newComment, setNewComment] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
@@ -85,7 +85,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
   const [showReplyModal, setShowReplyModal] = useState(false);
   const commentRefs = useRef<Record<string, View | null>>({});
   const replyInputRef = useRef<TextInput>(null);
-  
+
   // Modal states
   const [showShareModal, setShowShareModal] = useState(false);
   const [showTipModal, setShowTipModal] = useState(false);
@@ -111,11 +111,11 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
         setLoading(true);
         const poemDocRef = doc(db, 'poems', poemId);
         const poemDoc = await getDoc(poemDocRef);
-        
+
         if (poemDoc.exists()) {
           const poemData = { id: poemDoc.id, ...poemDoc.data() } as Poem;
           setPoem(poemData);
-          
+
           // Track poem view for analytics
           trackPoemView({
             poemId: poemData.id,
@@ -124,18 +124,22 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
             authorName: poemData.poetName,
             genres: poemData.genres,
           });
-          
+
           if (currentUser) {
             setLiked(poemData.likedBy?.includes(currentUser.uid) || false);
-            
+
             // Increment view count only once per user
             const viewKey = `poem_view_${poemId}_${currentUser.uid}`;
             const hasViewed = await AsyncStorage.getItem(viewKey);
-            
+
             if (!hasViewed) {
-              await updateDoc(poemDocRef, { views: increment(1) });
-              await AsyncStorage.setItem(viewKey, 'true');
-              setPoem(prev => prev ? { ...prev, views: (prev.views || 0) + 1 } : null);
+              try {
+                await updateDoc(poemDocRef, { views: increment(1) });
+                await AsyncStorage.setItem(viewKey, 'true');
+                setPoem(prev => prev ? { ...prev, views: (prev.views || 0) + 1 } : null);
+              } catch (error) {
+                console.error('Error incrementing view count:', error);
+              }
             }
           }
         } else {
@@ -518,8 +522,8 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
   };
 
   const renderComment = (comment: Comment, isReply: boolean = false) => (
-    <View 
-      key={comment.id} 
+    <View
+      key={comment.id}
       style={isReply ? styles.replyItem : styles.commentItem}
       ref={(ref) => { commentRefs.current[comment.id] = ref; }}
     >
@@ -564,21 +568,21 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
             )}
           </View>
 
-        <Text style={styles.commentText}>{comment.content}</Text>
+          <Text style={styles.commentText}>{comment.content}</Text>
 
-        <View style={styles.commentActions}>
-          <TouchableOpacity
-            onPress={() => handleCommentLike(comment.id, comment.likedBy?.includes(currentUser?.uid || ''))}
-            disabled={!currentUser}
-            style={styles.commentAction}
-          >
-            <Ionicons
-              name={comment.likedBy?.includes(currentUser?.uid || '') ? 'heart' : 'heart-outline'}
-              size={16}
-              color={comment.likedBy?.includes(currentUser?.uid || '') ? '#EF4444' : '#9CA3AF'}
-            />
-            <Text style={styles.commentActionText}>{comment.likes || 0}</Text>
-          </TouchableOpacity>
+          <View style={styles.commentActions}>
+            <TouchableOpacity
+              onPress={() => handleCommentLike(comment.id, comment.likedBy?.includes(currentUser?.uid || ''))}
+              disabled={!currentUser}
+              style={styles.commentAction}
+            >
+              <Ionicons
+                name={comment.likedBy?.includes(currentUser?.uid || '') ? 'heart' : 'heart-outline'}
+                size={16}
+                color={comment.likedBy?.includes(currentUser?.uid || '') ? '#EF4444' : '#9CA3AF'}
+              />
+              <Text style={styles.commentActionText}>{comment.likes || 0}</Text>
+            </TouchableOpacity>
 
             {currentUser && (
               <TouchableOpacity
@@ -594,7 +598,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
                 <Text style={styles.commentActionText}>Reply</Text>
               </TouchableOpacity>
             )}
-            
+
             {canDeleteComment(comment) && (
               <TouchableOpacity
                 onPress={() => handleDeleteComment(comment.id)}
@@ -808,7 +812,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
                         <Text style={styles.scrollHintText}>Scroll to see more</Text>
                       </View>
                     </View>
-                    <ScrollView 
+                    <ScrollView
                       style={styles.commentsList}
                       nestedScrollEnabled={true}
                       showsVerticalScrollIndicator={true}

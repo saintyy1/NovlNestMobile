@@ -85,8 +85,16 @@ export default function CachedImage({
         if (info.exists) {
           if (mounted) setLocalUri(fileUri);
         } else {
-          const downloaded = await FileSystem.downloadAsync(uri, fileUri);
-          if (mounted) setLocalUri(downloaded.uri);
+          const tempUri = `${fileUri}.tmp`;
+          const downloaded = await FileSystem.downloadAsync(uri, tempUri);
+
+          if (downloaded.status === 200) {
+            await FileSystem.moveAsync({ from: tempUri, to: fileUri });
+            if (mounted) setLocalUri(fileUri);
+          } else {
+            await FileSystem.deleteAsync(tempUri, { idempotent: true });
+            if (mounted) setLocalUri(uri);
+          }
         }
       } catch {
         if (mounted) setLocalUri(uri);

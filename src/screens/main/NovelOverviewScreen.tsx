@@ -125,15 +125,19 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
 
           if (currentUser) {
             setLiked(novelData.likedBy?.includes(currentUser.uid) || false);
-      
+
             // Increment view count only once per user
             const viewKey = `novel_view_${novelId}_${currentUser.uid}`;
             const hasViewed = await AsyncStorage.getItem(viewKey);
 
             if (!hasViewed) {
-              await updateDoc(novelDocRef, { views: increment(1) });
-              await AsyncStorage.setItem(viewKey, 'true');
-              setNovel(prev => prev ? { ...prev, views: (prev.views || 0) + 1 } : null);
+              try {
+                await updateDoc(novelDocRef, { views: increment(1) });
+                await AsyncStorage.setItem(viewKey, 'true');
+                setNovel(prev => prev ? { ...prev, views: (prev.views || 0) + 1 } : null);
+              } catch (error) {
+                console.error('Error incrementing view count:', error);
+              }
             }
           }
         } else {
@@ -516,8 +520,8 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
   };
 
   const renderComment = (comment: Comment, isReply: boolean = false) => (
-    <View 
-      key={comment.id} 
+    <View
+      key={comment.id}
       style={isReply ? styles.replyItem : styles.commentItem}
       ref={(ref) => { commentRefs.current[comment.id] = ref; }}
     >
@@ -659,13 +663,13 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
       <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
         {/* Cover and Info */}
         <View style={styles.coverSection}>
-                {novel.coverImage ? (
-                  <CachedImage
-                    uri={getFirebaseDownloadUrl(novel.coverImage)}
-                    style={styles.coverImage}
-                    resizeMode="cover"
-                  />
-                ) : (
+          {novel.coverImage ? (
+            <CachedImage
+              uri={getFirebaseDownloadUrl(novel.coverImage)}
+              style={styles.coverImage}
+              resizeMode="cover"
+            />
+          ) : (
             <View style={styles.placeholderCover}>
               <Ionicons name="book" size={60} color="#9CA3AF" />
             </View>
@@ -703,7 +707,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
           <View style={styles.actionButtons}>
             <TouchableOpacity
               style={styles.readButton}
-              onPress={() => navigation.navigate('NovelReader', {novelId: novel.id,chapterNumber: 0})}
+              onPress={() => navigation.navigate('NovelReader', { novelId: novel.id, chapterNumber: 0 })}
             >
               <Ionicons name="book-outline" size={20} color="#fff" />
               <Text style={styles.readButtonText}>Start reading</Text>
@@ -852,7 +856,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
                                 'Confirm Deletion',
                                 'Are you sure you want to delete this chapter? This action cannot be undone.',
                                 [
-                                  { 
+                                  {
                                     text: 'Delete',
                                     style: 'destructive',
                                     onPress: async () => {
@@ -952,7 +956,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
                     <Text style={styles.scrollHintText}>Scroll to see more</Text>
                   </View>
                 </View>
-                <ScrollView 
+                <ScrollView
                   style={styles.commentsList}
                   nestedScrollEnabled={true}
                   showsVerticalScrollIndicator={true}
