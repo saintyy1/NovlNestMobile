@@ -83,18 +83,18 @@ const ProfileScreen = ({ route, navigation }: any) => {
   const [refreshing, setRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState<'published' | 'pending' | 'all'>('all');
   const [contentType, setContentType] = useState<'novels' | 'poems'>('novels');
-  
+
   // Follow states
   const [isFollowing, setIsFollowing] = useState(false);
   const [followersCount, setFollowersCount] = useState(0);
   const [followingCount, setFollowingCount] = useState(0);
   const [isTogglingFollow, setIsTogglingFollow] = useState(false);
-  
+
   // Announcement states
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [newAnnouncementContent, setNewAnnouncementContent] = useState('');
   const [submittingAnnouncement, setSubmittingAnnouncement] = useState(false);
-  
+
   // Modal states
   const [showPhotoModal, setShowPhotoModal] = useState(false);
   const [showFollowListModal, setShowFollowListModal] = useState(false);
@@ -108,25 +108,25 @@ const ProfileScreen = ({ route, navigation }: any) => {
   const [showActionSheet, setShowActionSheet] = useState(false);
   const [actionSheetNovel, setActionSheetNovel] = useState<Novel | null>(null);
   const [actionSheetPoem, setActionSheetPoem] = useState<Poem | null>(null);
-  
+
   // Edit novel states
   const [editNovelTitle, setEditNovelTitle] = useState('');
   const [editNovelDescription, setEditNovelDescription] = useState('');
   const [editNovelSummary, setEditNovelSummary] = useState('');
   const [editNovelAuthorsNote, setEditNovelAuthorsNote] = useState('');
   const [editNovelPrologue, setEditNovelPrologue] = useState('');
-  
+
   // Edit poem states
   const [editPoemTitle, setEditPoemTitle] = useState('');
   const [editPoemDescription, setEditPoemDescription] = useState('');
   const [editPoemContent, setEditPoemContent] = useState('');
-  
+
   // Edit cover states
   const [uploadingEditCover, setUploadingEditCover] = useState(false);
   const [editCoverError, setEditCoverError] = useState('');
   const [uploadingEditPoemCover, setUploadingEditPoemCover] = useState(false);
   const [editPoemCoverError, setEditPoemCoverError] = useState('');
-  
+
   const isOwnProfile = !userId || userId === currentUser?.uid;
   const displayName = profileUser?.displayName || currentUser?.displayName || 'User';
 
@@ -244,7 +244,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
         const uri = result.assets[0].uri;
         const response = await fetch(uri);
         const blob = await response.blob();
-        
+
         // Convert to base64 for Firestore
         const reader = new FileReader();
         reader.readAsDataURL(blob);
@@ -733,7 +733,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
         <View style={[styles.heroHeader, { backgroundColor: colors.primary + '15' }]}>
           {/* Background Accent */}
           <View style={styles.heroAccent} />
-          
+
           {/* Profile Info */}
           <View style={styles.heroContent}>
             {/* Avatar with Badge */}
@@ -750,7 +750,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
                   </View>
                 )}
               </TouchableOpacity>
-              
+
               {/* Edit Photo Floating Button */}
               {isOwnProfile && (
                 <TouchableOpacity style={styles.editPhotoButton} onPress={handlePhotoUpload}>
@@ -776,8 +776,8 @@ const ProfileScreen = ({ route, navigation }: any) => {
               </Text>
               <Text style={[styles.statName, { color: colors.textSecondary }]}>Likes</Text>
             </View>
-            
-            <TouchableOpacity 
+
+            <TouchableOpacity
               style={[styles.statItem, { borderRightWidth: 1, borderRightColor: colors.cardBorder }]}
               onPress={() => {
                 setFollowListType('followers');
@@ -787,8 +787,8 @@ const ProfileScreen = ({ route, navigation }: any) => {
               <Text style={[styles.statNumber, { color: colors.primary }]}>{followersCount}</Text>
               <Text style={[styles.statName, { color: colors.textSecondary }]}>Followers</Text>
             </TouchableOpacity>
-            
-            <TouchableOpacity 
+
+            <TouchableOpacity
               style={styles.statItem}
               onPress={() => {
                 setFollowListType('following');
@@ -804,10 +804,10 @@ const ProfileScreen = ({ route, navigation }: any) => {
         {/* Action Buttons - Full Width Cards */}
         {!isOwnProfile && (
           <View style={[styles.actionSection, { backgroundColor: colors.surface }]}>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={[
                 styles.actionCard,
-                isFollowing 
+                isFollowing
                   ? { backgroundColor: colors.card, borderWidth: 1.5, borderColor: colors.primary }
                   : { backgroundColor: colors.primary }
               ]}
@@ -818,10 +818,10 @@ const ProfileScreen = ({ route, navigation }: any) => {
                 {isTogglingFollow ? (
                   <ActivityIndicator size="small" color={isFollowing ? colors.primary : '#fff'} />
                 ) : (
-                  <Ionicons 
-                    name={isFollowing ? 'person-remove-outline' : 'person-add-outline'} 
-                    size={20} 
-                    color={isFollowing ? colors.primary : '#fff'} 
+                  <Ionicons
+                    name={isFollowing ? 'person-remove-outline' : 'person-add-outline'}
+                    size={20}
+                    color={isFollowing ? colors.primary : '#fff'}
                   />
                 )}
                 <Text style={[
@@ -832,12 +832,12 @@ const ProfileScreen = ({ route, navigation }: any) => {
                 </Text>
               </View>
             </TouchableOpacity>
-            
-            <TouchableOpacity 
+
+            <TouchableOpacity
               style={[styles.actionCard, { backgroundColor: colors.success }]}
               onPress={() => {
                 // Navigate back to MainTabs, then to Messages tab with userId param
-                navigation.navigate('MainTabs' as any, { 
+                navigation.navigate('MainTabs' as any, {
                   screen: 'Messages',
                   params: { userId: profileUser.uid }
                 });
@@ -859,10 +859,10 @@ const ProfileScreen = ({ route, navigation }: any) => {
               <Ionicons name="link" size={20} color={colors.primary} />
               <Text style={[styles.sectionTitle, { color: colors.text }]}>Connect</Text>
             </View>
-            
+
             <View style={styles.socialLinksGrid}>
               {profileUser?.instagramUrl && (
-                <TouchableOpacity 
+                <TouchableOpacity
                   style={[styles.socialCard, { backgroundColor: colors.card }]}
                   onPress={() => Linking.openURL(profileUser.instagramUrl)}
                 >
@@ -872,9 +872,9 @@ const ProfileScreen = ({ route, navigation }: any) => {
                   <Text style={[styles.socialCardText, { color: colors.text }]}>Instagram</Text>
                 </TouchableOpacity>
               )}
-              
+
               {profileUser?.twitterUrl && (
-                <TouchableOpacity 
+                <TouchableOpacity
                   style={[styles.socialCard, { backgroundColor: colors.card }]}
                   onPress={() => Linking.openURL(profileUser.twitterUrl)}
                 >
@@ -884,9 +884,9 @@ const ProfileScreen = ({ route, navigation }: any) => {
                   <Text style={[styles.socialCardText, { color: colors.text }]}>X</Text>
                 </TouchableOpacity>
               )}
-              
+
               {profileUser?.supportLink && (
-                <TouchableOpacity 
+                <TouchableOpacity
                   style={[styles.socialCard, { backgroundColor: colors.card }]}
                   onPress={() => setShowTipModal(true)}
                 >
@@ -903,10 +903,10 @@ const ProfileScreen = ({ route, navigation }: any) => {
         {/* Announcements Section */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
-            <View style={{ 
-              backgroundColor: colors.primary, 
-              borderRadius: 12, 
-              padding: 8 
+            <View style={{
+              backgroundColor: colors.primary,
+              borderRadius: 12,
+              padding: 8
             }}>
               <Ionicons name="megaphone" size={20} color="#fff" />
             </View>
@@ -961,7 +961,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
                 <View style={styles.announcementFooter}>
                   <Text style={styles.announcementDate}>{formatDateTime(announcement.createdAt)}</Text>
                   {isOwnProfile && (
-                    <TouchableOpacity 
+                    <TouchableOpacity
                       onPress={() => handleDeleteAnnouncement(announcement.id)}
                       style={{ padding: 4 }}
                     >
@@ -1193,7 +1193,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
             <View style={styles.formGroup}>
               <Text style={styles.label}>Cover Image</Text>
               <View style={styles.coverUploadContainer}>
-                <TouchableOpacity 
+                <TouchableOpacity
                   style={[styles.coverPreview, { backgroundColor: colors.surface }]}
                   onPress={handleEditCoverUpload}
                 >
@@ -1206,9 +1206,9 @@ const ProfileScreen = ({ route, navigation }: any) => {
                     <Ionicons name="book-outline" size={32} color={colors.textSecondary} />
                   )}
                 </TouchableOpacity>
-                
+
                 <View style={styles.coverButtonGroup}>
-                  <TouchableOpacity 
+                  <TouchableOpacity
                     style={[styles.coverButton, { backgroundColor: colors.primary }]}
                     onPress={handleEditCoverUpload}
                     disabled={uploadingEditCover}
@@ -1224,7 +1224,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
                   </TouchableOpacity>
 
                   {selectedNovel?.coverImage && (
-                    <TouchableOpacity 
+                    <TouchableOpacity
                       style={[styles.coverButton, { backgroundColor: colors.error }]}
                       onPress={removeEditCover}
                       disabled={uploadingEditCover}
@@ -1235,9 +1235,9 @@ const ProfileScreen = ({ route, navigation }: any) => {
                   )}
                 </View>
               </View>
-              
+
               {editCoverError && (
-                <Text 
+                <Text
                   style={[
                     styles.coverErrorText,
                     { color: editCoverError.includes('successfully') ? colors.success : colors.error }
@@ -1324,7 +1324,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
             <View style={styles.formGroup}>
               <Text style={styles.label}>Cover Image</Text>
               <View style={styles.coverUploadContainer}>
-                <TouchableOpacity 
+                <TouchableOpacity
                   style={[styles.coverPreview, { backgroundColor: colors.surface }]}
                   onPress={handleEditPoemCoverUpload}
                 >
@@ -1337,9 +1337,9 @@ const ProfileScreen = ({ route, navigation }: any) => {
                     <Ionicons name="book-outline" size={32} color={colors.textSecondary} />
                   )}
                 </TouchableOpacity>
-                
+
                 <View style={styles.coverButtonGroup}>
-                  <TouchableOpacity 
+                  <TouchableOpacity
                     style={[styles.coverButton, { backgroundColor: colors.primary }]}
                     onPress={handleEditPoemCoverUpload}
                     disabled={uploadingEditPoemCover}
@@ -1355,7 +1355,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
                   </TouchableOpacity>
 
                   {selectedPoem?.coverImage && (
-                    <TouchableOpacity 
+                    <TouchableOpacity
                       style={[styles.coverButton, { backgroundColor: colors.error }]}
                       onPress={removeEditPoemCover}
                       disabled={uploadingEditPoemCover}
@@ -1366,9 +1366,9 @@ const ProfileScreen = ({ route, navigation }: any) => {
                   )}
                 </View>
               </View>
-              
+
               {editPoemCoverError && (
-                <Text 
+                <Text
                   style={[
                     styles.coverErrorText,
                     { color: editPoemCoverError.includes('successfully') ? colors.success : colors.error }
@@ -1455,23 +1455,30 @@ const ProfileScreen = ({ route, navigation }: any) => {
         userIds={followListType === 'followers' ? (profileUser?.followers || []) : (profileUser?.following || [])}
         title={followListType === 'followers' ? 'Followers' : 'Following'}
         navigation={navigation}
+        onUsersLoaded={(validCount) => {
+          if (followListType === 'followers') {
+            setFollowersCount(validCount);
+          } else {
+            setFollowingCount(validCount);
+          }
+        }}
       />
 
       {/* Action Sheet Modal */}
       <Modal visible={showActionSheet} transparent animationType="fade">
-        <TouchableOpacity 
-          style={styles.actionSheetOverlay} 
-          activeOpacity={1} 
+        <TouchableOpacity
+          style={styles.actionSheetOverlay}
+          activeOpacity={1}
           onPress={() => setShowActionSheet(false)}
         >
           <View style={[styles.actionSheetContainer, { backgroundColor: colors.surface }]}>
             <View style={[styles.actionSheetHandle, { backgroundColor: colors.textSecondary }]} />
-            
+
             <Text style={[styles.actionSheetTitle, { color: colors.text }]}>
               {actionSheetNovel ? actionSheetNovel.title : actionSheetPoem?.title}
             </Text>
-            
-            <TouchableOpacity 
+
+            <TouchableOpacity
               style={styles.actionSheetItem}
               onPress={() => {
                 setShowActionSheet(false);
@@ -1485,9 +1492,9 @@ const ProfileScreen = ({ route, navigation }: any) => {
               <Ionicons name="create-outline" size={24} color={colors.primary} />
               <Text style={[styles.actionSheetItemText, { color: colors.text }]}>Edit</Text>
             </TouchableOpacity>
-            
+
             {actionSheetNovel && (
-              <TouchableOpacity 
+              <TouchableOpacity
                 style={styles.actionSheetItem}
                 onPress={() => {
                   setShowActionSheet(false);
@@ -1498,23 +1505,23 @@ const ProfileScreen = ({ route, navigation }: any) => {
                 <Text style={[styles.actionSheetItemText, { color: colors.text }]}>Add Chapter</Text>
               </TouchableOpacity>
             )}
-            
+
             {actionSheetNovel && (
-            <TouchableOpacity 
-              style={styles.actionSheetItem}
-              onPress={() => {
-                setShowActionSheet(false);
-                if (actionSheetNovel) {
-                  navigation.navigate('PromoteScreen', { novelId: actionSheetNovel.id, type: 'novel' });
-                }
-              }}
-            >
-              <Ionicons name="megaphone-outline" size={24} color={colors.primary} />
-              <Text style={[styles.actionSheetItemText, { color: colors.text }]}>Promote</Text>
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.actionSheetItem}
+                onPress={() => {
+                  setShowActionSheet(false);
+                  if (actionSheetNovel) {
+                    navigation.navigate('PromoteScreen', { novelId: actionSheetNovel.id, type: 'novel' });
+                  }
+                }}
+              >
+                <Ionicons name="megaphone-outline" size={24} color={colors.primary} />
+                <Text style={[styles.actionSheetItemText, { color: colors.text }]}>Promote</Text>
+              </TouchableOpacity>
             )}
-            
-            <TouchableOpacity 
+
+            <TouchableOpacity
               style={styles.actionSheetItem}
               onPress={() => {
                 setShowActionSheet(false);
@@ -1528,8 +1535,8 @@ const ProfileScreen = ({ route, navigation }: any) => {
               <Ionicons name="trash-outline" size={24} color={colors.error} />
               <Text style={[styles.actionSheetItemText, { color: colors.error }]}>Delete</Text>
             </TouchableOpacity>
-            
-            <TouchableOpacity 
+
+            <TouchableOpacity
               style={[styles.actionSheetItem, styles.actionSheetCancel, { backgroundColor: colors.card }]}
               onPress={() => setShowActionSheet(false)}
             >

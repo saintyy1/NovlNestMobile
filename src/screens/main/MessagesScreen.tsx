@@ -457,10 +457,10 @@ export const MessagesScreen = ({ navigation, route }: any) => {
   }
 
   if (
-  state.isLoading &&
-  state.conversations.length === 0 &&
-  !state.currentConversation
-) {
+    state.isLoading &&
+    state.conversations.length === 0 &&
+    !state.currentConversation
+  ) {
     return (
       <View style={styles.safeArea}>
         <View style={styles.loadingContainer}>
@@ -538,10 +538,10 @@ export const MessagesScreen = ({ navigation, route }: any) => {
   return (
     <KeyboardAvoidingView
       style={styles.safeArea}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      behavior="padding"
       keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
     >
-    <View style={styles.safeArea}>
+      <View style={styles.safeArea}>
         {/* Header */}
         <View style={styles.conversationsHeader}>
           <View style={styles.conversationsHeaderContent}>
@@ -599,7 +599,7 @@ export const MessagesScreen = ({ navigation, route }: any) => {
           {/* Messages List */}
           <View style={styles.messagesContainer}>
             {state.loadingConversations.has(state.currentConversation.id) &&
-            state.messages.length === 0 ? (
+              state.messages.length === 0 ? (
               <View style={styles.emptyMessagesContainer}>
                 <ActivityIndicator size="large" color={colors.primary} />
                 <Text style={styles.loadingText}>Loading messages...</Text>
@@ -666,32 +666,32 @@ export const MessagesScreen = ({ navigation, route }: any) => {
           </View>
         </SafeAreaView>
 
-      {/* Delete Confirmation Modal */}
-      <Modal visible={deleteModalVisible} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Delete Message</Text>
-            <Text style={styles.modalText}>
-              Are you sure you want to delete this message? This action cannot be undone.
-            </Text>
-            <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={[styles.modalButton, styles.modalButtonCancel]}
-                onPress={() => {
-                  setDeleteModalVisible(false);
-                  setMessageToDelete(null);
-                }}
-              >
-                <Text style={styles.modalButtonTextCancel}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.modalButton, styles.modalButtonDelete]} onPress={confirmDeleteMessage}>
-                <Text style={styles.modalButtonTextDelete}>Delete</Text>
-              </TouchableOpacity>
+        {/* Delete Confirmation Modal */}
+        <Modal visible={deleteModalVisible} transparent animationType="fade">
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Delete Message</Text>
+              <Text style={styles.modalText}>
+                Are you sure you want to delete this message? This action cannot be undone.
+              </Text>
+              <View style={styles.modalButtons}>
+                <TouchableOpacity
+                  style={[styles.modalButton, styles.modalButtonCancel]}
+                  onPress={() => {
+                    setDeleteModalVisible(false);
+                    setMessageToDelete(null);
+                  }}
+                >
+                  <Text style={styles.modalButtonTextCancel}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.modalButton, styles.modalButtonDelete]} onPress={confirmDeleteMessage}>
+                  <Text style={styles.modalButtonTextDelete}>Delete</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
-        </View>
-      </Modal>
-    </View>
+        </Modal>
+      </View>
     </KeyboardAvoidingView>
   );
 };

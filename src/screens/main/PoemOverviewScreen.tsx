@@ -13,6 +13,7 @@ import {
   Dimensions,
   KeyboardAvoidingView,
   Platform,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -67,6 +68,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
 
   const [poem, setPoem] = useState<Poem | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
+  const [totalCommentsCount, setTotalCommentsCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [commentsLoading, setCommentsLoading] = useState(true);
   const [error, setError] = useState('');
@@ -82,13 +84,13 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
   const [replyContent, setReplyContent] = useState('');
   const [submittingReply, setSubmittingReply] = useState(false);
   const [deletingComment, setDeletingComment] = useState<string | null>(null);
-  const [showReplyModal, setShowReplyModal] = useState(false);
   const commentRefs = useRef<Record<string, View | null>>({});
   const replyInputRef = useRef<TextInput>(null);
 
   // Modal states
   const [showShareModal, setShowShareModal] = useState(false);
   const [showTipModal, setShowTipModal] = useState(false);
+  const [showCommentsModal, setShowCommentsModal] = useState(false);
 
   const styles = getStyles(colors);
 
@@ -228,6 +230,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
       }));
 
       setComments(organizedComments);
+      setTotalCommentsCount(commentsData.length);
       setCommentsLoading(false);
     });
 
@@ -268,7 +271,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
 
     try {
       setSubmittingComment(true);
-      const commentRef = await addDoc(collection(db, 'comments'), {
+      const commentRef = await addDoc(collection(db, 'poemComments'), {
         poemId: poem.id,
         userId: currentUser.uid,
         userName: currentUser.displayName || 'Anonymous',
@@ -308,7 +311,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
 
     try {
       setSubmittingReply(true);
-      await addDoc(collection(db, 'comments'), {
+      await addDoc(collection(db, 'poemComments'), {
         poemId: poem.id,
         userId: currentUser.uid,
         userName: currentUser.displayName || 'Anonymous',
@@ -320,7 +323,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
         parentId: parentId,
       });
 
-      const parentCommentDoc = await getDoc(doc(db, 'comments', parentId));
+      const parentCommentDoc = await getDoc(doc(db, 'poemComments', parentId));
       const parentCommentData = parentCommentDoc.exists() ? parentCommentDoc.data() : null;
       const parentCommentAuthorId = parentCommentData?.userId;
 
@@ -379,7 +382,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
           onPress: async () => {
             try {
               setDeletingComment(commentId);
-              await deleteDoc(doc(db, 'comments', commentId));
+              await deleteDoc(doc(db, 'poemComments', commentId));
               Alert.alert('Success', 'Comment deleted successfully!');
             } catch (error) {
               console.error('Error deleting comment:', error);
@@ -397,7 +400,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
     if (!currentUser) return;
 
     try {
-      const commentRef = doc(db, 'comments', commentId);
+      const commentRef = doc(db, 'poemComments', commentId);
       const commentDoc = await getDoc(commentRef);
 
       if (!commentDoc.exists()) return;
@@ -521,6 +524,11 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
     };
   };
 
+  const handleProfileNavigation = (userId: string) => {
+    setShowCommentsModal(false);
+    navigation.navigate('Profile', { userId });
+  };
+
   const renderComment = (comment: Comment, isReply: boolean = false) => (
     <View
       key={comment.id}
@@ -528,7 +536,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
       ref={(ref) => { commentRefs.current[comment.id] = ref; }}
     >
       <View style={styles.commentContainer}>
-        <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: comment.userId })}>
+        <TouchableOpacity onPress={() => handleProfileNavigation(comment.userId)}>
           {comment.userPhoto ? (
             <Image source={{ uri: comment.userPhoto }} style={styles.commentAvatar} />
           ) : (
@@ -542,21 +550,21 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
           <View style={styles.commentHeader}>
             {isReply && comment.parentId ? (
               <View style={styles.replyHeader}>
-                <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: comment.userId })}>
+                <TouchableOpacity onPress={() => handleProfileNavigation(comment.userId)}>
                   <Text style={styles.commentUserName}>{comment.userName}</Text>
                 </TouchableOpacity>
                 <Text style={styles.replyArrow}> {'>'} </Text>
                 {(() => {
                   const parent = getParentCommentData(comment.parentId);
                   return parent ? (
-                    <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: parent.userId })}>
+                    <TouchableOpacity onPress={() => handleProfileNavigation(parent.userId)}>
                       <Text style={styles.commentUserName}>{parent.userName}</Text>
                     </TouchableOpacity>
                   ) : null;
                 })()}
               </View>
             ) : (
-              <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: comment.userId })}>
+              <TouchableOpacity onPress={() => handleProfileNavigation(comment.userId)}>
                 <Text style={styles.commentUserName}>{comment.userName}</Text>
               </TouchableOpacity>
             )}
@@ -589,8 +597,8 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
                 onPress={() => {
                   setReplyingTo(comment.id);
                   setReplyingToUser(comment.userName);
-                  setReplyContent('');
-                  setShowReplyModal(true);
+                  setShowCommentsModal(true);
+                  setTimeout(() => replyInputRef.current?.focus(), 100);
                 }}
                 style={styles.commentAction}
               >
@@ -758,42 +766,8 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
               {/* Comments Section */}
               <View style={styles.commentsSection}>
                 <Text style={styles.sectionTitle}>
-                  Comments ({comments.length})
+                  Comments ({totalCommentsCount})
                 </Text>
-
-                {currentUser ? (
-                  <KeyboardAvoidingView
-                    behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-                    keyboardVerticalOffset={Platform.OS === 'ios' ? 100 : 0}
-                  >
-                    <View style={styles.commentForm}>
-                      <TextInput
-                        value={newComment}
-                        onChangeText={setNewComment}
-                        placeholder="Share your thoughts about this poem..."
-                        placeholderTextColor="#9CA3AF"
-                        style={styles.commentInput}
-                        multiline
-                      />
-                      <TouchableOpacity
-                        onPress={handleCommentSubmit}
-                        disabled={!newComment.trim() || submittingComment}
-                        style={styles.commentSubmit}
-                      >
-                        <Text style={styles.commentSubmitText}>
-                          {submittingComment ? 'Posting...' : 'Post Comment'}
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-                  </KeyboardAvoidingView>
-                ) : (
-                  <View style={styles.loginPrompt}>
-                    <Text style={styles.loginPromptText}>Sign in to leave a comment</Text>
-                    <TouchableOpacity onPress={() => navigation.navigate('Login')}>
-                      <Text style={styles.loginPromptLink}>Sign In →</Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
 
                 {commentsLoading ? (
                   <ActivityIndicator size="small" color="#8B5CF6" style={{ marginTop: 20 }} />
@@ -804,23 +778,40 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
                     <Text style={styles.emptyCommentsSubtext}>Be the first to share your thoughts!</Text>
                   </View>
                 ) : (
-                  <>
-                    <View style={styles.commentsHeader}>
-                      <Text style={styles.commentsCount}>{comments.length} {comments.length === 1 ? 'Comment' : 'Comments'}</Text>
-                      <View style={styles.scrollHint}>
-                        <Ionicons name="arrow-down" size={14} color={colors.textSecondary} />
-                        <Text style={styles.scrollHintText}>Scroll to see more</Text>
+                  <TouchableOpacity
+                    style={styles.viewAllCommentsBtn}
+                    onPress={() => setShowCommentsModal(true)}
+                  >
+                    <Ionicons name="chatbubbles-outline" size={18} color="#9CA3AF" />
+                    <Text style={styles.viewAllCommentsText}>
+                      View all {totalCommentsCount} comments
+                    </Text>
+                  </TouchableOpacity>
+                )}
+
+                {currentUser ? (
+                  <TouchableOpacity
+                    style={styles.fakeCommentInputContainer}
+                    onPress={() => setShowCommentsModal(true)}
+                  >
+                    {currentUser.photoURL ? (
+                      <Image source={{ uri: currentUser.photoURL }} style={styles.fakeCommentAvatar} />
+                    ) : (
+                      <View style={styles.fakeCommentAvatarPlaceholder}>
+                        <Text style={styles.fakeCommentAvatarText}>{getUserInitials(currentUser.displayName || 'U')}</Text>
                       </View>
+                    )}
+                    <View style={styles.fakeCommentInput}>
+                      <Text style={styles.fakeCommentInputText}>Add a comment...</Text>
                     </View>
-                    <ScrollView
-                      style={styles.commentsList}
-                      nestedScrollEnabled={true}
-                      showsVerticalScrollIndicator={true}
-                      persistentScrollbar={true}
-                    >
-                      {comments.map((comment) => renderComment(comment))}
-                    </ScrollView>
-                  </>
+                  </TouchableOpacity>
+                ) : (
+                  <View style={styles.loginPrompt}>
+                    <Text style={styles.loginPromptText}>Sign in to leave a comment</Text>
+                    <TouchableOpacity onPress={() => navigation.navigate('Login')}>
+                      <Text style={styles.loginPromptLink}>Sign In →</Text>
+                    </TouchableOpacity>
+                  </View>
                 )}
               </View>
             </View>
@@ -891,67 +882,109 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
             </View>
           )}
 
-          {showReplyModal && (
-            <View style={styles.modalOverlay}>
-              <KeyboardAvoidingView
-                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-                style={styles.replyModalContainer}
-              >
-                <View style={styles.modalContent}>
-                  <TouchableOpacity
-                    onPress={() => {
-                      setShowReplyModal(false);
-                      setReplyingTo(null);
-                      setReplyContent('');
-                    }}
-                    style={{ alignSelf: 'flex-end', padding: 8 }}
-                  >
-                    <Ionicons name="close" size={28} color={colors.text} />
-                  </TouchableOpacity>
+          {/* Main Comments Modal */}
+          <Modal
+            visible={showCommentsModal}
+            animationType="slide"
+            presentationStyle="pageSheet"
+            onRequestClose={() => setShowCommentsModal(false)}
+          >
+            <KeyboardAvoidingView
+              behavior="padding"
+              keyboardVerticalOffset={Platform.OS === 'ios' ? 45 : 0}
+              style={styles.commentsModalContainer}
+            >
+              <View style={styles.commentsModalHeader}>
+                <Text style={styles.commentsModalTitle}>{totalCommentsCount} Comments</Text>
+                <TouchableOpacity
+                  style={styles.commentsModalClose}
+                  onPress={() => setShowCommentsModal(false)}
+                >
+                  <Ionicons name="close" size={24} color={colors.text} />
+                </TouchableOpacity>
+              </View>
 
-                  <View style={styles.modalHeader}>
-                    <Ionicons name="chatbubble-outline" size={24} color={colors.primary} />
-                    <Text style={[styles.modalTitle, { color: colors.text }]}>
-                      Reply to {replyingToUser}
-                    </Text>
-                  </View>
-
-                  <TextInput
-                    value={replyContent}
-                    onChangeText={setReplyContent}
-                    placeholder="Write your reply..."
-                    placeholderTextColor="#9CA3AF"
-                    style={[styles.replyModalInput, {
-                      backgroundColor: colors.surface,
-                      color: colors.text,
-                      borderColor: colors.border,
-                    }]}
-                    multiline
-                    numberOfLines={6}
-                    autoFocus
-                  />
-
-                  <TouchableOpacity
-                    onPress={() => {
-                      if (replyingTo) {
-                        handleReplySubmit(replyingTo);
-                      }
-                      setShowReplyModal(false);
-                    }}
-                    disabled={!replyContent.trim() || submittingReply || !replyingTo}
-                    style={[
-                      styles.replyModalSubmit,
-                      (!replyContent.trim() || submittingReply) && styles.replyModalSubmitDisabled
-                    ]}
-                  >
-                    <Text style={styles.replyModalSubmitText}>
-                      {submittingReply ? 'Posting...' : 'Post Reply'}
-                    </Text>
-                  </TouchableOpacity>
+              {comments.length === 0 ? (
+                <View style={[styles.emptyComments, { flex: 1, justifyContent: 'center' }]}>
+                  <Ionicons name="chatbubbles-outline" size={48} color="#9CA3AF" />
+                  <Text style={styles.emptyCommentsText}>No comments yet</Text>
+                  <Text style={styles.emptyCommentsSubtext}>Be the first to share your thoughts!</Text>
                 </View>
-              </KeyboardAvoidingView>
-            </View>
-          )}
+              ) : (
+                <ScrollView
+                  style={styles.commentsModalList}
+                  showsVerticalScrollIndicator={true}
+                  keyboardShouldPersistTaps="handled"
+                >
+                  {comments.map((comment) => renderComment(comment))}
+                </ScrollView>
+              )}
+
+              {currentUser && (
+                <View style={styles.commentsModalInputArea}>
+                  {currentUser.photoURL ? (
+                    <Image source={{ uri: currentUser.photoURL }} style={styles.fakeCommentAvatar} />
+                  ) : (
+                    <View style={styles.fakeCommentAvatarPlaceholder}>
+                      <Text style={styles.fakeCommentAvatarText}>{getUserInitials(currentUser.displayName || 'U')}</Text>
+                    </View>
+                  )}
+                  <View style={styles.commentsModalInputWrapperWrapper}>
+                    {replyingTo && (
+                      <View style={styles.replyingToBanner}>
+                        <Text style={styles.replyingToText}>Replying to {replyingToUser}</Text>
+                        <TouchableOpacity
+                          onPress={() => {
+                            setReplyingTo(null);
+                            setReplyingToUser('');
+                            setNewComment('');
+                          }}
+                          style={styles.replyingToCancel}
+                        >
+                          <Ionicons name="close-circle" size={16} color={colors.textSecondary} />
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                    <View style={styles.commentsModalInputWrapper}>
+                      <TextInput
+                        ref={replyInputRef}
+                        value={replyingTo ? replyContent : newComment}
+                        onChangeText={replyingTo ? setReplyContent : setNewComment}
+                        placeholder={replyingTo ? "Write a reply..." : "Add a comment..."}
+                        placeholderTextColor="#9CA3AF"
+                        style={styles.commentsModalInput}
+                        multiline
+                        maxLength={500}
+                      />
+                      <TouchableOpacity
+                        onPress={() => {
+                          if (replyingTo) {
+                            handleReplySubmit(replyingTo);
+                          } else {
+                            handleCommentSubmit();
+                          }
+                        }}
+                        disabled={(replyingTo ? !replyContent.trim() : !newComment.trim()) || submittingComment || submittingReply}
+                        style={styles.commentsModalSubmitBtn}
+                      >
+                        {(submittingComment || submittingReply) ? (
+                          <ActivityIndicator size="small" color={colors.primary} />
+                        ) : (
+                          <Ionicons
+                            name="send"
+                            size={20}
+                            color={(replyingTo ? replyContent.trim() : newComment.trim()) ? colors.primary : '#9CA3AF'}
+                          />
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </View>
+              )}
+            </KeyboardAvoidingView>
+          </Modal>
+
+
         </SafeAreaView>
       )}
     </>
@@ -1103,7 +1136,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     width: 50,
     height: 50,
     borderRadius: 25,
-    backgroundColor: themeColors.surface,
+    backgroundColor: themeColors.primary,
     justifyContent: 'center' as const,
     alignItems: 'center' as const,
     borderWidth: 1,
@@ -1235,29 +1268,117 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   commentsSection: {
     marginBottom: 40,
   },
-  commentForm: {
-    marginBottom: 20,
+  commentsPreviewList: {
+    marginBottom: 16,
   },
-  commentInput: {
+  viewAllCommentsBtn: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 6,
+    paddingVertical: 8,
+  },
+  viewAllCommentsText: {
+    color: themeColors.textSecondary,
+    fontSize: 14,
+    fontWeight: '500' as const,
+  },
+  fakeCommentInputContainer: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    marginTop: 8,
+  },
+  fakeCommentAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    marginRight: 10,
+  },
+  fakeCommentAvatarPlaceholder: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: themeColors.primary,
+    justifyContent: 'center' as const,
+    alignItems: 'center' as const,
+    marginRight: 10,
+  },
+  fakeCommentAvatarText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: 'bold' as const,
+  },
+  fakeCommentInput: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
     backgroundColor: themeColors.card,
-    color: themeColors.text,
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 8,
-    minHeight: 80,
+    borderRadius: 20,
     borderWidth: 1,
     borderColor: themeColors.cardBorder,
   },
-  commentSubmit: {
-    backgroundColor: themeColors.primary,
-    padding: 12,
-    borderRadius: 8,
-    alignItems: 'center' as const,
-  },
-  commentSubmitText: {
-    color: '#fff',
+  fakeCommentInputText: {
+    color: themeColors.textSecondary,
     fontSize: 14,
-    fontWeight: '600' as const,
+  },
+  commentsModalContainer: {
+    flex: 1,
+    backgroundColor: themeColors.background,
+  },
+  commentsModalHeader: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: themeColors.cardBorder,
+    backgroundColor: themeColors.background,
+  },
+  commentsModalTitle: {
+    color: themeColors.text,
+    fontSize: 16,
+    fontWeight: 'bold' as const,
+  },
+  commentsModalClose: {
+    position: 'absolute' as const,
+    right: 16,
+    padding: 4,
+  },
+  commentsModalList: {
+    flex: 1,
+    paddingHorizontal: 16,
+  },
+  commentsModalInputArea: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    paddingHorizontal: 16,
+    paddingVertical: 25,
+    borderTopWidth: 1,
+    borderTopColor: themeColors.cardBorder,
+    backgroundColor: themeColors.background,
+  },
+  commentsModalInputWrapper: {
+    flex: 1,
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    backgroundColor: themeColors.card,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: themeColors.cardBorder,
+    paddingHorizontal: 12,
+    paddingVertical: Platform.OS === 'ios' ? 8 : 4,
+    minHeight: 50,
+    maxHeight: 100,
+  },
+  commentsModalInput: {
+    flex: 1,
+    color: themeColors.text,
+    fontSize: 14,
+    paddingTop: 0,
+    paddingBottom: 0,
+  },
+  commentsModalSubmitBtn: {
+    padding: 6,
+    marginLeft: 4,
   },
   loginPrompt: {
     padding: 16,
@@ -1290,85 +1411,11 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     fontSize: 12,
     marginTop: 4,
   },
-  loadMoreButton: {
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-    justifyContent: 'center' as const,
-    padding: 16,
-    marginTop: 16,
-    backgroundColor: themeColors.card,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: themeColors.primary,
-  },
-  loadMoreText: {
-    color: themeColors.primary,
-    fontSize: 14,
-    fontWeight: '600' as const,
-    marginRight: 8,
-  },
-  endOfComments: {
-    alignItems: 'center' as const,
-    paddingVertical: 20,
-    marginTop: 16,
-  },
-  endOfCommentsText: {
-    color: themeColors.textSecondary,
-    fontSize: 12,
-    fontStyle: 'italic' as const,
-  },
-  showMoreReplies: {
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-    justifyContent: 'center' as const,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    marginTop: 8,
-    marginLeft: 48,
-  },
-  showMoreRepliesText: {
-    color: themeColors.primary,
-    fontSize: 13,
-    marginRight: 4,
-  },
-  commentsList: {
-    marginTop: 16,
-    maxHeight: 500,
-    borderWidth: 1,
-    borderColor: themeColors.cardBorder,
-    borderRadius: 8,
-    padding: 8,
-  },
-  commentsHeader: {
-    flexDirection: 'row' as const,
-    justifyContent: 'space-between' as const,
-    alignItems: 'center' as const,
-    paddingVertical: 8,
-    paddingHorizontal: 4,
-    marginBottom: 8,
-  },
-  commentsCount: {
-    fontSize: 15,
-    fontWeight: '600' as const,
-    color: themeColors.text,
-  },
-  scrollHint: {
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-    gap: 4,
-  },
-  scrollHintText: {
-    fontSize: 12,
-    color: themeColors.textSecondary,
-    fontStyle: 'italic' as const,
-  },
   commentItem: {
     marginBottom: 16,
-    padding: 12,
-    backgroundColor: themeColors.card,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: themeColors.cardBorder,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: themeColors.cardBorder,
   },
   replyItem: {
     marginBottom: 8,
@@ -1571,33 +1618,29 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     fontSize: 14,
     fontWeight: '600' as const,
   },
-  replyModalContainer: {
-    width: '100%',
-    maxWidth: 500,
+  commentsModalInputWrapperWrapper: {
+    flex: 1,
   },
-  replyModalInput: {
-    borderWidth: 1,
-    borderRadius: 8,
-    padding: 12,
-    fontSize: 16,
-    minHeight: 120,
-    maxHeight: 200,
-    textAlignVertical: 'top' as const,
-    marginBottom: 16,
-  },
-  replyModalSubmit: {
-    backgroundColor: themeColors.primary,
-    padding: 14,
-    borderRadius: 8,
+  replyingToBanner: {
+    flexDirection: 'row' as const,
     alignItems: 'center' as const,
+    justifyContent: 'space-between' as const,
+    backgroundColor: themeColors.card,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+    borderWidth: 1,
+    borderBottomWidth: 0,
+    borderColor: themeColors.cardBorder,
   },
-  replyModalSubmitDisabled: {
-    opacity: 0.5,
+  replyingToText: {
+    fontSize: 12,
+    color: themeColors.textSecondary,
+    fontWeight: '500' as const,
   },
-  replyModalSubmitText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600' as const,
+  replyingToCancel: {
+    padding: 2,
   },
 });
 

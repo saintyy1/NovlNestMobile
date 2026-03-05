@@ -11,6 +11,7 @@ import {
   Alert,
   Platform,
   Modal,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -721,8 +722,12 @@ export const SubmitScreen = () => {
 
   // Novel or Poem submission form
   return (
-    <View style={styles.container}>
-      <ScrollView showsVerticalScrollIndicator={false}>
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior="padding"
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
+    >
+      <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         {/* Save Status Indicator */}
         {saveStatus && (
           <View style={styles.saveStatusContainer}>
@@ -1133,7 +1138,7 @@ export const SubmitScreen = () => {
 
         <View style={styles.bottomSpacing} />
       </ScrollView>
-    </View>
+    </KeyboardAvoidingView>
   );
 };
 

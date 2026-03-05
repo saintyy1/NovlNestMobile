@@ -23,6 +23,7 @@ interface UserListDrawerProps {
   userIds: string[];
   title: string;
   navigation: any;
+  onUsersLoaded?: (validCount: number) => void;
 }
 
 interface UserDisplayInfo {
@@ -38,6 +39,7 @@ const UserListDrawer: React.FC<UserListDrawerProps> = ({
   userIds,
   title,
   navigation,
+  onUsersLoaded,
 }) => {
   const { currentUser, toggleFollow } = useAuth();
   const { colors } = useTheme();
@@ -76,7 +78,12 @@ const UserListDrawer: React.FC<UserListDrawerProps> = ({
       });
 
       const results = await Promise.all(userPromises);
-      setUsersToDisplay(results.filter(Boolean) as UserDisplayInfo[]);
+      const validUsers = results.filter(Boolean) as UserDisplayInfo[];
+      setUsersToDisplay(validUsers);
+
+      if (onUsersLoaded) {
+        onUsersLoaded(validUsers.length);
+      }
     } catch (error) {
       console.error('Error fetching user details for list:', error);
     } finally {

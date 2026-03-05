@@ -285,14 +285,6 @@ export const MainTabNavigator = () => {
           tabBarBadge: unreadCount > 0 ? (unreadCount > 99 ? "99+" : unreadCount) : undefined,
           tabBarBadgeStyle: styles.tabBarBadge,
           headerShown: false,
-          tabBarStyle: {
-            paddingTop: 5,
-            paddingBottom: Platform.OS === 'android' ? Math.max(insets.bottom, 10) : insets.bottom,
-            height: 60 + (Platform.OS === 'android' ? Math.max(insets.bottom, 10) : insets.bottom),
-            backgroundColor: colors.surface,
-            borderTopColor: colors.border,
-            display: "flex", // Force tab bar to always be visible
-          },
         })}
       />
     </Tab.Navigator>
