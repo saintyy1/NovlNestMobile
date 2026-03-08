@@ -9,6 +9,7 @@ import {
   Image,
   ActivityIndicator,
   Platform,
+  Alert,
 } from 'react-native';
 import CachedImage from '../../components/CachedImage';
 import { Ionicons } from '@expo/vector-icons';
@@ -20,6 +21,8 @@ import HeroBanner from '../../components/HeroBanner';
 import { useTheme } from '../../contexts/ThemeContext';
 import { spacing, typography } from '../../theme';
 import { sendPromotionEndedNotification } from "../../services/notificationServices";
+import { getReadingProgress, ReadingProgress, deleteReadingProgress } from '../../services/readingProgressService';
+import { useAuth } from '../../contexts/AuthContext';
 
 interface BannerSlide {
   id: string
@@ -40,6 +43,8 @@ export const HomeScreen = ({ navigation }: any) => {
   const [imageErrors, setImageErrors] = useState<Record<string, boolean>>({});
   const [banners, setBanners] = useState<BannerSlide[]>([])
   const [loadingBanners, setLoadingBanners] = useState(true)
+  const [readingProgress, setReadingProgress] = useState<ReadingProgress[]>([]);
+  const { currentUser } = useAuth();
 
   const styles = getStyles(colors);
 
@@ -58,10 +63,47 @@ export const HomeScreen = ({ navigation }: any) => {
 
       setBanners(data)
       setLoadingBanners(false)
+    }, (error) => {
+      if (error.code === 'permission-denied') {
+        console.log('Permission denied in banners listener (likely logout)');
+      } else {
+        console.error('Error listening to banners:', error);
+      }
+      setLoadingBanners(false);
     })
 
     return () => unsubscribe()
   }, [])
+
+  useEffect(() => {
+    if (!currentUser) {
+      setReadingProgress([]);
+      return;
+    }
+
+    const progressRef = collection(db, 'readingProgress');
+    const q = query(
+      progressRef,
+      where('userId', '==', currentUser.uid),
+      orderBy('updatedAt', 'desc'),
+      limit(10)
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const progress = snapshot.docs.map(doc => ({
+        ...doc.data(),
+      } as ReadingProgress));
+      setReadingProgress(progress);
+    }, (error) => {
+      if (error.code === 'permission-denied') {
+        console.log('Permission denied in reading progress listener (likely logout)');
+      } else {
+        console.error('Error listening to reading progress:', error);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [currentUser?.uid]);
 
   const handleGenreClick = (genre: string) => {
     navigation.navigate('Browse', {
@@ -117,42 +159,32 @@ export const HomeScreen = ({ navigation }: any) => {
     }
   };
 
-  const fetchPromotedNovels = async () => {
-    try {
-      const novelsRef = collection(db, 'novels');
-      const q = query(
-        novelsRef,
-        where('isPromoted', '==', true),
-        where('published', '==', true),
-        orderBy("createdAt", "desc"),
-        limit(7)
-      );
-      const querySnapshot = await getDocs(q);
+  useEffect(() => {
+    const novelsRef = collection(db, 'novels');
+    const q = query(
+      novelsRef,
+      where('isPromoted', '==', true),
+      where('published', '==', true),
+      orderBy("createdAt", "desc"),
+      limit(7)
+    );
+
+    const unsubscribe = onSnapshot(q, async (snapshot) => {
       const promotionalData: Novel[] = [];
+      const now = new Date();
 
-      const now = new Date()
-
-      for (const docSnap of querySnapshot.docs) {
-        const data = docSnap.data() as any
-        const endDate = data.promotionEndDate?.toDate?.() || data.promotionEndDate
+      for (const docSnap of snapshot.docs) {
+        const data = docSnap.data() as any;
+        const endDate = data.promotionEndDate?.toDate?.() || data.promotionEndDate;
 
         if (endDate && endDate < now) {
-          // Send notification to the author that their promotion has ended
-          // Only send once - check if notification hasn't been sent yet
           if (!data.promotionEndNotificationSent) {
             try {
-              await sendPromotionEndedNotification(
-                data.authorId,
-                docSnap.id,
-                data.title
-              )
-              console.log(`Promotion ended notification sent for novel: ${data.title}`)
+              await sendPromotionEndedNotification(data.authorId, docSnap.id, data.title);
             } catch (error) {
-              console.error("Error sending promotion ended notification:", error)
+              console.error("Error sending promotion ended notification:", error);
             }
           }
-
-          // Mark that notification has been sent
           await updateDoc(docSnap.ref, {
             isPromoted: false,
             promotionStartDate: null,
@@ -160,67 +192,73 @@ export const HomeScreen = ({ navigation }: any) => {
             reference: null,
             promotionPlan: null,
             promotionEndNotificationSent: true
-          })
+          });
         } else {
-          promotionalData.push({ id: docSnap.id, ...data } as Novel)
+          promotionalData.push({ id: docSnap.id, ...data } as Novel);
         }
       }
-
       setPromotedNovels(promotionalData);
-    } catch (error) {
-      console.error('Error fetching promoted novels:', error);
-    }
-  };
+    }, (error) => {
+      if (error.code === 'permission-denied') {
+        console.log('Permission denied in promoted novels listener (likely logout)');
+      } else {
+        console.error('Error in promoted novels listener:', error);
+      }
+    });
 
-  const fetchTrendingNovels = async () => {
-    try {
-      const novelsRef = collection(db, 'novels');
-      const q = query(novelsRef, where('published', '==', true), orderBy('views', 'desc'));
-      const querySnapshot = await getDocs(q);
+    return () => unsubscribe();
+  }, []);
 
+  useEffect(() => {
+    const novelsRef = collection(db, 'novels');
+    const q = query(novelsRef, where('published', '==', true), orderBy('views', 'desc'));
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
       const novels: Novel[] = [];
-      querySnapshot.forEach((doc) => {
+      snapshot.forEach((doc) => {
         const novelData = { id: doc.id, ...doc.data() } as Novel;
-        // Exclude promoted novels from trending
         if (!novelData.isPromoted) {
           novels.push(novelData);
         }
       });
-
-      // Limit to 7 after filtering
       setTrendingNovels(novels.slice(0, 7));
-    } catch (error) {
-      console.error('Error fetching trending novels:', error);
-    }
-  };
+    }, (error) => {
+      if (error.code === 'permission-denied') {
+        console.log('Permission denied in trending novels listener (likely logout)');
+      } else {
+        console.error('Error in trending novels listener:', error);
+      }
+    });
 
-  const fetchNewReleases = async () => {
-    try {
-      const novelsRef = collection(db, 'novels');
-      const q = query(novelsRef, where('published', '==', true), orderBy('createdAt', 'desc'), limit(7));
-      const querySnapshot = await getDocs(q);
+    return () => unsubscribe();
+  }, []);
 
-      const novels: Novel[] = [];
-      querySnapshot.forEach((doc) => {
-        novels.push({ id: doc.id, ...doc.data() } as Novel);
-      });
+  useEffect(() => {
+    const novelsRef = collection(db, 'novels');
+    const q = query(novelsRef, where('published', '==', true), orderBy('createdAt', 'desc'), limit(7));
 
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const novels: Novel[] = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Novel));
       setNewReleases(novels);
-    } catch (error) {
-      console.error('Error fetching new releases:', error);
-    }
-  };
+    }, (error) => {
+      if (error.code === 'permission-denied') {
+        console.log('Permission denied in new releases listener (likely logout)');
+      } else {
+        console.error('Error in new releases listener:', error);
+      }
+    });
 
-  const fetchTrendingPoems = async () => {
-    try {
-      const poemsRef = collection(db, 'poems');
-      const q = query(poemsRef, where('published', '==', true), orderBy('views', 'desc'), limit(7));
-      const querySnapshot = await getDocs(q);
+    return () => unsubscribe();
+  }, []);
 
-      const poems: Poem[] = [];
-      querySnapshot.forEach((doc) => {
+  useEffect(() => {
+    const poemsRef = collection(db, 'poems');
+    const q = query(poemsRef, where('published', '==', true), orderBy('views', 'desc'), limit(7));
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const poems: Poem[] = snapshot.docs.map(doc => {
         const data = doc.data();
-        poems.push({
+        return {
           id: doc.id,
           title: data.title || 'Untitled',
           poetName: data.poetName || 'Unknown',
@@ -235,27 +273,20 @@ export const HomeScreen = ({ navigation }: any) => {
           views: data.views || 0,
           coverImage: data.coverImage,
           coverSmallImage: data.coverSmallImage,
-        } as Poem);
+        } as Poem;
       });
       setTrendingPoems(poems);
-    } catch (error) {
-      console.error('Error fetching trending poems:', error);
-    }
-  };
-
-  useEffect(() => {
-    const fetchData = async () => {
-      setLoading(true);
-      await Promise.all([
-        fetchPromotedNovels(),
-        fetchTrendingNovels(),
-        fetchNewReleases(),
-        fetchTrendingPoems(),
-      ]);
       setLoading(false);
-    };
+    }, (error) => {
+      if (error.code === 'permission-denied') {
+        console.log('Permission denied in trending poems listener (likely logout)');
+      } else {
+        console.error('Error in trending poems listener:', error);
+      }
+      setLoading(false);
+    });
 
-    fetchData();
+    return () => unsubscribe();
   }, []);
 
   const handleImageError = (novelId: string) => {
@@ -356,6 +387,65 @@ export const HomeScreen = ({ navigation }: any) => {
     );
   };
 
+  const handleRemoveProgress = (novelId: string, novelTitle: string) => {
+    if (!currentUser) return;
+
+    Alert.alert(
+      'Remove from Continue Reading',
+      `Are you sure you want to remove "${novelTitle}" from your reading list?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteReadingProgress(currentUser.uid, novelId);
+            } catch (error) {
+              console.error('Error removing progress:', error);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const renderProgressCard = (progress: ReadingProgress) => {
+    const hasImage = progress.novelCover && !imageErrors[progress.novelId];
+
+    return (
+      <TouchableOpacity
+        key={progress.novelId}
+        style={styles.novelCard}
+        onPress={() => {
+          navigation.navigate('NovelReader', {
+            novelId: progress.novelId,
+            chapterIndex: progress.chapterIndex,
+          });
+        }}
+        onLongPress={() => handleRemoveProgress(progress.novelId, progress.novelTitle)}
+      >
+        {hasImage ? (
+          <CachedImage
+            uri={getFirebaseDownloadUrl(progress.novelCover || '')}
+            style={styles.novelCover}
+            onError={() => handleImageError(progress.novelId)}
+            resizeMode="cover"
+          />
+        ) : (
+          <View style={[styles.novelCover, { backgroundColor: colors.backgroundSecondary }]}>
+            <Text style={styles.fallbackTitle} numberOfLines={3}>
+              {progress.novelTitle}
+            </Text>
+          </View>
+        )}
+        <Text style={styles.progressChapterText} numberOfLines={1}>
+          {progress.chapterTitle}
+        </Text>
+      </TouchableOpacity>
+    );
+  };
+
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
@@ -386,6 +476,21 @@ export const HomeScreen = ({ navigation }: any) => {
             contentContainerStyle={styles.horizontalScroll}
           >
             {promotedNovels.map(renderNovelCard)}
+          </ScrollView>
+        </View>
+      )}
+
+      {readingProgress.length > 0 && (
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Continue Reading</Text>
+          </View>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.horizontalScroll}
+          >
+            {readingProgress.map(renderProgressCard)}
           </ScrollView>
         </View>
       )}
@@ -602,6 +707,14 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     backgroundColor: themeColors.text,
     opacity: 0.3,
     marginVertical: spacing.xs,
+  },
+  progressChapterText: {
+    ...typography.caption,
+    color: themeColors.textSecondary,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    marginTop: spacing.xs,
+    textAlign: 'center',
+    fontWeight: '600',
   },
   fallbackAuthor: {
     ...typography.caption,

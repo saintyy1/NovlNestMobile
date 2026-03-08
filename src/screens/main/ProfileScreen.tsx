@@ -7,6 +7,7 @@ import {
   Image,
   TextInput,
   Alert,
+  AlertButton,
   RefreshControl,
   ActivityIndicator,
   Modal,
@@ -14,8 +15,9 @@ import {
   Share,
   Linking,
   Platform,
+  KeyboardAvoidingView,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, FontAwesome6, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../../contexts/AuthContext';
@@ -35,6 +37,8 @@ import {
   addDoc,
   deleteDoc,
   onSnapshot,
+  documentId,
+  getCountFromServer,
 } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { ref, uploadBytes, deleteObject } from 'firebase/storage';
@@ -72,6 +76,29 @@ interface Announcement {
 }
 
 const ProfileScreen = ({ route, navigation }: any) => {
+  const getVerifiedCount = async (userIds: string[]) => {
+    if (!userIds || userIds.length === 0) return 0;
+
+    // Chunk into 30s as Firestore 'in' query limit is 30
+    const chunks = [];
+    for (let i = 0; i < userIds.length; i += 30) {
+      chunks.push(userIds.slice(i, i + 30));
+    }
+
+    try {
+      const counts = await Promise.all(chunks.map(async (chunk) => {
+        const q = query(collection(db, 'users'), where(documentId(), 'in', chunk));
+        const snapshot = await getCountFromServer(q);
+        return snapshot.data().count;
+      }));
+      return counts.reduce((a, b) => a + b, 0);
+    } catch (error) {
+      console.error('Error verifying user counts:', error);
+      return userIds.length; // Fallback to raw length
+    }
+  };
+
+  const insets = useSafeAreaInsets();
   const { userId } = route.params || {};
   const { currentUser, updateUserPhoto, toggleFollow, updateUserProfile } = useAuth();
   const { colors } = useTheme();
@@ -89,6 +116,8 @@ const ProfileScreen = ({ route, navigation }: any) => {
   const [followersCount, setFollowersCount] = useState(0);
   const [followingCount, setFollowingCount] = useState(0);
   const [isTogglingFollow, setIsTogglingFollow] = useState(false);
+  const [followersHealed, setFollowersHealed] = useState(false);
+  const [followingHealed, setFollowingHealed] = useState(false);
 
   // Announcement states
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
@@ -108,6 +137,11 @@ const ProfileScreen = ({ route, navigation }: any) => {
   const [showActionSheet, setShowActionSheet] = useState(false);
   const [actionSheetNovel, setActionSheetNovel] = useState<Novel | null>(null);
   const [actionSheetPoem, setActionSheetPoem] = useState<Poem | null>(null);
+  const [showCompletionModal, setShowCompletionModal] = useState(false);
+  const [isFinishingNovel, setIsFinishingNovel] = useState(false);
+  const [isSavingNovel, setIsSavingNovel] = useState(false);
+  const [isSavingPoem, setIsSavingPoem] = useState(false);
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
 
   // Edit novel states
   const [editNovelTitle, setEditNovelTitle] = useState('');
@@ -141,18 +175,28 @@ const ProfileScreen = ({ route, navigation }: any) => {
       setLoading(true);
       let fetchedUser: any = null;
 
-      if (userId && userId !== currentUser?.uid) {
-        const userDoc = await getDoc(doc(db, 'users', userId));
+      const targetUserId = userId || currentUser?.uid;
+
+      if (targetUserId) {
+        const userDoc = await getDoc(doc(db, 'users', targetUserId));
         if (userDoc.exists()) {
           fetchedUser = { uid: userDoc.id, ...userDoc.data() };
+        } else if (targetUserId === currentUser?.uid) {
+          // Fallback to currentUser if Firestore fetch fails for own profile
+          fetchedUser = currentUser;
         }
-      } else {
-        fetchedUser = currentUser;
       }
 
       setProfileUser(fetchedUser);
-      setFollowersCount(fetchedUser?.followers?.length || 0);
-      setFollowingCount(fetchedUser?.following?.length || 0);
+
+      // Proactively verify counts instead of trusting raw array length
+      const [vFollowersCount, vFollowingCount] = await Promise.all([
+        getVerifiedCount(fetchedUser?.followers || []),
+        getVerifiedCount(fetchedUser?.following || [])
+      ]);
+
+      setFollowersCount(vFollowersCount);
+      setFollowingCount(vFollowingCount);
       setEmailVisible(fetchedUser?.emailVisible ?? false);
 
       if (currentUser && fetchedUser) {
@@ -160,7 +204,6 @@ const ProfileScreen = ({ route, navigation }: any) => {
       }
 
       // Fetch novels
-      const targetUserId = userId || currentUser?.uid;
       if (targetUserId) {
         const novelsQuery = query(
           collection(db, 'novels'),
@@ -214,6 +257,12 @@ const ProfileScreen = ({ route, navigation }: any) => {
         fetchedAnnouncements.push({ id: doc.id, ...doc.data() } as Announcement);
       });
       setAnnouncements(fetchedAnnouncements);
+    }, (error) => {
+      if (error.code === 'permission-denied') {
+        console.log('Permission denied in announcements listener (likely logout)');
+      } else {
+        console.error('Error in announcements listener:', error);
+      }
     });
     return () => unsubscribe();
   }, [profileUser?.uid]);
@@ -223,7 +272,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
     fetchUserData();
   }, [fetchUserData]);
 
-  const handlePhotoUpload = async () => {
+  const handleImagePick = async () => {
     if (!currentUser) return;
 
     const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -233,7 +282,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.7,
@@ -241,6 +290,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
 
     if (!result.canceled && result.assets[0]) {
       try {
+        setIsUploadingPhoto(true);
         const uri = result.assets[0].uri;
         const response = await fetch(uri);
         const blob = await response.blob();
@@ -249,16 +299,64 @@ const ProfileScreen = ({ route, navigation }: any) => {
         const reader = new FileReader();
         reader.readAsDataURL(blob);
         reader.onloadend = async () => {
-          const base64data = reader.result as string;
-          await updateUserPhoto(base64data);
-          Alert.alert('Success', 'Profile picture updated!');
-          fetchUserData();
+          try {
+            const base64data = reader.result as string;
+            await updateUserPhoto(base64data);
+            Alert.alert('Success', 'Profile picture updated!');
+            fetchUserData();
+          } catch (uploadError) {
+            console.error('Error updating user photo:', uploadError);
+            Alert.alert('Error', 'Failed to update profile picture');
+          } finally {
+            setIsUploadingPhoto(false);
+          }
         };
       } catch (error) {
         console.error('Error uploading photo:', error);
         Alert.alert('Error', 'Failed to upload photo');
+        setIsUploadingPhoto(false);
       }
     }
+  };
+
+  const handleRemovePhoto = async () => {
+    if (!currentUser) return;
+
+    try {
+      setIsUploadingPhoto(true);
+      await updateUserPhoto(null);
+      Alert.alert('Success', 'Profile picture removed!');
+      fetchUserData();
+    } catch (error) {
+      console.error('Error removing photo:', error);
+      Alert.alert('Error', 'Failed to remove profile picture');
+    } finally {
+      setIsUploadingPhoto(false);
+    }
+  };
+
+  const handleEditPhotoPress = () => {
+    if (isUploadingPhoto) return;
+
+    const options: AlertButton[] = [
+      { text: 'Upload New Photo', onPress: handleImagePick },
+    ];
+
+    if (profileUser?.photoURL) {
+      options.push({
+        text: 'Remove Current Photo',
+        onPress: handleRemovePhoto,
+        style: 'destructive',
+      });
+    }
+
+    options.push({ text: 'Cancel', style: 'cancel' });
+
+    Alert.alert(
+      '',
+      '',
+      options
+    );
   };
 
   const handleFollowToggle = async () => {
@@ -369,8 +467,10 @@ const ProfileScreen = ({ route, navigation }: any) => {
 
   const handleSaveNovel = async () => {
     if (!selectedNovel) return;
+    if (isSavingNovel) return; // Prevent multiple clicks
 
     try {
+      setIsSavingNovel(true);
       await updateDoc(doc(db, 'novels', selectedNovel.id), {
         title: editNovelTitle,
         description: editNovelDescription,
@@ -388,10 +488,76 @@ const ProfileScreen = ({ route, navigation }: any) => {
         )
       );
 
+      setEditNovelPrologue('');
       Alert.alert('Success', 'Novel updated!');
       setShowEditNovelModal(false);
+      fetchUserData();
     } catch (error) {
+      console.error('Error saving novel:', error);
       Alert.alert('Error', 'Failed to update novel');
+    } finally {
+      setIsSavingNovel(false);
+    }
+  };
+
+  const handleFinishNovel = async () => {
+    if (!selectedNovel) return;
+
+    try {
+      setIsFinishingNovel(true);
+      await updateDoc(doc(db, 'novels', selectedNovel.id), {
+        status: 'completed',
+        updatedAt: new Date().toISOString(),
+      });
+
+      Alert.alert('Success', 'Novel marked as completed!');
+      setShowCompletionModal(false);
+      fetchUserData();
+    } catch (err) {
+      console.error('Error finishing novel:', err);
+      Alert.alert('Error', 'Failed to mark novel as completed');
+    } finally {
+      setIsFinishingNovel(false);
+    }
+  };
+
+  const handleAddEpilogue = () => {
+    if (!selectedNovel) return;
+    setShowCompletionModal(false);
+
+    // Navigate to ChapterEditor to create an epilogue
+    navigation.navigate('ChapterEditor', {
+      chapterNumber: 'Epilogue',
+      initialTitle: 'Epilogue',
+      initialContent: '',
+      onSave: async (epilogueData: { title: string; content: string }) => {
+        try {
+          await updateDoc(doc(db, 'novels', selectedNovel.id), {
+            status: 'completed',
+            epilogue: epilogueData,
+            updatedAt: new Date().toISOString(),
+          });
+          Alert.alert('Success', 'Epilogue added and novel marked as completed!');
+          fetchUserData();
+        } catch (err) {
+          console.error('Error adding epilogue:', err);
+          Alert.alert('Error', 'Failed to add epilogue');
+        }
+      }
+    });
+  };
+
+  const handleMarkAsOngoing = async (novel: Novel) => {
+    try {
+      await updateDoc(doc(db, 'novels', novel.id), {
+        status: 'ongoing',
+        updatedAt: new Date().toISOString(),
+      });
+      Alert.alert('Success', 'Novel status set to ongoing!');
+      fetchUserData();
+    } catch (err) {
+      console.error('Error marking novel as ongoing:', err);
+      Alert.alert('Error', 'Failed to update novel status');
     }
   };
 
@@ -428,8 +594,10 @@ const ProfileScreen = ({ route, navigation }: any) => {
 
   const handleSavePoem = async () => {
     if (!selectedPoem) return;
+    if (isSavingPoem) return;
 
     try {
+      setIsSavingPoem(true);
       await updateDoc(doc(db, 'poems', selectedPoem.id), {
         title: editPoemTitle,
         description: editPoemDescription,
@@ -447,8 +615,12 @@ const ProfileScreen = ({ route, navigation }: any) => {
 
       Alert.alert('Success', 'Poem updated!');
       setShowEditPoemModal(false);
+      fetchUserData();
     } catch (error) {
+      console.error('Error saving poem:', error);
       Alert.alert('Error', 'Failed to update poem');
+    } finally {
+      setIsSavingPoem(false);
     }
   };
 
@@ -485,7 +657,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],
       allowsEditing: true,
       aspect: [3, 4],
       quality: 0.7,
@@ -579,7 +751,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],
       allowsEditing: true,
       aspect: [3, 4],
       quality: 0.7,
@@ -753,8 +925,16 @@ const ProfileScreen = ({ route, navigation }: any) => {
 
               {/* Edit Photo Floating Button */}
               {isOwnProfile && (
-                <TouchableOpacity style={styles.editPhotoButton} onPress={handlePhotoUpload}>
-                  <Ionicons name="camera-outline" size={16} color={colors.primary} />
+                <TouchableOpacity
+                  style={styles.editPhotoButton}
+                  onPress={handleEditPhotoPress}
+                  disabled={isUploadingPhoto}
+                >
+                  {isUploadingPhoto ? (
+                    <ActivityIndicator size="small" color={colors.primary} />
+                  ) : (
+                    <Ionicons name="camera-outline" size={16} color={colors.primary} />
+                  )}
                 </TouchableOpacity>
               )}
             </View>
@@ -1050,7 +1230,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
             <View style={styles.longPressHint}>
               <Ionicons name="finger-print-outline" size={14} color={colors.textSecondary} />
               <Text style={[styles.longPressHintText, { color: colors.textSecondary }]}>
-                Long press to edit, add chapters, or promote
+                Long press your novel to edit, add chapters, or mark as completed
               </Text>
             </View>
           )}
@@ -1063,11 +1243,11 @@ const ProfileScreen = ({ route, navigation }: any) => {
                 <Text style={styles.emptyText}>No novels {activeTab === 'published' ? 'published' : 'yet'}</Text>
               </View>
             ) : (
-              <View style={styles.grid}>
+              <View style={styles.contentList}>
                 {filteredNovels.map((novel) => (
                   <TouchableOpacity
                     key={novel.id}
-                    style={styles.card}
+                    style={[styles.contentCard, { backgroundColor: colors.card }]}
                     onPress={() => novel.published && navigation.navigate('NovelOverview', { novelId: novel.id })}
                     onLongPress={() => {
                       if (isOwnProfile) {
@@ -1076,31 +1256,55 @@ const ProfileScreen = ({ route, navigation }: any) => {
                         setShowActionSheet(true);
                       }
                     }}
+                    delayLongPress={400}
                   >
-                    {(novel.coverSmallImage || novel.coverImage) ? (
-                      <CachedImage
-                        uri={getFirebaseDownloadUrl(novel.coverSmallImage || novel.coverImage || '')}
-                        style={styles.cover}
-                        resizeMode="cover"
-                      />
-                    ) : (
-                      <View style={[styles.coverPlaceholder, { backgroundColor: getGenreColorClass(novel.genres)[0] }]}>
-                        <Text style={styles.coverTitle} numberOfLines={3}>{novel.title}</Text>
+                    <View style={styles.cardCoverContainer}>
+                      {(novel.coverSmallImage || novel.coverImage) ? (
+                        <CachedImage
+                          uri={getFirebaseDownloadUrl(novel.coverSmallImage || novel.coverImage || '')}
+                          style={styles.cardCover}
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        <View style={[styles.cardCoverPlaceholder, { backgroundColor: getGenreColorClass(novel.genres)[0] }]}>
+                          <Text style={styles.cardCoverPlaceholderText} numberOfLines={2}>{novel.title}</Text>
+                        </View>
+                      )}
+                      {!novel.published && (
+                        <View style={styles.draftBadge}>
+                          <Text style={styles.draftBadgeText}>Draft</Text>
+                        </View>
+                      )}
+                    </View>
+
+                    {(novel.status === 'ongoing' || novel.status === 'completed') && (
+                      <View style={[
+                        styles.statusBadge,
+                        novel.status === 'completed' ? styles.statusCompleted : styles.statusOngoing
+                      ]}>
+                        <Text style={styles.statusBadgeText}>
+                          {novel.status.charAt(0).toUpperCase() + novel.status.slice(1)}
+                        </Text>
                       </View>
                     )}
-                    {!novel.published && (
-                      <View style={{
-                        position: 'absolute',
-                        top: 8,
-                        right: 8,
-                        backgroundColor: 'rgba(0,0,0,0.6)',
-                        paddingVertical: 4,
-                        paddingHorizontal: 8,
-                        borderRadius: 6,
-                      }}>
-                        <Text style={{ fontSize: 10, color: '#fff', fontWeight: '600' }}>Draft</Text>
+
+                    <View style={styles.cardInfo}>
+                      <Text style={[styles.cardTitle, { color: colors.text }]} numberOfLines={1}>{novel.title}</Text>
+                      <View style={styles.cardMetadata}>
+                        <View style={styles.metadataItem}>
+                          <Ionicons name="book-outline" size={14} color={colors.primary} />
+                          <Text style={[styles.metadataText, { color: colors.textSecondary }]}>{novel.genres?.[0] || 'Fiction'}</Text>
+                        </View>
+                        <View style={styles.metadataItem}>
+                          <Ionicons name="heart-outline" size={14} color={colors.primary} />
+                          <Text style={[styles.metadataText, { color: colors.textSecondary }]}>{novel.likes || 0}</Text>
+                        </View>
                       </View>
-                    )}
+                      <Text style={[styles.cardDescription, { color: colors.textSecondary }]} numberOfLines={2}>
+                        {novel.description || 'No description provided.'}
+                      </Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={20} color={colors.cardBorder} style={styles.cardArrow} />
                   </TouchableOpacity>
                 ))}
               </View>
@@ -1112,11 +1316,11 @@ const ProfileScreen = ({ route, navigation }: any) => {
                 <Text style={styles.emptyText}>No poems {activeTab === 'published' ? 'published' : 'yet'}</Text>
               </View>
             ) : (
-              <View style={styles.grid}>
+              <View style={styles.contentList}>
                 {filteredPoems.map((poem) => (
                   <TouchableOpacity
                     key={poem.id}
-                    style={styles.card}
+                    style={[styles.contentCard, { backgroundColor: colors.card }]}
                     onPress={() => poem.published && navigation.navigate('PoemOverview', { poemId: poem.id })}
                     onLongPress={() => {
                       if (isOwnProfile) {
@@ -1125,31 +1329,44 @@ const ProfileScreen = ({ route, navigation }: any) => {
                         setShowActionSheet(true);
                       }
                     }}
+                    delayLongPress={400}
                   >
-                    {(poem.coverSmallImage || poem.coverImage) ? (
-                      <CachedImage
-                        uri={getFirebaseDownloadUrl(poem.coverSmallImage || poem.coverImage || '')}
-                        style={styles.cover}
-                        resizeMode="cover"
-                      />
-                    ) : (
-                      <View style={[styles.coverPlaceholder, { backgroundColor: '#EC4899' }]}>
-                        <Text style={styles.coverTitle} numberOfLines={3}>{poem.title}</Text>
+                    <View style={styles.cardCoverContainer}>
+                      {(poem.coverSmallImage || poem.coverImage) ? (
+                        <CachedImage
+                          uri={getFirebaseDownloadUrl(poem.coverSmallImage || poem.coverImage || '')}
+                          style={styles.cardCover}
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        <View style={[styles.cardCoverPlaceholder, { backgroundColor: '#EC4899' }]}>
+                          <Text style={styles.cardCoverPlaceholderText} numberOfLines={2}>{poem.title}</Text>
+                        </View>
+                      )}
+                      {!poem.published && (
+                        <View style={styles.draftBadge}>
+                          <Text style={styles.draftBadgeText}>Draft</Text>
+                        </View>
+                      )}
+                    </View>
+
+                    <View style={styles.cardInfo}>
+                      <Text style={[styles.cardTitle, { color: colors.text }]} numberOfLines={1}>{poem.title}</Text>
+                      <View style={styles.cardMetadata}>
+                        <View style={styles.metadataItem}>
+                          <Ionicons name="rose-outline" size={14} color={colors.primary} />
+                          <Text style={[styles.metadataText, { color: colors.textSecondary }]}>Poetry</Text>
+                        </View>
+                        <View style={styles.metadataItem}>
+                          <Ionicons name="heart-outline" size={14} color={colors.primary} />
+                          <Text style={[styles.metadataText, { color: colors.textSecondary }]}>{poem.likes || 0}</Text>
+                        </View>
                       </View>
-                    )}
-                    {!poem.published && (
-                      <View style={{
-                        position: 'absolute',
-                        top: 8,
-                        right: 8,
-                        backgroundColor: 'rgba(0,0,0,0.6)',
-                        paddingVertical: 4,
-                        paddingHorizontal: 8,
-                        borderRadius: 6,
-                      }}>
-                        <Text style={{ fontSize: 10, color: '#fff', fontWeight: '600' }}>Draft</Text>
-                      </View>
-                    )}
+                      <Text style={[styles.cardDescription, { color: colors.textSecondary }]} numberOfLines={2}>
+                        {poem.description || 'A beautiful piece of poetry.'}
+                      </Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={20} color={colors.cardBorder} style={styles.cardArrow} />
                   </TouchableOpacity>
                 ))}
               </View>
@@ -1169,243 +1386,278 @@ const ProfileScreen = ({ route, navigation }: any) => {
       </Modal>
 
       {/* Edit Novel Modal */}
-      <Modal visible={showEditNovelModal} animationType="slide">
-        <View style={styles.modalContainer}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Edit Novel</Text>
-            <TouchableOpacity onPress={() => setShowEditNovelModal(false)}>
-              <Ionicons name="close" size={24} color={colors.text} />
-            </TouchableOpacity>
-          </View>
-          <ScrollView style={styles.modalContent}>
-            <View style={styles.formGroup}>
-              <Text style={styles.label}>Title</Text>
-              <TextInput
-                style={styles.input}
-                value={editNovelTitle}
-                onChangeText={setEditNovelTitle}
-                placeholder="Novel title"
-                placeholderTextColor="#6B7280"
-              />
+      <Modal visible={showEditNovelModal} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'overFullScreen'}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={{ flex: 1 }}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+        >
+          <View style={styles.modalContainer}>
+            <View style={[styles.modalHeader, { paddingTop: Platform.OS === 'ios' ? 20 : Math.max(insets.top, 20) }]}>
+              <Text style={styles.modalTitle}>Edit Novel</Text>
+              <TouchableOpacity onPress={() => setShowEditNovelModal(false)}>
+                <Ionicons name="close" size={24} color={colors.text} />
+              </TouchableOpacity>
             </View>
+            <ScrollView
+              style={styles.modalContent}
+              keyboardShouldPersistTaps="handled"
+              automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+            >
+              <View style={styles.formGroup}>
+                <Text style={styles.label}>Title</Text>
+                <TextInput
+                  style={styles.input}
+                  value={editNovelTitle}
+                  onChangeText={setEditNovelTitle}
+                  placeholder="Novel title"
+                  placeholderTextColor="#6B7280"
+                />
+              </View>
 
-            {/* Cover Image */}
-            <View style={styles.formGroup}>
-              <Text style={styles.label}>Cover Image</Text>
-              <View style={styles.coverUploadContainer}>
-                <TouchableOpacity
-                  style={[styles.coverPreview, { backgroundColor: colors.surface }]}
-                  onPress={handleEditCoverUpload}
-                >
-                  {selectedNovel?.coverImage ? (
-                    <CachedImage
-                      uri={getFirebaseDownloadUrl(selectedNovel.coverImage)}
-                      style={styles.coverImage}
-                    />
-                  ) : (
-                    <Ionicons name="book-outline" size={32} color={colors.textSecondary} />
-                  )}
-                </TouchableOpacity>
-
-                <View style={styles.coverButtonGroup}>
+              {/* Cover Image */}
+              <View style={styles.formGroup}>
+                <Text style={styles.label}>Cover Image</Text>
+                <View style={styles.coverUploadContainer}>
                   <TouchableOpacity
-                    style={[styles.coverButton, { backgroundColor: colors.primary }]}
+                    style={[styles.coverPreview, { backgroundColor: colors.surface }]}
                     onPress={handleEditCoverUpload}
-                    disabled={uploadingEditCover}
                   >
-                    {uploadingEditCover ? (
-                      <ActivityIndicator color="#fff" size="small" />
+                    {selectedNovel?.coverImage ? (
+                      <CachedImage
+                        uri={getFirebaseDownloadUrl(selectedNovel.coverImage)}
+                        style={styles.coverImage}
+                      />
                     ) : (
-                      <>
-                        <Ionicons name="image-outline" size={16} color="#fff" />
-                        <Text style={styles.coverButtonText}>Change</Text>
-                      </>
+                      <Ionicons name="book-outline" size={32} color={colors.textSecondary} />
                     )}
                   </TouchableOpacity>
 
-                  {selectedNovel?.coverImage && (
+                  <View style={styles.coverButtonGroup}>
                     <TouchableOpacity
-                      style={[styles.coverButton, { backgroundColor: colors.error }]}
-                      onPress={removeEditCover}
+                      style={[styles.coverButton, { backgroundColor: colors.primary }]}
+                      onPress={handleEditCoverUpload}
                       disabled={uploadingEditCover}
                     >
-                      <Ionicons name="trash-outline" size={16} color="#fff" />
-                      <Text style={styles.coverButtonText}>Remove</Text>
+                      {uploadingEditCover ? (
+                        <ActivityIndicator color="#fff" size="small" />
+                      ) : (
+                        <>
+                          <Ionicons name="image-outline" size={16} color="#fff" />
+                          <Text style={styles.coverButtonText}>Change</Text>
+                        </>
+                      )}
                     </TouchableOpacity>
-                  )}
+
+                    {selectedNovel?.coverImage && (
+                      <TouchableOpacity
+                        style={[styles.coverButton, { backgroundColor: colors.error }]}
+                        onPress={removeEditCover}
+                        disabled={uploadingEditCover}
+                      >
+                        <Ionicons name="trash-outline" size={16} color="#fff" />
+                        <Text style={styles.coverButtonText}>Remove</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
                 </View>
+
+                {editCoverError && (
+                  <Text
+                    style={[
+                      styles.coverErrorText,
+                      { color: editCoverError.includes('successfully') ? colors.success : colors.error }
+                    ]}
+                  >
+                    {editCoverError}
+                  </Text>
+                )}
               </View>
 
-              {editCoverError && (
-                <Text
-                  style={[
-                    styles.coverErrorText,
-                    { color: editCoverError.includes('successfully') ? colors.success : colors.error }
-                  ]}
-                >
-                  {editCoverError}
-                </Text>
-              )}
-            </View>
-
-            <View style={styles.formGroup}>
-              <Text style={styles.label}>Description</Text>
-              <TextInput
-                style={[styles.input, styles.textArea]}
-                value={editNovelDescription}
-                onChangeText={setEditNovelDescription}
-                placeholder="Brief description"
-                placeholderTextColor="#6B7280"
-                multiline
-              />
-            </View>
-            <View style={styles.formGroup}>
-              <Text style={styles.label}>Summary</Text>
-              <TextInput
-                style={[styles.input, styles.textArea]}
-                value={editNovelSummary}
-                onChangeText={setEditNovelSummary}
-                placeholder="Detailed summary"
-                placeholderTextColor="#6B7280"
-                multiline
-              />
-            </View>
-            <View style={styles.formGroup}>
-              <Text style={styles.label}>Author's Note</Text>
-              <TextInput
-                style={[styles.input, styles.textArea]}
-                value={editNovelAuthorsNote}
-                onChangeText={setEditNovelAuthorsNote}
-                placeholder="Optional author's note"
-                placeholderTextColor="#6B7280"
-                multiline
-              />
-            </View>
-            <View style={styles.formGroup}>
-              <Text style={styles.label}>Prologue</Text>
-              <TextInput
-                style={[styles.input, styles.textArea]}
-                value={editNovelPrologue}
-                onChangeText={setEditNovelPrologue}
-                placeholder="Optional prologue"
-                placeholderTextColor="#6B7280"
-                multiline
-              />
-            </View>
-            <TouchableOpacity style={styles.saveButton} onPress={handleSaveNovel}>
-              <Text style={styles.saveButtonText}>Save Changes</Text>
-            </TouchableOpacity>
-          </ScrollView>
-        </View>
+              <View style={styles.formGroup}>
+                <Text style={styles.label}>Description</Text>
+                <TextInput
+                  style={[styles.input, styles.textArea]}
+                  value={editNovelDescription}
+                  onChangeText={setEditNovelDescription}
+                  placeholder="Brief description"
+                  placeholderTextColor="#6B7280"
+                  multiline
+                />
+              </View>
+              <View style={styles.formGroup}>
+                <Text style={styles.label}>Summary</Text>
+                <TextInput
+                  style={[styles.input, styles.textArea]}
+                  value={editNovelSummary}
+                  onChangeText={setEditNovelSummary}
+                  placeholder="Detailed summary"
+                  placeholderTextColor="#6B7280"
+                  multiline
+                />
+              </View>
+              <View style={styles.formGroup}>
+                <Text style={styles.label}>Author's Note</Text>
+                <TextInput
+                  style={[styles.input, styles.textArea]}
+                  value={editNovelAuthorsNote}
+                  onChangeText={setEditNovelAuthorsNote}
+                  placeholder="Optional author's note"
+                  placeholderTextColor="#6B7280"
+                  multiline
+                />
+              </View>
+              <View style={styles.formGroup}>
+                <Text style={styles.label}>Prologue</Text>
+                <TextInput
+                  style={[styles.input, styles.textArea]}
+                  value={editNovelPrologue}
+                  onChangeText={setEditNovelPrologue}
+                  placeholder="Optional prologue"
+                  placeholderTextColor="#6B7280"
+                  multiline
+                />
+              </View>
+              <TouchableOpacity
+                style={[styles.saveButton, isSavingNovel && styles.disabledButton]}
+                onPress={handleSaveNovel}
+                disabled={isSavingNovel}
+              >
+                {isSavingNovel ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={styles.saveButtonText}>Save Changes</Text>
+                )}
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Edit Poem Modal */}
-      <Modal visible={showEditPoemModal} animationType="slide">
-        <View style={styles.modalContainer}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Edit Poem</Text>
-            <TouchableOpacity onPress={() => setShowEditPoemModal(false)}>
-              <Ionicons name="close" size={24} color={colors.text} />
-            </TouchableOpacity>
-          </View>
-          <ScrollView style={styles.modalContent}>
-            <View style={styles.formGroup}>
-              <Text style={styles.label}>Title</Text>
-              <TextInput
-                style={styles.input}
-                value={editPoemTitle}
-                onChangeText={setEditPoemTitle}
-                placeholder="Poem title"
-                placeholderTextColor="#6B7280"
-              />
+      <Modal visible={showEditPoemModal} animationType="slide" presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'overFullScreen'}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={{ flex: 1 }}
+        >
+          <View style={styles.modalContainer}>
+            <View style={[styles.modalHeader, { paddingTop: Platform.OS === 'ios' ? 20 : Math.max(insets.top, 20) }]}>
+              <Text style={styles.modalTitle}>Edit Poem</Text>
+              <TouchableOpacity onPress={() => setShowEditPoemModal(false)}>
+                <Ionicons name="close" size={24} color={colors.text} />
+              </TouchableOpacity>
             </View>
+            <ScrollView
+              style={styles.modalContent}
+              keyboardShouldPersistTaps="handled"
+              automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+            >
+              <View style={styles.formGroup}>
+                <Text style={styles.label}>Title</Text>
+                <TextInput
+                  style={styles.input}
+                  value={editPoemTitle}
+                  onChangeText={setEditPoemTitle}
+                  placeholder="Poem title"
+                  placeholderTextColor="#6B7280"
+                />
+              </View>
 
-            {/* Cover Image */}
-            <View style={styles.formGroup}>
-              <Text style={styles.label}>Cover Image</Text>
-              <View style={styles.coverUploadContainer}>
-                <TouchableOpacity
-                  style={[styles.coverPreview, { backgroundColor: colors.surface }]}
-                  onPress={handleEditPoemCoverUpload}
-                >
-                  {selectedPoem?.coverImage ? (
-                    <CachedImage
-                      uri={getFirebaseDownloadUrl(selectedPoem.coverImage)}
-                      style={styles.coverImage}
-                    />
-                  ) : (
-                    <Ionicons name="book-outline" size={32} color={colors.textSecondary} />
-                  )}
-                </TouchableOpacity>
-
-                <View style={styles.coverButtonGroup}>
+              {/* Cover Image */}
+              <View style={styles.formGroup}>
+                <Text style={styles.label}>Cover Image</Text>
+                <View style={styles.coverUploadContainer}>
                   <TouchableOpacity
-                    style={[styles.coverButton, { backgroundColor: colors.primary }]}
+                    style={[styles.coverPreview, { backgroundColor: colors.surface }]}
                     onPress={handleEditPoemCoverUpload}
-                    disabled={uploadingEditPoemCover}
                   >
-                    {uploadingEditPoemCover ? (
-                      <ActivityIndicator color="#fff" size="small" />
+                    {selectedPoem?.coverImage ? (
+                      <CachedImage
+                        uri={getFirebaseDownloadUrl(selectedPoem.coverImage)}
+                        style={styles.coverImage}
+                      />
                     ) : (
-                      <>
-                        <Ionicons name="image-outline" size={16} color="#fff" />
-                        <Text style={styles.coverButtonText}>Change</Text>
-                      </>
+                      <Ionicons name="book-outline" size={32} color={colors.textSecondary} />
                     )}
                   </TouchableOpacity>
 
-                  {selectedPoem?.coverImage && (
+                  <View style={styles.coverButtonGroup}>
                     <TouchableOpacity
-                      style={[styles.coverButton, { backgroundColor: colors.error }]}
-                      onPress={removeEditPoemCover}
+                      style={[styles.coverButton, { backgroundColor: colors.primary }]}
+                      onPress={handleEditPoemCoverUpload}
                       disabled={uploadingEditPoemCover}
                     >
-                      <Ionicons name="trash-outline" size={16} color="#fff" />
-                      <Text style={styles.coverButtonText}>Remove</Text>
+                      {uploadingEditPoemCover ? (
+                        <ActivityIndicator color="#fff" size="small" />
+                      ) : (
+                        <>
+                          <Ionicons name="image-outline" size={16} color="#fff" />
+                          <Text style={styles.coverButtonText}>Change</Text>
+                        </>
+                      )}
                     </TouchableOpacity>
-                  )}
+
+                    {selectedPoem?.coverImage && (
+                      <TouchableOpacity
+                        style={[styles.coverButton, { backgroundColor: colors.error }]}
+                        onPress={removeEditPoemCover}
+                        disabled={uploadingEditPoemCover}
+                      >
+                        <Ionicons name="trash-outline" size={16} color="#fff" />
+                        <Text style={styles.coverButtonText}>Remove</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
                 </View>
+
+                {editPoemCoverError && (
+                  <Text
+                    style={[
+                      styles.coverErrorText,
+                      { color: editPoemCoverError.includes('successfully') ? colors.success : colors.error }
+                    ]}
+                  >
+                    {editPoemCoverError}
+                  </Text>
+                )}
               </View>
 
-              {editPoemCoverError && (
-                <Text
-                  style={[
-                    styles.coverErrorText,
-                    { color: editPoemCoverError.includes('successfully') ? colors.success : colors.error }
-                  ]}
-                >
-                  {editPoemCoverError}
-                </Text>
-              )}
-            </View>
-
-            <View style={styles.formGroup}>
-              <Text style={styles.label}>Description</Text>
-              <TextInput
-                style={[styles.input, styles.textArea]}
-                value={editPoemDescription}
-                onChangeText={setEditPoemDescription}
-                placeholder="Brief description"
-                placeholderTextColor="#6B7280"
-                multiline
-              />
-            </View>
-            <View style={styles.formGroup}>
-              <Text style={styles.label}>Content</Text>
-              <TextInput
-                style={[styles.input, styles.textArea, { minHeight: 200 }]}
-                value={editPoemContent}
-                onChangeText={setEditPoemContent}
-                placeholder="Your poem content..."
-                placeholderTextColor="#6B7280"
-                multiline
-              />
-            </View>
-            <TouchableOpacity style={styles.saveButton} onPress={handleSavePoem}>
-              <Text style={styles.saveButtonText}>Save Changes</Text>
-            </TouchableOpacity>
-          </ScrollView>
-        </View>
+              <View style={styles.formGroup}>
+                <Text style={styles.label}>Description</Text>
+                <TextInput
+                  style={[styles.input, styles.textArea]}
+                  value={editPoemDescription}
+                  onChangeText={setEditPoemDescription}
+                  placeholder="Brief description"
+                  placeholderTextColor="#6B7280"
+                  multiline
+                />
+              </View>
+              <View style={styles.formGroup}>
+                <Text style={styles.label}>Content</Text>
+                <TextInput
+                  style={[styles.input, styles.textArea, { minHeight: 200 }]}
+                  value={editPoemContent}
+                  onChangeText={setEditPoemContent}
+                  placeholder="Your poem content..."
+                  placeholderTextColor="#6B7280"
+                  multiline
+                />
+              </View>
+              <TouchableOpacity
+                style={[styles.saveButton, isSavingPoem && styles.disabledButton]}
+                onPress={handleSavePoem}
+                disabled={isSavingPoem}
+              >
+                {isSavingPoem ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={styles.saveButtonText}>Save Changes</Text>
+                )}
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Tip Modal */}
@@ -1455,11 +1707,16 @@ const ProfileScreen = ({ route, navigation }: any) => {
         userIds={followListType === 'followers' ? (profileUser?.followers || []) : (profileUser?.following || [])}
         title={followListType === 'followers' ? 'Followers' : 'Following'}
         navigation={navigation}
+        sourceUserId={profileUser?.uid}
+        listType={followListType}
+        shouldHeal={isOwnProfile && (followListType === 'followers' ? !followersHealed : !followingHealed)}
         onUsersLoaded={(validCount) => {
           if (followListType === 'followers') {
             setFollowersCount(validCount);
+            if (isOwnProfile) setFollowersHealed(true);
           } else {
             setFollowingCount(validCount);
+            if (isOwnProfile) setFollowingHealed(true);
           }
         }}
       />
@@ -1521,6 +1778,40 @@ const ProfileScreen = ({ route, navigation }: any) => {
               </TouchableOpacity>
             )}
 
+            {actionSheetNovel && actionSheetNovel.status !== 'completed' && (
+              <TouchableOpacity
+                style={styles.actionSheetItem}
+                onPress={() => {
+                  setShowActionSheet(false);
+                  if (actionSheetNovel.epilogue) {
+                    // If epilogue exists, mark as completed directly
+                    setSelectedNovel(actionSheetNovel);
+                    // Use a timeout to ensure state is set before calling handleFinishNovel
+                    setTimeout(() => handleFinishNovel(), 100);
+                  } else {
+                    setShowCompletionModal(true);
+                    setSelectedNovel(actionSheetNovel);
+                  }
+                }}
+              >
+                <Ionicons name="checkmark-done-circle-outline" size={24} color={colors.primary} />
+                <Text style={[styles.actionSheetItemText, { color: colors.text }]}>Mark as Completed</Text>
+              </TouchableOpacity>
+            )}
+
+            {actionSheetNovel && actionSheetNovel.status === 'completed' && (
+              <TouchableOpacity
+                style={styles.actionSheetItem}
+                onPress={() => {
+                  setShowActionSheet(false);
+                  handleMarkAsOngoing(actionSheetNovel);
+                }}
+              >
+                <Ionicons name="refresh-circle-outline" size={24} color={colors.primary} />
+                <Text style={[styles.actionSheetItemText, { color: colors.text }]}>Mark as Ongoing</Text>
+              </TouchableOpacity>
+            )}
+
             <TouchableOpacity
               style={styles.actionSheetItem}
               onPress={() => {
@@ -1544,6 +1835,63 @@ const ProfileScreen = ({ route, navigation }: any) => {
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
+      </Modal>
+
+      {/* Completion Modal */}
+      <Modal visible={showCompletionModal} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={[styles.completionModalContainer, { backgroundColor: colors.surface }]}>
+            <View style={styles.completionHeader}>
+              <Ionicons name="checkmark-done-circle" size={48} color={colors.primary} />
+              <Text style={[styles.completionTitle, { color: colors.text }]}>Complete Your Novel</Text>
+              <Text style={[styles.completionSubtitle, { color: colors.textSecondary }]}>
+                Your novel is about to be marked as completed. This tells your readers the story has ended.
+              </Text>
+            </View>
+
+            <View style={styles.completionChoices}>
+              <TouchableOpacity
+                style={[styles.completionChoice, { borderColor: colors.primary }]}
+                onPress={handleAddEpilogue}
+              >
+                <View style={[styles.choiceIcon, { backgroundColor: colors.primary + '15' }]}>
+                  <Ionicons name="bookmark-outline" size={24} color={colors.primary} />
+                </View>
+                <View style={styles.choiceText}>
+                  <Text style={[styles.choiceTitle, { color: colors.text }]}>Add Epilogue</Text>
+                  <Text style={[styles.choiceDesc, { color: colors.textSecondary }]}>Write one final part before finishing</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.completionChoice, { borderColor: colors.border }]}
+                onPress={handleFinishNovel}
+                disabled={isFinishingNovel}
+              >
+                <View style={[styles.choiceIcon, { backgroundColor: colors.surface }]}>
+                  {isFinishingNovel ? (
+                    <ActivityIndicator size="small" color={colors.primary} />
+                  ) : (
+                    <Ionicons name="flag-outline" size={24} color={colors.textSecondary} />
+                  )}
+                </View>
+                <View style={styles.choiceText}>
+                  <Text style={[styles.choiceTitle, { color: colors.text }]}>Finish Novel</Text>
+                  <Text style={[styles.choiceDesc, { color: colors.textSecondary }]}>Mark as completed without an epilogue</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              style={styles.completionCancel}
+              onPress={() => setShowCompletionModal(false)}
+            >
+              <Text style={[styles.completionCancelText, { color: colors.textSecondary }]}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
     </View>
   );
@@ -1939,35 +2287,117 @@ const getStyles = (themeColors: any) => ({
     fontWeight: '500' as const,
     fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
-  // Grid
-  grid: {
-    flexDirection: 'row' as const,
-    flexWrap: 'wrap' as const,
+  // Content List
+  contentList: {
     gap: 16,
-    justifyContent: 'space-between' as const,
   },
-  card: {
-    width: CARD_WIDTH,
-    aspectRatio: 3 / 4,
-    borderRadius: 12,
+  contentCard: {
+    flexDirection: 'row' as const,
+    borderRadius: 16,
+    padding: 12,
+    alignItems: 'center' as const,
+    borderWidth: 1,
+    borderColor: themeColors.cardBorder,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  cardCoverContainer: {
+    width: 60,
+    height: 90,
+    borderRadius: 8,
     overflow: 'hidden' as const,
+    marginRight: 16,
   },
-  cover: {
+  cardCover: {
     width: '100%' as any,
     height: '100%' as any,
   },
-  coverPlaceholder: {
+  cardCoverPlaceholder: {
     width: '100%' as any,
     height: '100%' as any,
     justifyContent: 'center' as const,
     alignItems: 'center' as const,
-    padding: 12,
+    padding: 4,
   },
-  coverTitle: {
-    fontSize: 14,
+  cardCoverPlaceholderText: {
+    fontSize: 10,
     fontWeight: '700' as const,
     color: '#fff',
     textAlign: 'center' as const,
+  },
+  cardInfo: {
+    flex: 1,
+    justifyContent: 'center' as const,
+  },
+  cardTitle: {
+    fontSize: 16,
+    fontWeight: '700' as const,
+    marginBottom: 4,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  cardMetadata: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 12,
+    marginBottom: 6,
+  },
+  metadataItem: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 4,
+  },
+  metadataText: {
+    fontSize: 12,
+    fontWeight: '500' as const,
+  },
+  cardDescription: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  cardArrow: {
+    marginLeft: 8,
+  },
+  draftBadge: {
+    position: 'absolute' as const,
+    top: 4,
+    left: 4,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderRadius: 4,
+  },
+  draftBadgeText: {
+    fontSize: 8,
+    color: '#fff',
+    fontWeight: '700' as const,
+    textTransform: 'uppercase' as const,
+  },
+  statusBadge: {
+    position: 'absolute' as const,
+    top: -8,
+    right: -8,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    zIndex: 10,
+    borderWidth: 1.5,
+    borderColor: '#fff',
+  },
+  statusOngoing: {
+    backgroundColor: '#3B82F6', // Blue
+  },
+  statusCompleted: {
+    backgroundColor: '#10B981', // Green
+  },
+  statusBadgeText: {
+    fontSize: 8,
+    color: '#fff',
+    fontWeight: '800' as const,
+    textTransform: 'uppercase' as const,
   },
   // Modals
   modalOverlay: {
@@ -2228,6 +2658,72 @@ const getStyles = (themeColors: any) => ({
     fontWeight: '600' as const,
     textAlign: 'center' as const,
     fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  // Completion Modal Styles
+  completionModalContainer: {
+    width: '90%' as any,
+    maxWidth: 400,
+    borderRadius: 24,
+    padding: 24,
+    alignItems: 'center' as const,
+  },
+  completionHeader: {
+    alignItems: 'center' as const,
+    marginBottom: 24,
+  },
+  completionTitle: {
+    fontSize: 20,
+    fontWeight: '800' as const,
+    marginTop: 12,
+    marginBottom: 8,
+    textAlign: 'center' as const,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  completionSubtitle: {
+    fontSize: 14,
+    textAlign: 'center' as const,
+    lineHeight: 20,
+    paddingHorizontal: 10,
+  },
+  completionChoices: {
+    width: '100%' as any,
+    gap: 12,
+    marginBottom: 16,
+  },
+  completionChoice: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    padding: 16,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    gap: 12,
+  },
+  choiceIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    justifyContent: 'center' as const,
+    alignItems: 'center' as const,
+  },
+  choiceText: {
+    flex: 1,
+  },
+  choiceTitle: {
+    fontSize: 16,
+    fontWeight: '700' as const,
+    marginBottom: 2,
+  },
+  choiceDesc: {
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  completionCancel: {
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+  },
+  completionCancelText: {
+    fontSize: 15,
+    fontWeight: '600' as const,
   },
 });
 

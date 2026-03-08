@@ -16,7 +16,7 @@ import {
   Modal,
 } from 'react-native';
 import CachedImage from '../../components/CachedImage';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
@@ -28,6 +28,7 @@ import {
   arrayUnion,
   arrayRemove,
   collection,
+  deleteField,
   query,
   where,
   orderBy,
@@ -65,6 +66,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
   const { novelId } = route.params;
   const { currentUser, updateUserLibrary, markNovelAsFinished } = useAuth();
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
 
   const [novel, setNovel] = useState<Novel | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
@@ -652,7 +654,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
   }
 
   const isAuthor = currentUser && novel.authorId === currentUser.uid;
-  const totalParts = (novel.authorsNote ? 1 : 0) + (novel.prologue ? 1 : 0) + (novel.chapters?.length || 0);
+  const totalParts = (novel.authorsNote ? 1 : 0) + (novel.prologue ? 1 : 0) + (novel.chapters?.length || 0) + (novel.epilogue ? 1 : 0);
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
@@ -689,6 +691,16 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
           <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: novel.authorId })}>
             <Text style={styles.author}>by {novel.authorName}</Text>
           </TouchableOpacity>
+
+          {/* Status Badge */}
+          <View style={[
+            styles.statusBadge,
+            { backgroundColor: novel.status === 'completed' ? '#10B981' : colors.primary }
+          ]}>
+            <Text style={styles.statusBadgeText}>
+              {novel.status === 'completed' ? 'Completed' : 'Ongoing'}
+            </Text>
+          </View>
 
           {/* Stats */}
           <View style={styles.statsRow}>
@@ -905,6 +917,87 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
                 </TouchableOpacity>
               );
             })}
+
+            {/* Epilogue */}
+            {novel.epilogue && (
+              <TouchableOpacity
+                style={styles.chapterItem}
+                onPress={() =>
+                  navigation.navigate('NovelReader', {
+                    novelId: novel.id,
+                    chapterNumber: totalParts - 1,
+                  })
+                }
+                onLongPress={() => {
+                  if (isAuthor) {
+                    Alert.alert(
+                      'Manage Epilogue',
+                      'Choose an action for the epilogue',
+                      [
+                        {
+                          text: 'Edit Epilogue',
+                          onPress: () => {
+                            navigation.navigate('ChapterEditor', {
+                              chapterNumber: 'Epilogue',
+                              initialTitle: novel.epilogue?.title || 'Epilogue',
+                              initialContent: novel.epilogue?.content || '',
+                              onSave: async (epilogueData: { title: string; content: string }) => {
+                                try {
+                                  await updateDoc(doc(db, 'novels', novel.id), {
+                                    epilogue: epilogueData,
+                                    updatedAt: new Date().toISOString(),
+                                  });
+                                  Alert.alert('Success', 'Epilogue updated successfully!');
+                                } catch (error) {
+                                  console.error('Error updating epilogue:', error);
+                                  Alert.alert('Error', 'Failed to update epilogue');
+                                }
+                              }
+                            });
+                          },
+                        },
+                        {
+                          text: 'Delete Epilogue',
+                          style: 'destructive',
+                          onPress: () => {
+                            Alert.alert(
+                              'Delete Epilogue',
+                              'Are you sure you want to delete the epilogue?',
+                              [
+                                {
+                                  text: 'Delete',
+                                  style: 'destructive',
+                                  onPress: async () => {
+                                    try {
+                                      await updateDoc(doc(db, 'novels', novel.id), {
+                                        epilogue: deleteField(),
+                                        status: 'ongoing',
+                                      });
+                                      Alert.alert('Success', 'Epilogue deleted successfully!');
+                                    } catch (error) {
+                                      console.error('Error deleting epilogue:', error);
+                                      Alert.alert('Error', 'Failed to delete epilogue');
+                                    }
+                                  },
+                                },
+                                { text: 'Cancel', style: 'cancel' },
+                              ]
+                            );
+                          },
+                        },
+                        { text: 'Cancel', style: 'cancel' },
+                      ]
+                    );
+                  }
+                }}
+              >
+                <View style={styles.chapterInfo}>
+                  <Text style={styles.chapterIcon}>🎬</Text>
+                  <Text style={styles.chapterTitle}>{novel.epilogue?.title || 'Epilogue'}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color="#6B7280" />
+              </TouchableOpacity>
+            )}
           </View>
 
           {/* Comments Section */}
@@ -962,69 +1055,71 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
       </ScrollView>
 
       {/* Tip Modal */}
-      {showTipModal && authorData?.supportLink && (
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <TouchableOpacity
-              style={styles.modalClose}
-              onPress={() => setShowTipModal(false)}
-            >
-              <Ionicons name="close" size={24} color="#9CA3AF" />
-            </TouchableOpacity>
+      {
+        showTipModal && authorData?.supportLink && (
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <TouchableOpacity
+                style={styles.modalClose}
+                onPress={() => setShowTipModal(false)}
+              >
+                <Ionicons name="close" size={24} color="#9CA3AF" />
+              </TouchableOpacity>
 
-            <View style={styles.modalHeader}>
-              <Ionicons name="gift" size={48} color="#10B981" />
-              <Text style={styles.modalTitle}>Want to tip this author?</Text>
-              <Text style={styles.modalSubtitle}>Here are the payment details:</Text>
+              <View style={styles.modalHeader}>
+                <Ionicons name="gift" size={48} color="#10B981" />
+                <Text style={styles.modalTitle}>Want to tip this author?</Text>
+                <Text style={styles.modalSubtitle}>Here are the payment details:</Text>
+              </View>
+
+              <View style={styles.tipInfo}>
+                {authorData.supportLink.startsWith('http') ? (
+                  <View>
+                    <Text style={styles.tipLabel}>Support Link:</Text>
+                    <Text style={styles.tipValue} selectable>
+                      {authorData.supportLink}
+                    </Text>
+                  </View>
+                ) : (
+                  <View>
+                    <View style={styles.tipRow}>
+                      <Text style={styles.tipLabel}>Bank:</Text>
+                      <Text style={styles.tipValue}>
+                        {authorData.supportLink.split(':')[0] || 'N/A'}
+                      </Text>
+                    </View>
+                    <View style={styles.tipRow}>
+                      <Text style={styles.tipLabel}>Account Number:</Text>
+                      <Text style={styles.tipValue}>
+                        {authorData.supportLink.split(':')[1]?.split(',')[0]?.trim() || 'N/A'}
+                      </Text>
+                    </View>
+                    <View style={styles.tipRow}>
+                      <Text style={styles.tipLabel}>Account Name:</Text>
+                      <Text style={styles.tipValue}>
+                        {authorData.supportLink.split(',')[1]?.trim() || 'N/A'}
+                      </Text>
+                    </View>
+                  </View>
+                )}
+              </View>
+
+              <TouchableOpacity
+                style={styles.copyButton}
+                onPress={async () => {
+                  await Clipboard.setStringAsync(authorData.supportLink ?? '');
+                  Alert.alert('Success', 'Payment details copied to clipboard!');
+                }}
+              >
+                <Ionicons name="copy-outline" size={20} color="#fff" />
+                <Text style={styles.copyButtonText}>
+                  {authorData.supportLink.startsWith('http') ? 'Copy Link' : 'Copy Details'}
+                </Text>
+              </TouchableOpacity>
             </View>
-
-            <View style={styles.tipInfo}>
-              {authorData.supportLink.startsWith('http') ? (
-                <View>
-                  <Text style={styles.tipLabel}>Support Link:</Text>
-                  <Text style={styles.tipValue} selectable>
-                    {authorData.supportLink}
-                  </Text>
-                </View>
-              ) : (
-                <View>
-                  <View style={styles.tipRow}>
-                    <Text style={styles.tipLabel}>Bank:</Text>
-                    <Text style={styles.tipValue}>
-                      {authorData.supportLink.split(':')[0] || 'N/A'}
-                    </Text>
-                  </View>
-                  <View style={styles.tipRow}>
-                    <Text style={styles.tipLabel}>Account Number:</Text>
-                    <Text style={styles.tipValue}>
-                      {authorData.supportLink.split(':')[1]?.split(',')[0]?.trim() || 'N/A'}
-                    </Text>
-                  </View>
-                  <View style={styles.tipRow}>
-                    <Text style={styles.tipLabel}>Account Name:</Text>
-                    <Text style={styles.tipValue}>
-                      {authorData.supportLink.split(',')[1]?.trim() || 'N/A'}
-                    </Text>
-                  </View>
-                </View>
-              )}
-            </View>
-
-            <TouchableOpacity
-              style={styles.copyButton}
-              onPress={async () => {
-                await Clipboard.setStringAsync(authorData.supportLink ?? '');
-                Alert.alert('Success', 'Payment details copied to clipboard!');
-              }}
-            >
-              <Ionicons name="copy-outline" size={20} color="#fff" />
-              <Text style={styles.copyButtonText}>
-                {authorData.supportLink.startsWith('http') ? 'Copy Link' : 'Copy Details'}
-              </Text>
-            </TouchableOpacity>
           </View>
-        </View>
-      )}
+        )
+      }
 
       {/* Main Comments Modal */}
       <Modal
@@ -1038,7 +1133,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
           keyboardVerticalOffset={Platform.OS === 'ios' ? 45 : 0}
           style={styles.commentsModalContainer}
         >
-          <View style={styles.commentsModalHeader}>
+          <View style={[styles.commentsModalHeader, { paddingTop: Platform.OS === 'android' ? insets.top : 16 }]}>
             <Text style={styles.commentsModalTitle}>{totalCommentsCount} Comments</Text>
             <TouchableOpacity
               style={styles.commentsModalClose}
@@ -1065,7 +1160,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
           )}
 
           {currentUser && (
-            <View style={styles.commentsModalInputArea}>
+            <View style={[styles.commentsModalInputArea, { paddingBottom: Math.max(insets.bottom, 25) }]}>
               {currentUser.photoURL ? (
                 <Image source={{ uri: currentUser.photoURL }} style={styles.fakeCommentAvatar} />
               ) : (
@@ -1128,7 +1223,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
         </KeyboardAvoidingView>
       </Modal>
 
-    </SafeAreaView>
+    </SafeAreaView >
   );
 };
 
@@ -1801,6 +1896,21 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   },
   replyingToCancel: {
     padding: 2,
+  },
+  statusBadge: {
+    alignSelf: 'flex-start' as const,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  statusBadgeText: {
+    fontSize: 11,
+    fontWeight: '800' as const,
+    color: '#fff',
+    textTransform: 'uppercase' as const,
+    letterSpacing: 0.5,
   },
 });
 

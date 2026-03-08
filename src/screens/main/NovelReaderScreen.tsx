@@ -46,10 +46,13 @@ import {
   trackShare,
   getCurrentReadingTime,
 } from '../../utils/Analytics-utils';
+import { updateReadingProgress } from '../../services/readingProgressService';
+import { colors } from '../../theme';
 
 interface Comment {
   id: string;
-  text: string;
+  content?: string;
+  text?: string;
   userId: string;
   userName: string;
   userPhoto?: string;
@@ -77,6 +80,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
   const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState('');
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
+  const [replyingToUser, setReplyingToUser] = useState<string>('');
   const [replyContent, setReplyContent] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
   const [submittingReply, setSubmittingReply] = useState<string | null>(null);
@@ -85,6 +89,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
   const [showNextChapterHint, setShowNextChapterHint] = useState(false);
   const scrollViewRef = useRef<ScrollView>(null);
   const slideAnim = useRef(new Animated.Value(0)).current;
+  const replyInputRef = useRef<TextInput>(null);
 
   // screenWidth no longer needed - removed horizontal animation
 
@@ -117,6 +122,19 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
       };
     }
 
+    currentIndex += novel.chapters.length;
+
+    if (novel.epilogue) {
+      if (readingOrderIndex === currentIndex) {
+        return {
+          type: 'epilogue',
+          chapterIndex: -1,
+          content: novel.epilogue.content,
+          title: novel.epilogue.title || 'Epilogue'
+        };
+      }
+    }
+
     return { type: 'none', chapterIndex: -1, content: '', title: '' };
   }, [novel]);
 
@@ -128,6 +146,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     if (novel.authorsNote) count++;
     if (novel.prologue) count++;
     count += novel.chapters.length;
+    if (novel.epilogue) count++;
     return count;
   }, [novel]);
 
@@ -167,7 +186,8 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
       if (!novel) return;
 
       try {
-        const chapterRef = doc(db, 'novels', novel.id, 'chapters', currentChapter.toString());
+        const chapterId = currentContentInfo.type === 'epilogue' ? 'epilogue' : currentChapter.toString();
+        const chapterRef = doc(db, 'novels', novel.id, 'chapters', chapterId);
         const chapterDoc = await getDoc(chapterRef);
 
         if (chapterDoc.exists()) {
@@ -196,7 +216,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     setIsAtEnd(false);
     setShowNextChapterHint(false);
     scrollViewRef.current?.scrollTo({ y: 0, animated: false });
-    
+
     // Track chapter start for analytics
     if (novel && currentContentInfo.type === 'chapter') {
       trackChapterStart({
@@ -206,7 +226,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         chapterTitle: currentContentInfo.title,
         userId: currentUser?.uid,
       });
-      
+
       trackNovelRead({
         novelId: novel.id,
         novelTitle: novel.title,
@@ -217,6 +237,29 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     }
   }, [currentChapter]);
 
+  // Save reading progress to database
+  useEffect(() => {
+    if (novel && currentUser) {
+      const saveProgress = async () => {
+        await updateReadingProgress(
+          currentUser.uid,
+          novel.id,
+          novel.title,
+          novel.coverSmallImage || novel.coverImage,
+          currentChapter,
+          currentContentInfo.title
+        );
+      };
+
+      saveProgress();
+
+      // Also save when user leaves the screen
+      return () => {
+        saveProgress();
+      };
+    }
+  }, [currentChapter, novel, currentUser, currentContentInfo.title]);
+
   // Track reading progress based on scroll position
   const lastProgressRef = useRef<number>(0);
 
@@ -225,15 +268,15 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
     const paddingToBottom = 50;
     const isCloseToBottom = layoutMeasurement.height + contentOffset.y >= contentSize.height - paddingToBottom;
-    
+
     // Calculate reading progress percentage
     const progressPercent = Math.min(100, Math.round((contentOffset.y + layoutMeasurement.height) / contentSize.height * 100));
-    
+
     // Track progress at milestones (25%, 50%, 75%, 100%)
     if (novel && currentContentInfo.type === 'chapter') {
       const currentMilestone = Math.floor(progressPercent / 25) * 25;
       const lastMilestone = Math.floor(lastProgressRef.current / 25) * 25;
-      
+
       if (currentMilestone > lastMilestone && currentMilestone > 0) {
         trackReadingProgress({
           novelId: novel.id,
@@ -243,13 +286,13 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
       }
       lastProgressRef.current = progressPercent;
     }
-    
+
     if (isCloseToBottom && !isAtEnd) {
       setIsAtEnd(true);
       if (currentChapter < getTotalReadingOrderItems() - 1) {
         setShowNextChapterHint(true);
       }
-      
+
       // Track chapter complete when reaching end
       if (novel && currentContentInfo.type === 'chapter') {
         trackChapterComplete({
@@ -269,7 +312,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
   // Handle swipe up at end to go to next chapter
   const handleScrollEndDrag = (event: any) => {
     if (!isAtEnd || currentChapter >= getTotalReadingOrderItems() - 1) return;
-    
+
     const { velocity } = event.nativeEvent;
     // If user swipes up with enough velocity at the end
     if (velocity && velocity.y < -0.5) {
@@ -279,9 +322,9 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
   const goToNextChapter = () => {
     if (currentChapter >= getTotalReadingOrderItems() - 1) return;
-    
+
     const screenHeight = Dimensions.get('window').height;
-    
+
     // Animate slide up (out of view)
     Animated.timing(slideAnim, {
       toValue: -screenHeight,
@@ -301,10 +344,10 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
   const handleShare = async () => {
     try {
-      const chapterInfo = currentContentInfo.type === 'chapter' 
+      const chapterInfo = currentContentInfo.type === 'chapter'
         ? `Chapter ${currentContentInfo.chapterIndex + 1}: ${currentContentInfo.title}`
         : currentContentInfo.title;
-      
+
       await RNShare.share({
         message: `I'm reading "${chapterInfo}" from "${novel?.title}" by ${novel?.authorName} on NovlNest! Check it out: https://novlnest.com/novel/${novel?.id}/read?chapter=${currentChapter}`,
       });
@@ -315,9 +358,9 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
   const goToPreviousChapter = () => {
     if (currentChapter <= 0) return;
-    
+
     const screenHeight = Dimensions.get('window').height;
-    
+
     // Animate slide down (out of view)
     Animated.timing(slideAnim, {
       toValue: screenHeight,
@@ -335,7 +378,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     });
   };
 
-  const organizeComments = useCallback((allComments: Comment[]): Comment[] => {
+  function organizeComments(allComments: Comment[]): Comment[] {
     const topLevel = allComments.filter((c) => !c.parentId);
 
     const buildReplies = (parentId: string): Comment[] => {
@@ -351,7 +394,14 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
       ...comment,
       replies: buildReplies(comment.id),
     }));
-  }, []);
+  }
+
+  function getTotalCommentsCount(commentList: Comment[]): number {
+    return commentList.reduce((acc, comment) => {
+      const replyCount = comment.replies ? getTotalCommentsCount(comment.replies) : 0;
+      return acc + 1 + replyCount;
+    }, 0);
+  }
 
   const handleChapterLike = async () => {
     if (!novel?.id || !currentUser) {
@@ -410,7 +460,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
       const comment: Comment = {
         id: Date.now().toString(),
-        text: newComment.trim(),
+        content: newComment.trim(),
         userId: currentUser.uid,
         userName: currentUser.displayName || 'Anonymous',
         userPhoto: currentUser.photoURL || undefined,
@@ -455,7 +505,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
       const organizedComments = organizeComments(updatedComments);
       setComments(organizedComments);
       setNewComment('');
-      Alert.alert('Success', 'Comment posted!');
+      // Alert.alert('Success', 'Comment posted!');
     } catch (error) {
       console.error('Error adding comment:', error);
       Alert.alert('Error', 'Failed to post comment');
@@ -479,7 +529,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
       const reply: Comment = {
         id: Date.now().toString(),
-        text: replyContent.trim(),
+        content: replyContent.trim(),
         userId: currentUser.uid,
         userName: currentUser.displayName || 'Anonymous',
         userPhoto: currentUser.photoURL || undefined,
@@ -532,7 +582,8 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
       setComments(organizedComments);
       setReplyContent('');
       setReplyingTo(null);
-      Alert.alert('Success', 'Reply posted!');
+      setReplyingToUser('');
+      // Alert.alert('Success', 'Reply posted!');
     } catch (error) {
       console.error('Error adding reply:', error);
       Alert.alert('Error', 'Failed to post reply');
@@ -590,8 +641,11 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
       if (!chapterDoc.exists()) return;
 
       const existingComments = chapterDoc.data().comments || [];
+      let commentToNotify: Comment | null = null;
+
       const updatedComments = existingComments.map((comment: Comment) => {
         if (comment.id === commentId) {
+          commentToNotify = comment;
           const likedBy = comment.likedBy || [];
           if (isLiked) {
             return {
@@ -614,6 +668,25 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         comments: updatedComments,
       });
 
+      // Send notification for like
+      if (!isLiked && commentToNotify && (commentToNotify as Comment).userId !== currentUser.uid) {
+        const c = commentToNotify as Comment;
+        await addDoc(collection(db, 'notifications'), {
+          toUserId: c.userId,
+          fromUserId: currentUser.uid,
+          fromUserName: currentUser.displayName || 'Anonymous',
+          type: 'comment_like',
+          novelId: novel.id,
+          novelTitle: novel.title,
+          commentId: commentId,
+          commentContent: c.content || c.text || '',
+          chapterNumber: currentChapter + 1,
+          chapterTitle: currentContentInfo.title,
+          createdAt: new Date().toISOString(),
+          read: false,
+        });
+      }
+
       const organizedComments = organizeComments(updatedComments);
       setComments(organizedComments);
     } catch (error) {
@@ -629,7 +702,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
   const getUserInitials = (name: string) => {
     return name
       .split(' ')
-      .map((word) => word[0])
+      .map((word) => word.charAt(0))
       .join('')
       .toUpperCase()
       .slice(0, 2);
@@ -638,12 +711,10 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
     const now = new Date();
-    const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
-
-    if (diffInSeconds < 60) return 'Just now';
-    if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
-    if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)}h ago`;
-    if (diffInSeconds < 604800) return `${Math.floor(diffInSeconds / 86400)}d ago`;
+    const diffInHours = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60));
+    if (diffInHours < 1) return 'Just now';
+    if (diffInHours < 24) return `${diffInHours}h ago`;
+    if (diffInHours < 168) return `${Math.floor(diffInHours / 24)}d ago`;
     return date.toLocaleDateString();
   };
 
@@ -654,9 +725,9 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
     // Regex to match: ****bold****, **bold**, *italic*, or # headings at start of line
     const formatRegex = /(\*{4}[^\*]+\*{4}|\*{2}[^\*]+\*{2}|\*[^\*]+\*|^#{1,6}\s+.+$)/gm;
-    
+
     const matches = [...text.matchAll(formatRegex)];
-    
+
     if (matches.length === 0) {
       return <Text>{text}</Text>;
     }
@@ -760,32 +831,32 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
   const splitIntoSmartParagraphs = (content: string): string[] => {
     // First, split by explicit paragraph breaks (double newlines)
     const explicitParagraphs = content.split(/\n\n+/).filter(p => p.trim().length > 0);
-    
+
     const smartParagraphs: string[] = [];
-    
+
     for (const para of explicitParagraphs) {
       // Clean up the paragraph
       const cleanPara = para.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
-      
+
       // If paragraph is short enough, keep as is
       if (cleanPara.length < 400) {
         smartParagraphs.push(cleanPara);
         continue;
       }
-      
+
       // Split long paragraphs by sentences
       // Match sentence endings: . ! ? followed by space and capital letter, or end of string
       const sentences = cleanPara.match(/[^.!?]*[.!?]+(?:\s+|$)|[^.!?]+$/g) || [cleanPara];
-      
+
       let currentParagraph = '';
       const targetLength = 350; // Target paragraph length in characters
       const minLength = 150; // Minimum paragraph length
-      
+
       for (let i = 0; i < sentences.length; i++) {
         const sentence = sentences[i].trim();
-        
+
         if (!sentence) continue;
-        
+
         // If adding this sentence would make paragraph too long
         if (currentParagraph.length > 0 && currentParagraph.length + sentence.length > targetLength) {
           // Only split if current paragraph is long enough
@@ -798,29 +869,33 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         } else {
           currentParagraph += (currentParagraph ? ' ' : '') + sentence;
         }
-        
+
         // Check for natural break points (dialogue, scene changes)
         const hasDialogueEnd = sentence.endsWith('"') || sentence.endsWith('"');
-        const nextIsDialogue = i < sentences.length - 1 && 
+        const nextIsDialogue = i < sentences.length - 1 &&
           (sentences[i + 1].trim().startsWith('"') || sentences[i + 1].trim().startsWith('"'));
-        
+
         // Create paragraph break after dialogue or at natural scene breaks
         if (currentParagraph.length >= minLength && (hasDialogueEnd && nextIsDialogue)) {
           smartParagraphs.push(currentParagraph.trim());
           currentParagraph = '';
         }
       }
-      
+
       // Add any remaining content
       if (currentParagraph.trim()) {
         smartParagraphs.push(currentParagraph.trim());
       }
     }
-    
+
     return smartParagraphs;
   };
 
-  // Get parent comment data for reply display
+  const handleProfileNavigation = (userId: string) => {
+    setShowComments(false);
+    navigation.navigate('Profile', { userId });
+  };
+
   const getParentCommentData = (parentId: string | undefined): { userName: string; userId: string } | null => {
     if (!parentId) return null;
 
@@ -846,14 +921,13 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
   const renderComment = (comment: Comment, isReply: boolean = false) => {
     const parentData = isReply ? getParentCommentData(comment.parentId) : null;
-    
+
     return (
       <View key={comment.id} style={[
-        isReply ? styles.replyItem : styles.commentItem,
-        { backgroundColor: isReply ? 'transparent' : colors.surface }
+        isReply ? styles.replyItem : [styles.commentItem, { borderBottomColor: colors.border }],
       ]}>
         <View style={styles.commentContainer}>
-          <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: comment.userId })}>
+          <TouchableOpacity onPress={() => handleProfileNavigation(comment.userId)}>
             {comment.userPhoto ? (
               <Image source={{ uri: comment.userPhoto }} style={styles.commentAvatar} />
             ) : (
@@ -867,16 +941,16 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
             <View style={styles.commentHeader}>
               {isReply && parentData ? (
                 <View style={styles.replyHeader}>
-                  <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: comment.userId })}>
+                  <TouchableOpacity onPress={() => handleProfileNavigation(comment.userId)}>
                     <Text style={[styles.commentUserName, { color: colors.text }]}>{comment.userName}</Text>
                   </TouchableOpacity>
-                  <Text style={[styles.replyArrow, { color: colors.textSecondary }]}>{'>'}</Text>
-                  <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: parentData.userId })}>
-                    <Text style={[styles.commentUserName, { color: colors.primary }]}>{parentData.userName}</Text>
+                  <Text style={[styles.replyArrow, { color: colors.textSecondary }]}> {'>'} </Text>
+                  <TouchableOpacity onPress={() => handleProfileNavigation(parentData.userId)}>
+                    <Text style={[styles.commentUserName, { color: colors.text }]}>{parentData.userName}</Text>
                   </TouchableOpacity>
                 </View>
               ) : (
-                <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: comment.userId })}>
+                <TouchableOpacity onPress={() => handleProfileNavigation(comment.userId)}>
                   <Text style={[styles.commentUserName, { color: colors.text }]}>{comment.userName}</Text>
                 </TouchableOpacity>
               )}
@@ -888,7 +962,9 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
               )}
             </View>
 
-            <Text style={[styles.commentText, { color: colors.text }]}>{comment.text}</Text>
+            <Text style={[styles.commentText, { color: colors.text }]}>
+              {comment.content || comment.text}
+            </Text>
 
             <View style={styles.commentActions}>
               <TouchableOpacity
@@ -899,14 +975,21 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
                 <Ionicons
                   name={comment.likedBy?.includes(currentUser?.uid || '') ? 'heart' : 'heart-outline'}
                   size={16}
-                  color={comment.likedBy?.includes(currentUser?.uid || '') ? colors.error : colors.textSecondary}
+                  color={comment.likedBy?.includes(currentUser?.uid || '') ? '#EF4444' : '#9CA3AF'}
                 />
                 <Text style={[styles.commentActionText, { color: colors.textSecondary }]}>{comment.likes || 0}</Text>
               </TouchableOpacity>
 
               {currentUser && (
-                <TouchableOpacity onPress={() => setReplyingTo(comment.id)} style={styles.commentAction}>
-                  <Ionicons name="return-down-forward-outline" size={16} color={colors.textSecondary} />
+                <TouchableOpacity
+                  onPress={() => {
+                    setReplyingTo(comment.id);
+                    setReplyingToUser(comment.userName);
+                    replyInputRef.current?.focus();
+                  }}
+                  style={styles.commentAction}
+                >
+                  <Ionicons name="return-down-forward-outline" size={16} color="#9CA3AF" />
                   <Text style={[styles.commentActionText, { color: colors.textSecondary }]}>Reply</Text>
                 </TouchableOpacity>
               )}
@@ -917,41 +1000,18 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
                   disabled={deletingComment === comment.id}
                   style={styles.commentAction}
                 >
-                  <Ionicons name="trash-outline" size={16} color={colors.textSecondary} />
+                  <Ionicons name="trash-outline" size={16} color="#9CA3AF" />
                   <Text style={[styles.commentActionText, { color: colors.textSecondary }]}>Delete</Text>
                 </TouchableOpacity>
               )}
             </View>
-
-            {replyingTo === comment.id && (
-              <View style={styles.replyInputContainer}>
-                <TextInput
-                  value={replyContent}
-                  onChangeText={setReplyContent}
-                  placeholder={`Reply to ${comment.userName}...`}
-                  placeholderTextColor={colors.textSecondary}
-                  style={[styles.replyInput, { backgroundColor: colors.surfaceSecondary, color: colors.text }]}
-                  multiline
-                />
-                <View style={styles.replyActions}>
-                  <TouchableOpacity onPress={() => setReplyingTo(null)} style={styles.replyCancel}>
-                    <Text style={[styles.replyCancelText, { color: colors.textSecondary }]}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={() => handleAddReply(comment.id)}
-                    disabled={!replyContent.trim() || submittingReply === comment.id}
-                    style={[styles.replySubmit, { backgroundColor: colors.primary }]}
-                  >
-                    <Text style={styles.replySubmitText}>{submittingReply === comment.id ? 'Posting...' : 'Reply'}</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            )}
           </View>
         </View>
 
         {comment.replies && comment.replies.length > 0 && (
-          <View style={styles.repliesContainer}>{comment.replies.map((reply) => renderComment(reply, true))}</View>
+          <View style={styles.repliesContainer}>
+            {comment.replies.map((reply) => renderComment(reply, true))}
+          </View>
         )}
       </View>
     );
@@ -989,11 +1049,11 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
       {/* Header */}
       <View style={[styles.header, { backgroundColor: colors.background, borderBottomColor: colors.border }]}>
         <TouchableOpacity
-            onPress={() => navigation.goBack()}
-            style={styles.topBarButton}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          onPress={() => navigation.goBack()}
+          style={styles.topBarButton}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
-            <Icon name="chevron-back" size={28} color="#8B5CF6" />
+          <Icon name="chevron-back" size={28} color="#8B5CF6" />
         </TouchableOpacity>
         <View style={styles.headerCenter}>
           <Text style={[styles.headerTitle, { color: colors.text }]}>{currentContentInfo.title}</Text>
@@ -1006,9 +1066,9 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
           onPress={handleShare}
           style={styles.topBarButton}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-      >
+        >
           <Icon name="share-outline" size={24} color="#8B5CF6" />
-      </TouchableOpacity>
+        </TouchableOpacity>
       </View>
 
       {/* Scrollable Content */}
@@ -1060,16 +1120,28 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
             }
             return null;
           })}
-          
+
           {/* End of chapter indicator */}
           <View style={styles.chapterEndContainer}>
             <View style={[styles.chapterEndLine, { backgroundColor: colors.border }]} />
             <Text style={[styles.chapterEndText, { color: colors.textSecondary }]}>
               End of {currentContentInfo.title}
             </Text>
-            
+
+            {/* End of Story Message */}
+            {currentChapter === getTotalReadingOrderItems() - 1 && novel.status === 'completed' && (
+              <View style={styles.completedContainer}>
+                <Ionicons name="checkmark-done-circle" size={60} color="#10B981" />
+                <Text style={[styles.completedTitle, { color: colors.text }]}>THE END</Text>
+                <Text style={[styles.completedSubtitle, { color: colors.textSecondary }]}>
+                  You've reached the end of this journey. Thank you for reading!
+                </Text>
+              </View>
+            )}
+
+            {/* Navigation Buttons */}
             {currentChapter < getTotalReadingOrderItems() - 1 ? (
-              <TouchableOpacity 
+              <TouchableOpacity
                 style={[styles.nextChapterButton, { backgroundColor: colors.primary }]}
                 onPress={goToNextChapter}
               >
@@ -1085,7 +1157,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
             )}
 
             {currentChapter > 0 && (
-              <TouchableOpacity 
+              <TouchableOpacity
                 style={[styles.prevChapterButton, { borderColor: colors.border }]}
                 onPress={goToPreviousChapter}
               >
@@ -1109,56 +1181,122 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         <TouchableOpacity style={[styles.actionButton, { backgroundColor: colors.surface, borderColor: colors.border }]} onPress={() => setShowComments(true)}>
           <Ionicons name="chatbubble-outline" size={24} color={colors.text} />
           <Text style={[styles.actionButtonText, { color: colors.text }]}>
-            {comments.reduce((total, c) => total + 1 + (c.replies?.length || 0), 0)}
+            {getTotalCommentsCount(comments)}
           </Text>
         </TouchableOpacity>
       </View>
 
-      <Modal visible={showComments} animationType="slide" onRequestClose={() => setShowComments(false)}>
-        <View style={[styles.modalContainer, { backgroundColor: colors.background, paddingTop: insets.top }]}>
-          <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
+      <Modal
+        visible={showComments}
+        animationType="slide"
+        transparent={false}
+        presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'fullScreen'}
+        onRequestClose={() => setShowComments(false)}
+      >
+        <KeyboardAvoidingView
+          behavior="padding"
+          style={[styles.modalContainer, { backgroundColor: colors.background }]}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 45 : 0}
+        >
+          <View style={[
+            styles.modalHeader,
+            {
+              borderBottomColor: colors.border,
+              paddingTop: Platform.OS === 'ios' ? 16 : Math.max(insets.top, 16)
+            }
+          ]}>
             <Text style={[styles.modalTitle, { color: colors.text }]}>
-              Comments ({comments.reduce((total, c) => total + 1 + (c.replies?.length || 0), 0)})
+              {(() => {
+                const total = getTotalCommentsCount(comments);
+                return `${total} ${total === 1 ? 'Comment' : 'Comments'}`;
+              })()}
             </Text>
-            <TouchableOpacity onPress={() => setShowComments(false)} style={styles.modalCloseButton}>
+            <TouchableOpacity
+              style={styles.modalCloseButton}
+              onPress={() => setShowComments(false)}
+            >
               <Ionicons name="close" size={24} color={colors.text} />
             </TouchableOpacity>
           </View>
 
-          <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-            <ScrollView style={styles.commentsList} showsVerticalScrollIndicator={false}>
-              {comments.length === 0 ? (
-                <View style={styles.emptyComments}>
-                  <Ionicons name="chatbubbles-outline" size={48} color={colors.textSecondary} />
-                  <Text style={[styles.emptyCommentsText, { color: colors.textSecondary }]}>No comments yet</Text>
-                  <Text style={[styles.emptyCommentsSubtext, { color: colors.textSecondary }]}>Be the first to comment!</Text>
-                </View>
-              ) : (
-                comments.map((comment) => renderComment(comment))
-              )}
+          {comments.length === 0 ? (
+            <View style={styles.emptyComments}>
+              <Ionicons name="chatbubbles-outline" size={48} color={colors.textSecondary} />
+              <Text style={[styles.emptyCommentsText, { color: colors.textSecondary }]}>No comments yet</Text>
+              <Text style={[styles.emptyCommentsSubtext, { color: colors.textSecondary }]}>Be the first to share your thoughts!</Text>
+            </View>
+          ) : (
+            <ScrollView
+              style={styles.commentsList}
+              showsVerticalScrollIndicator={true}
+              keyboardShouldPersistTaps="handled"
+            >
+              {comments.map((comment) => renderComment(comment))}
             </ScrollView>
+          )}
 
-            {currentUser && (
-              <View style={[styles.commentForm, { borderTopColor: colors.border}]}>
-                <TextInput
-                  value={newComment}
-                  onChangeText={setNewComment}
-                  placeholder="Write a comment..."
-                  placeholderTextColor={colors.textSecondary}
-                  style={[styles.commentInput, { backgroundColor: colors.surface, color: colors.text }]}
-                  multiline
-                />
-                <TouchableOpacity
-                  onPress={handleAddComment}
-                  disabled={!newComment.trim() || submittingComment}
-                  style={[styles.commentSubmit, { backgroundColor: colors.primary }]}
-                >
-                  <Text style={styles.commentSubmitText}>{submittingComment ? 'Posting...' : 'Post'}</Text>
-                </TouchableOpacity>
+          {currentUser && (
+            <View style={[styles.commentInputArea, { paddingBottom: Math.max(insets.bottom, 25) }]}>
+              {currentUser.photoURL ? (
+                <Image source={{ uri: currentUser.photoURL }} style={styles.commentInputAvatar} />
+              ) : (
+                <View style={[styles.commentInputAvatarPlaceholder, { backgroundColor: colors.primary }]}>
+                  <Text style={styles.commentInputAvatarText}>{getUserInitials(currentUser.displayName || 'U')}</Text>
+                </View>
+              )}
+              <View style={styles.commentInputWrapperWrapper}>
+                {replyingTo && (
+                  <View style={styles.replyingToBanner}>
+                    <Text style={[styles.replyingToText, { color: colors.textSecondary }]}>Replying to {replyingToUser}</Text>
+                    <TouchableOpacity
+                      onPress={() => {
+                        setReplyingTo(null);
+                        setReplyingToUser('');
+                        setReplyContent('');
+                      }}
+                      style={styles.replyingToCancel}
+                    >
+                      <Ionicons name="close-circle" size={16} color={colors.textSecondary} />
+                    </TouchableOpacity>
+                  </View>
+                )}
+                <View style={styles.commentInputWrapper}>
+                  <TextInput
+                    ref={replyInputRef}
+                    value={replyingTo ? replyContent : newComment}
+                    onChangeText={replyingTo ? setReplyContent : setNewComment}
+                    placeholder={replyingTo ? "Write a reply..." : "Add a comment..."}
+                    placeholderTextColor="#9CA3AF"
+                    style={[styles.commentInput, { color: colors.text }]}
+                    multiline
+                    maxLength={500}
+                  />
+                  <TouchableOpacity
+                    onPress={() => {
+                      if (replyingTo) {
+                        handleAddReply(replyingTo);
+                      } else {
+                        handleAddComment();
+                      }
+                    }}
+                    disabled={(replyingTo ? !replyContent.trim() : !newComment.trim()) || submittingComment || !!submittingReply}
+                    style={styles.commentSubmitBtn}
+                  >
+                    {(submittingComment || submittingReply) ? (
+                      <ActivityIndicator size="small" color={colors.primary} />
+                    ) : (
+                      <Ionicons
+                        name="send"
+                        size={20}
+                        color={(replyingTo ? replyContent.trim() : newComment.trim()) ? colors.primary : '#9CA3AF'}
+                      />
+                    )}
+                  </TouchableOpacity>
+                </View>
               </View>
-            )}
-          </KeyboardAvoidingView>
-        </View>
+            </View>
+          )}
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );
@@ -1180,12 +1318,12 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
   },
   topBarButton: {
-        width: 36,
-        height: 36,
-        justifyContent: 'center',
-        alignItems: 'center',
-        borderRadius: 18,
-    },
+    width: 36,
+    height: 36,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 18,
+  },
   headerCenter: {
     flex: 1,
     alignItems: 'center',
@@ -1367,27 +1505,8 @@ const styles = StyleSheet.create({
     fontSize: 10,
     marginTop: 2,
   },
-  modalContainer: {
-    flex: 1,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-  },
-  modalCloseButton: {
-    padding: 8,
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-  },
-  commentsList: {
-    flex: 1,
-    padding: 16,
+  repliesContainer: {
+    marginTop: 8,
   },
   emptyComments: {
     alignItems: 'center',
@@ -1402,16 +1521,14 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   commentItem: {
-    marginBottom: 16,
-    padding: 12,
-    borderRadius: 8,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
   },
   replyItem: {
-    marginBottom: 8,
+    marginTop: 8,
   },
   commentContainer: {
     flexDirection: 'row',
-    marginBottom: 10,
   },
   commentAvatar: {
     width: 40,
@@ -1483,59 +1600,111 @@ const styles = StyleSheet.create({
   commentActionText: {
     fontSize: 12,
   },
-  replyInputContainer: {
-    marginTop: 12,
+  modalContainer: {
+    flex: 1,
   },
-  replyInput: {
-    padding: 8,
-    borderRadius: 4,
-    marginBottom: 8,
-    minHeight: 60,
-  },
-  replyActions: {
+  modalHeader: {
     flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+    borderBottomWidth: 1,
   },
-  replyCancel: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
   },
-  replyCancelText: {
-    fontSize: 12,
+  modalCloseButton: {
+    position: 'absolute',
+    right: 16,
+    padding: 4,
   },
-  replySubmit: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 4,
+  commentsList: {
+    flex: 1,
+    paddingHorizontal: 16,
   },
-  replySubmitText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  repliesContainer: {
-    marginTop: 8,
-  },
-  commentForm: {
-    padding: 16,
+  commentInputArea: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 25,
     borderTopWidth: 1,
   },
-  commentInput: {
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 8,
-    minHeight: 80,
+  commentInputAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
   },
-  commentSubmit: {
-    padding: 12,
-    borderRadius: 8,
+  commentInputAvatarPlaceholder: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
     alignItems: 'center',
   },
-  commentSubmitText: {
+  commentInputAvatarText: {
     color: '#fff',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  commentInputWrapperWrapper: {
+    flex: 1,
+    marginLeft: 12,
+  },
+  commentInputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 12,
+    paddingVertical: Platform.OS === 'ios' ? 8 : 4,
+    minHeight: 40,
+  },
+  commentInput: {
+    flex: 1,
     fontSize: 14,
-    fontWeight: '600',
+    paddingTop: 0,
+    paddingBottom: 0,
+  },
+  commentSubmitBtn: {
+    padding: 6,
+    marginLeft: 4,
+  },
+  replyingToBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+    paddingHorizontal: 8,
+  },
+  replyingToText: {
+    fontSize: 12,
+  },
+  replyingToCancel: {
+    padding: 2,
+  },
+  // Completion Styles
+  completedContainer: {
+    alignItems: 'center',
+    paddingVertical: 60,
+    marginTop: 40,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(0,0,0,0.05)',
+  },
+  completedTitle: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    marginTop: 16,
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  completedSubtitle: {
+    fontSize: 16,
+    color: '#6B7280',
+    textAlign: 'center',
+    paddingHorizontal: 20,
+    lineHeight: 24,
   },
 });
 

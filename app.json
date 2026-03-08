@@ -8,8 +8,6 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "scheme": "novlnest",
-    "deepLinks": true,
-    "deepLinkingStrategy": "managed",
     "splash": {
       "image": "./assets/images/app-icon.png",
       "resizeMode": "contain",
@@ -36,9 +34,7 @@
       },
       "associatedDomains": [
         "applinks:novlnest.com",
-        "applinks:auth.expo.io",
-        "applinks:novlnest.com",
-        "applinks:auth.expo.io"
+        "applinks:www.novlnest.com"
       ],
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
@@ -66,10 +62,15 @@
       "intentFilters": [
         {
           "action": "VIEW",
+          "autoVerify": true,
           "data": [
             {
-              "scheme": "novlnest",
-              "host": "*"
+              "scheme": "https",
+              "host": "novlnest.com"
+            },
+            {
+              "scheme": "https",
+              "host": "www.novlnest.com"
             }
           ],
           "category": [
@@ -81,23 +82,7 @@
           "action": "VIEW",
           "data": [
             {
-              "scheme": "https",
-              "host": "novlnest.com",
-              "pathPrefix": "/auth/action"
-            }
-          ],
-          "category": [
-            "BROWSABLE",
-            "DEFAULT"
-          ]
-        },
-        {
-          "action": "VIEW",
-          "data": [
-            {
-              "scheme": "https",
-              "host": "auth.expo.io",
-              "pathPrefix": "/"
+              "scheme": "novlnest"
             }
           ],
           "category": [

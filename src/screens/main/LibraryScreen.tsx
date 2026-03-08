@@ -39,7 +39,7 @@ const getFirebaseDownloadUrl = (url: string) => {
 
 const getGenreColor = (genres: string[]) => {
   if (!genres || genres.length === 0) return colors.textSecondary;
-  
+
   const colorMap: Record<string, string> = {
     // Novel genres
     Fantasy: '#8B5CF6',
@@ -66,7 +66,7 @@ const getGenreColor = (genres: string[]) => {
     Elegy: '#6B7280',
     Ode: '#F59E0B',
   };
-  
+
   return colorMap[genres[0]] || colors.textSecondary;
 };
 
@@ -78,7 +78,7 @@ export const LibraryScreen = ({ navigation }: any) => {
   const [likedPoems, setLikedPoems] = useState<Poem[]>([]);
   const [loading, setLoading] = useState(true);
   const [imageErrors, setImageErrors] = useState<Record<string, boolean>>({});
-  const [activeTab, setActiveTab] = useState<'reading' | 'finished' | 'poetry'>('reading');
+  const [activeTab, setActiveTab] = useState<'favourites' | 'finished' | 'poetry'>('favourites');
 
   const styles = getStyles(colors);
 
@@ -154,16 +154,6 @@ export const LibraryScreen = ({ navigation }: any) => {
     setImageErrors((prev) => ({ ...prev, [id]: true }));
   };
 
-  const handleMoveToReading = async (novel: Novel) => {
-    try {
-      await markNovelAsFinished(novel.id, novel.title, novel.authorId);
-      Alert.alert('Success', `"${novel.title}" moved back to Currently Reading`);
-    } catch (error) {
-      console.error('Error moving novel to reading:', error);
-      Alert.alert('Error', 'Failed to move novel');
-    }
-  };
-
   const handleMarkAsFinished = async (novel: Novel) => {
     try {
       await markNovelAsFinished(novel.id, novel.title, novel.authorId);
@@ -174,43 +164,25 @@ export const LibraryScreen = ({ navigation }: any) => {
     }
   };
 
-  const showNovelOptions = (novel: Novel, isFinished: boolean) => {
-    if (isFinished) {
-      Alert.alert(
-        'Choose an action',
-        `What would you like to do with "${novel.title}"?`,
-        [
-          {
-            text: 'Continue Reading',
-            onPress: () => handleMoveToReading(novel),
-          },
-          {
-            text: 'Cancel',
-            style: 'cancel',
-          },
-        ],
-        { cancelable: true }
-      );
-    } else {
-      Alert.alert(
-        'Choose an action',
-        `What would you like to do with "${novel.title}"?`,
-        [
-          {
-            text: 'Mark as Finished',
-            onPress: () => handleMarkAsFinished(novel),
-          },
-          {
-            text: 'Cancel',
-            style: 'cancel',
-          },
-        ],
-        { cancelable: true }
-      );
-    }
+  const showNovelOptions = (novel: Novel) => {
+    Alert.alert(
+      'Choose an action',
+      `What would you like to do with "${novel.title}"?`,
+      [
+        {
+          text: 'Mark as Finished',
+          onPress: () => handleMarkAsFinished(novel),
+        },
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+      ],
+      { cancelable: true }
+    );
   };
 
-  const renderNovelCard = (novel: Novel, isFinished: boolean) => {
+  const renderFavouriteNovelCard = (novel: Novel) => {
     const hasImage = (novel.coverSmallImage || novel.coverImage) && !imageErrors[novel.id];
 
     return (
@@ -218,8 +190,62 @@ export const LibraryScreen = ({ navigation }: any) => {
         key={novel.id}
         style={styles.card}
         onPress={() => navigation.navigate('NovelOverview', { novelId: novel.id })}
-        onLongPress={() => showNovelOptions(novel, isFinished)}
+        onLongPress={() => showNovelOptions(novel)}
         delayLongPress={500}
+      >
+        <View style={styles.cardImageContainer}>
+          {hasImage ? (
+            <CachedImage
+              uri={getFirebaseDownloadUrl(novel.coverSmallImage || novel.coverImage || '')}
+              style={styles.cardImage}
+              onError={() => handleImageError(novel.id)}
+              resizeMode="cover"
+            />
+          ) : (
+            <View style={[styles.cardImageFallback, { backgroundColor: getGenreColor(novel.genres) }]}>
+              <Text style={styles.fallbackTitle} numberOfLines={3}>
+                {novel.title}
+              </Text>
+              <View style={styles.fallbackDivider} />
+              <Text style={styles.fallbackAuthor} numberOfLines={1}>
+                {novel.authorName}
+              </Text>
+            </View>
+          )}
+
+          {/* Stats Overlay */}
+          <View style={styles.statsOverlay}>
+            <View style={styles.statItem}>
+              <Ionicons name="eye" size={12} color="#fff" />
+              <Text style={styles.statText}>{(novel.views)}</Text>
+            </View>
+            <View style={styles.statItem}>
+              <Ionicons name="heart" size={12} color="#fff" />
+              <Text style={styles.statText}>{(novel.likes)}</Text>
+            </View>
+          </View>
+        </View>
+
+        <View style={styles.cardInfo}>
+          <Text style={styles.cardTitle} numberOfLines={2}>
+            {novel.title}
+          </Text>
+          <Text style={styles.cardAuthor} numberOfLines={1}>
+            by {novel.authorName}
+          </Text>
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderFinishedNovelCard = (novel: Novel) => {
+    const hasImage = (novel.coverSmallImage || novel.coverImage) && !imageErrors[novel.id];
+
+    return (
+      <TouchableOpacity
+        key={novel.id}
+        style={styles.card}
+        onPress={() => navigation.navigate('NovelOverview', { novelId: novel.id })}
       >
         <View style={styles.cardImageContainer}>
           {hasImage ? (
@@ -346,20 +372,20 @@ export const LibraryScreen = ({ navigation }: any) => {
       <View style={styles.tabContainer}>
         <View style={styles.tabWrapper}>
           <TouchableOpacity
-            style={[styles.tab, activeTab === 'reading' && styles.activeTab]}
-            onPress={() => setActiveTab('reading')}
+            style={[styles.tab, activeTab === 'favourites' && styles.activeTab]}
+            onPress={() => setActiveTab('favourites')}
           >
-            <Ionicons 
-              name="book-outline" 
-              size={18} 
-              color={activeTab === 'reading' ? '#fff' : colors.textSecondary} 
+            <Ionicons
+              name="book-outline"
+              size={18}
+              color={activeTab === 'favourites' ? '#fff' : colors.textSecondary}
             />
-            <Text style={[styles.tabText, activeTab === 'reading' && styles.activeTabText]}>
-              Reading
+            <Text style={[styles.tabText, activeTab === 'favourites' && styles.activeTabText]}>
+              Favourites
             </Text>
             {likedNovels.length > 0 && (
-              <View style={[styles.tabBadge, activeTab === 'reading' && styles.activeTabBadge]}>
-                <Text style={[styles.tabBadgeText, activeTab === 'reading' && styles.activeTabBadgeText]}>
+              <View style={[styles.tabBadge, activeTab === 'favourites' && styles.activeTabBadge]}>
+                <Text style={[styles.tabBadgeText, activeTab === 'favourites' && styles.activeTabBadgeText]}>
                   {likedNovels.length}
                 </Text>
               </View>
@@ -370,10 +396,10 @@ export const LibraryScreen = ({ navigation }: any) => {
             style={[styles.tab, activeTab === 'finished' && styles.activeTab]}
             onPress={() => setActiveTab('finished')}
           >
-            <Ionicons 
-              name="checkmark-circle-outline" 
-              size={18} 
-              color={activeTab === 'finished' ? '#fff' : colors.textSecondary} 
+            <Ionicons
+              name="checkmark-circle-outline"
+              size={18}
+              color={activeTab === 'finished' ? '#fff' : colors.textSecondary}
             />
             <Text style={[styles.tabText, activeTab === 'finished' && styles.activeTabText]}>
               Finished
@@ -391,10 +417,10 @@ export const LibraryScreen = ({ navigation }: any) => {
             style={[styles.tab, activeTab === 'poetry' && styles.activeTab]}
             onPress={() => setActiveTab('poetry')}
           >
-            <Ionicons 
-              name="rose-outline" 
-              size={18} 
-              color={activeTab === 'poetry' ? '#fff' : colors.textSecondary} 
+            <Ionicons
+              name="rose-outline"
+              size={18}
+              color={activeTab === 'poetry' ? '#fff' : colors.textSecondary}
             />
             <Text style={[styles.tabText, activeTab === 'poetry' && styles.activeTabText]}>
               Poetry
@@ -410,14 +436,14 @@ export const LibraryScreen = ({ navigation }: any) => {
         </View>
       </View>
 
-      {/* Currently Reading Section */}
-      {activeTab === 'reading' && (
+      {/* Favourites Section */}
+      {activeTab === 'favourites' && (
         <View style={styles.section}>
           {likedNovels.length === 0 ? (
             <View style={styles.emptySection}>
               <Ionicons name="book-outline" size={48} color={colors.textSecondary} />
-              <Text style={styles.emptySectionTitle}>Your reading list is empty</Text>
-              <Text style={styles.emptySectionText}>Start liking novels to add them here!</Text>
+              <Text style={styles.emptySectionTitle}>Your Favourites list is empty</Text>
+              <Text style={styles.emptySectionText}>Like novels from the novel page to add them here!</Text>
               <TouchableOpacity style={styles.browseButton} onPress={() => navigation.navigate('Browse')}>
                 <Text style={styles.browseButtonText}>Browse Novels</Text>
               </TouchableOpacity>
@@ -429,7 +455,7 @@ export const LibraryScreen = ({ navigation }: any) => {
                 <Text style={styles.longPressHintText}>Long press a novel to mark it as finished when you're done reading</Text>
               </View>
               <View style={styles.grid}>
-                {likedNovels.map((novel) => renderNovelCard(novel, false))}
+                {likedNovels.map((novel) => renderFavouriteNovelCard(novel))}
               </View>
             </>
           )}
@@ -443,16 +469,12 @@ export const LibraryScreen = ({ navigation }: any) => {
             <View style={styles.emptySection}>
               <Ionicons name="checkmark-circle-outline" size={48} color={colors.textSecondary} />
               <Text style={styles.emptySectionTitle}>No finished novels yet</Text>
-              <Text style={styles.emptySectionText}>Mark novels as finished to see them here!</Text>
+              <Text style={styles.emptySectionText}>Mark Favourite novels as finished to see them here!</Text>
             </View>
           ) : (
             <>
-              <View style={styles.longPressHint}>
-                <Ionicons name="information-circle-outline" size={14} color={colors.primary} />
-                <Text style={styles.longPressHintText}>Long press a novel to mark it as not finished</Text>
-              </View>
               <View style={styles.grid}>
-                {finishedNovels.map((novel) => renderNovelCard(novel, true))}
+                {finishedNovels.map((novel) => renderFinishedNovelCard(novel))}
               </View>
             </>
           )}
@@ -599,7 +621,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   emptySectionTitle: {
     ...typography.h3,
     color: themeColors.text,
-    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',  
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
     marginTop: spacing.md,
     marginBottom: spacing.xs,
   },

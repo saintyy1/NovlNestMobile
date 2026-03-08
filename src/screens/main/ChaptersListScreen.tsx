@@ -18,6 +18,7 @@ import {
     doc,
     getDoc,
     updateDoc,
+    deleteField,
 } from 'firebase/firestore';
 import { get } from 'react-native/Libraries/TurboModule/TurboModuleRegistry';
 
@@ -212,6 +213,69 @@ const ChaptersListScreen = ({ route, navigation }: any) => {
                                     novelId: novel.id,
                                     chapterNumber: getChapterNumber('epilogue'),
                                 });
+                            }}
+                            onLongPress={() => {
+                                const isAuthor = currentUser && novel.authorId === currentUser.uid;
+                                if (isAuthor) {
+                                    Alert.alert(
+                                        'Manage Epilogue',
+                                        'Choose an action for the epilogue',
+                                        [
+                                            {
+                                                text: 'Edit Epilogue',
+                                                onPress: () => {
+                                                    navigation.navigate('ChapterEditor', {
+                                                        chapterNumber: 'Epilogue',
+                                                        initialTitle: novel.epilogue?.title || 'Epilogue',
+                                                        initialContent: novel.epilogue?.content || '',
+                                                        onSave: async (epilogueData: { title: string; content: string }) => {
+                                                            try {
+                                                                await updateDoc(doc(db, 'novels', novel.id), {
+                                                                    epilogue: epilogueData,
+                                                                    updatedAt: new Date().toISOString(),
+                                                                });
+                                                                Alert.alert('Success', 'Epilogue updated successfully!');
+                                                            } catch (error) {
+                                                                console.error('Error updating epilogue:', error);
+                                                                Alert.alert('Error', 'Failed to update epilogue');
+                                                            }
+                                                        }
+                                                    });
+                                                },
+                                            },
+                                            {
+                                                text: 'Delete Epilogue',
+                                                style: 'destructive',
+                                                onPress: () => {
+                                                    Alert.alert(
+                                                        'Delete Epilogue',
+                                                        'Are you sure you want to delete the epilogue?',
+                                                        [
+                                                            {
+                                                                text: 'Delete',
+                                                                style: 'destructive',
+                                                                onPress: async () => {
+                                                                    try {
+                                                                        await updateDoc(doc(db, 'novels', novel.id), {
+                                                                            epilogue: deleteField(),
+                                                                            status: 'ongoing',
+                                                                        });
+                                                                        Alert.alert('Success', 'Epilogue deleted successfully!');
+                                                                    } catch (error) {
+                                                                        console.error('Error deleting epilogue:', error);
+                                                                        Alert.alert('Error', 'Failed to delete epilogue');
+                                                                    }
+                                                                },
+                                                            },
+                                                            { text: 'Cancel', style: 'cancel' },
+                                                        ]
+                                                    );
+                                                },
+                                            },
+                                            { text: 'Cancel', style: 'cancel' },
+                                        ]
+                                    );
+                                }
                             }}
                         >
                             <View style={styles.chapterInfo}>

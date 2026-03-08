@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, arrayRemove } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
@@ -24,6 +24,9 @@ interface UserListDrawerProps {
   title: string;
   navigation: any;
   onUsersLoaded?: (validCount: number) => void;
+  sourceUserId?: string;
+  listType?: 'followers' | 'following';
+  shouldHeal?: boolean;
 }
 
 interface UserDisplayInfo {
@@ -40,8 +43,11 @@ const UserListDrawer: React.FC<UserListDrawerProps> = ({
   title,
   navigation,
   onUsersLoaded,
+  sourceUserId,
+  listType,
+  shouldHeal = true,
 }) => {
-  const { currentUser, toggleFollow } = useAuth();
+  const { currentUser, toggleFollow, refreshUser } = useAuth();
   const { colors } = useTheme();
   const styles = getStyles(colors);
   const insets = useSafeAreaInsets();
@@ -80,6 +86,29 @@ const UserListDrawer: React.FC<UserListDrawerProps> = ({
       const results = await Promise.all(userPromises);
       const validUsers = results.filter(Boolean) as UserDisplayInfo[];
       setUsersToDisplay(validUsers);
+
+      // Identify missing users for cleanup
+      const missingUserIds = uniqueUserIds.filter((_, index) => !results[index]);
+      console.log(`[UserListDrawer] Found ${validUsers.length} valid users, ${missingUserIds.length} missing.`);
+
+      if (missingUserIds.length > 0 && sourceUserId && listType && shouldHeal) {
+        try {
+          console.log(`[UserListDrawer] Attempting one-time cleanup for ${listType} on user ${sourceUserId}...`);
+          const userDocRef = doc(db, 'users', sourceUserId);
+          const updateData: any = {};
+          updateData[listType] = arrayRemove(...missingUserIds);
+          await updateDoc(userDocRef, updateData);
+          console.log('[UserListDrawer] Cleanup successful.');
+
+          // If we cleaned up the current user's doc, refresh the context
+          if (sourceUserId === currentUser?.uid) {
+            console.log('[UserListDrawer] Refreshing current user context...');
+            await refreshUser();
+          }
+        } catch (cleanupError) {
+          console.error('[UserListDrawer] Error cleaning up deleted users:', cleanupError);
+        }
+      }
 
       if (onUsersLoaded) {
         onUsersLoaded(validUsers.length);

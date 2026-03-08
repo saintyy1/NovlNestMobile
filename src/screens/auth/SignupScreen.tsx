@@ -67,6 +67,7 @@ export const SignupScreen = ({ navigation }: any) => {
   }, []);
 
   const handleAppleSignIn = async () => {
+    setIsRegistering(true);
     try {
       const credential = await AppleAuthentication.signInAsync({
         requestedScopes: [
@@ -94,6 +95,7 @@ export const SignupScreen = ({ navigation }: any) => {
       trackSignUp('apple', userCredential.user.uid);
 
     } catch (error: any) {
+      setIsRegistering(false);
       if (error.code === 'ERR_CANCELED') {
         // User cancelled Apple login
         return;
@@ -109,6 +111,8 @@ export const SignupScreen = ({ navigation }: any) => {
 
 
   const handleGoogleSignUp = async () => {
+    if (isRegistering) return;
+    setIsRegistering(true);
     try {
       // Dynamically import Google Sign-In
       const { GoogleSignin } = require('@react-native-google-signin/google-signin');
@@ -139,6 +143,10 @@ export const SignupScreen = ({ navigation }: any) => {
 
       // Navigation will happen automatically via auth state change
     } catch (error: any) {
+      setIsRegistering(false);
+      if (error.code === 'SIGN_IN_CANCELLED' || error.message?.includes('Sign in cancelled')) {
+        return;
+      }
       console.error('Google Sign-Up Error:', error);
       Alert.alert('Error', error.message || 'Failed to sign up with Google');
     }
@@ -169,6 +177,7 @@ export const SignupScreen = ({ navigation }: any) => {
         trackSignUp('email', auth.currentUser.uid);
       }
 
+      setIsRegistering(false); // Reset to allow OK button click on alert
       Alert.alert(
         'Account Created!',
         'Please check your email to verify your account.',
@@ -176,6 +185,7 @@ export const SignupScreen = ({ navigation }: any) => {
       );
       // Navigation will happen automatically via auth state listener
     } catch (error: any) {
+      setIsRegistering(false);
       let errorMessage = 'Failed to create account';
 
       if (error.message === 'This display name is already taken. Try another one.') {
@@ -195,8 +205,6 @@ export const SignupScreen = ({ navigation }: any) => {
       }
 
       Alert.alert('Signup Failed', errorMessage);
-    } finally {
-      setIsRegistering(false);
     }
   };
 
@@ -219,24 +227,34 @@ export const SignupScreen = ({ navigation }: any) => {
           </View>
 
 
-          <View style={styles.socialAuthContainer}>
+          <View
+            style={styles.socialAuthContainer}
+            pointerEvents={isRegistering ? 'none' : 'auto'}
+          >
             {Platform.OS === 'ios' && (
-            <AppleAuthentication.AppleAuthenticationButton
-              buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_UP}
-              buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
-              cornerRadius={6}
-              style={{ width: '100%', height: 44 }}
-              onPress={handleAppleSignIn}
-            />
+              <AppleAuthentication.AppleAuthenticationButton
+                buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_UP}
+                buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+                cornerRadius={6}
+                style={{ width: '100%', height: 44, opacity: isRegistering ? 0.6 : 1 }}
+                onPress={handleAppleSignIn}
+              />
             )}
 
             {isGoogleSignInAvailable && (
               <TouchableOpacity
-                style={styles.googleButton}
+                style={[styles.googleButton, isRegistering && styles.googleButtonDisabled]}
                 onPress={handleGoogleSignUp}
+                disabled={isRegistering}
               >
-                <Ionicons name="logo-google" size={20} color="#fff" />
-                <Text style={styles.googleButtonText}>Sign up with Google</Text>
+                {isRegistering ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="logo-google" size={20} color="#fff" />
+                    <Text style={styles.googleButtonText}>Sign up with Google</Text>
+                  </>
+                )}
               </TouchableOpacity>
             )}
           </View>
@@ -395,6 +413,9 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  googleButtonDisabled: {
+    opacity: 0.7,
   },
   orContainer: {
     flexDirection: 'row',

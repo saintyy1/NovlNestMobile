@@ -10,6 +10,7 @@ import {
   Alert,
   StyleSheet,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
@@ -48,6 +49,8 @@ const SettingsScreen = ({ navigation }: any) => {
   // Delete Account states
   const [showDeleteAccountModal, setShowDeleteAccountModal] = useState(false);
   const [deletePassword, setDeletePassword] = useState('');
+
+  const [isLoading, setIsLoading] = useState(false);
 
   // Check if user is Google user
   const isGoogleUser = React.useMemo(() => {
@@ -128,6 +131,7 @@ const SettingsScreen = ({ navigation }: any) => {
   const handleSaveProfile = async () => {
     if (!currentUser) return;
 
+    setIsLoading(true);
     try {
       let formattedSupportLink = editSupportLink;
       if (editLocation === 'Nigerian' && editBankName && editAccountNumber && editAccountName) {
@@ -148,6 +152,8 @@ const SettingsScreen = ({ navigation }: any) => {
       fetchUserData();
     } catch (error) {
       Alert.alert('Error', 'Failed to update profile');
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -160,7 +166,7 @@ const SettingsScreen = ({ navigation }: any) => {
       );
       return;
     }
-    
+
     if (!newPassword || newPassword.length < 6) {
       Alert.alert('Error', 'Password must be at least 6 characters');
       return;
@@ -178,6 +184,7 @@ const SettingsScreen = ({ navigation }: any) => {
         {
           text: 'Change',
           onPress: async () => {
+            setIsLoading(true);
             try {
               await changePassword(currentPassword, newPassword);
 
@@ -189,6 +196,8 @@ const SettingsScreen = ({ navigation }: any) => {
             } catch (error: any) {
               console.error('Password change error:', error);
               Alert.alert('Error', error?.message || 'Failed to update password');
+            } finally {
+              setIsLoading(false);
             }
           },
         },
@@ -229,6 +238,7 @@ const SettingsScreen = ({ navigation }: any) => {
         {
           text: 'Change',
           onPress: async () => {
+            setIsLoading(true);
             try {
               // Call updateUserEmail with new email
               await updateUserEmail(newEmail, confirmEmail, isGoogleUser ? undefined : emailPassword);
@@ -244,6 +254,8 @@ const SettingsScreen = ({ navigation }: any) => {
             } catch (error: any) {
               console.error('Email change error:', error);
               Alert.alert('Error', error?.message || 'Failed to update email');
+            } finally {
+              setIsLoading(false);
             }
           },
         },
@@ -266,6 +278,7 @@ const SettingsScreen = ({ navigation }: any) => {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
+            setIsLoading(true);
             try {
               await deleteUserAccount(isGoogleUser || isAppleUser ? undefined : deletePassword);
 
@@ -273,6 +286,8 @@ const SettingsScreen = ({ navigation }: any) => {
             } catch (error: any) {
               console.error('Account deletion error:', error);
               Alert.alert('Error', error?.message || 'Failed to delete account');
+            } finally {
+              setIsLoading(false);
             }
           },
         },
@@ -384,7 +399,10 @@ const SettingsScreen = ({ navigation }: any) => {
             >
               <View style={[styles.modalHeader, { backgroundColor: colors.background }]}>
                 <Text style={[styles.modalTitle, { color: colors.text }]}>Edit Profile</Text>
-                <TouchableOpacity onPress={() => setShowEditProfileModal(false)}>
+                <TouchableOpacity
+                  onPress={() => setShowEditProfileModal(false)}
+                  disabled={isLoading}
+                >
                   <Ionicons name="close" size={24} color={colors.text} />
                 </TouchableOpacity>
               </View>
@@ -398,6 +416,7 @@ const SettingsScreen = ({ navigation }: any) => {
                   onChangeText={setEditDisplayName}
                   placeholder="Enter display name"
                   placeholderTextColor={colors.textSecondary}
+                  editable={!isLoading}
                 />
               </View>
               <View style={styles.formGroup}>
@@ -409,6 +428,7 @@ const SettingsScreen = ({ navigation }: any) => {
                   style={styles.textArea}
                   multiline
                   maxLength={500}
+                  editable={!isLoading}
                 />
                 <Text style={[styles.charCount, { color: colors.textSecondary }]}>{editBio.length}/500</Text>
               </View>
@@ -421,6 +441,7 @@ const SettingsScreen = ({ navigation }: any) => {
                   placeholder="https://instagram.com/yourprofile"
                   placeholderTextColor="#6B7280"
                   keyboardType="url"
+                  editable={!isLoading}
                 />
               </View>
               <View style={styles.formGroup}>
@@ -432,6 +453,7 @@ const SettingsScreen = ({ navigation }: any) => {
                   placeholder="https://x.com/@yourprofile"
                   placeholderTextColor="#6B7280"
                   keyboardType="url"
+                  editable={!isLoading}
                 />
               </View>
               <View style={styles.formGroup}>
@@ -455,55 +477,69 @@ const SettingsScreen = ({ navigation }: any) => {
                   </TouchableOpacity>
                 </View>
               </View>
-              {editLocation === 'Nigerian' ? (
-                <>
+              <View pointerEvents={isLoading ? 'none' : 'auto'}>
+                {editLocation === 'Nigerian' ? (
+                  <>
+                    <View style={styles.formGroup}>
+                      <Text style={styles.label}>Bank Name</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={editBankName}
+                        onChangeText={setEditBankName}
+                        placeholder="Select your bank"
+                        placeholderTextColor="#6B7280"
+                        editable={!isLoading}
+                      />
+                    </View>
+                    <View style={styles.formGroup}>
+                      <Text style={styles.label}>Account Number</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={editAccountNumber}
+                        onChangeText={setEditAccountNumber}
+                        placeholder="Enter account number"
+                        placeholderTextColor="#6B7280"
+                        keyboardType="numeric"
+                        editable={!isLoading}
+                      />
+                    </View>
+                    <View style={styles.formGroup}>
+                      <Text style={styles.label}>Account Name</Text>
+                      <TextInput
+                        style={styles.input}
+                        value={editAccountName}
+                        onChangeText={setEditAccountName}
+                        placeholder="Enter account name"
+                        placeholderTextColor="#6B7280"
+                        editable={!isLoading}
+                      />
+                    </View>
+                  </>
+                ) : (
                   <View style={styles.formGroup}>
-                    <Text style={styles.label}>Bank Name</Text>
+                    <Text style={styles.label}>Support Link (PayPal, Ko-fi, etc.)</Text>
                     <TextInput
                       style={styles.input}
-                      value={editBankName}
-                      onChangeText={setEditBankName}
-                      placeholder="Select your bank"
+                      value={editSupportLink}
+                      onChangeText={setEditSupportLink}
+                      placeholder="https://paypal.me/yourname"
                       placeholderTextColor="#6B7280"
+                      keyboardType="url"
+                      editable={!isLoading}
                     />
                   </View>
-                  <View style={styles.formGroup}>
-                    <Text style={styles.label}>Account Number</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={editAccountNumber}
-                      onChangeText={setEditAccountNumber}
-                      placeholder="Enter account number"
-                      placeholderTextColor="#6B7280"
-                      keyboardType="numeric"
-                    />
-                  </View>
-                  <View style={styles.formGroup}>
-                    <Text style={styles.label}>Account Name</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={editAccountName}
-                      onChangeText={setEditAccountName}
-                      placeholder="Enter account name"
-                      placeholderTextColor="#6B7280"
-                    />
-                  </View>
-                </>
-              ) : (
-                <View style={styles.formGroup}>
-                  <Text style={styles.label}>Support Link (PayPal, Ko-fi, etc.)</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={editSupportLink}
-                    onChangeText={setEditSupportLink}
-                    placeholder="https://paypal.me/yourname"
-                    placeholderTextColor="#6B7280"
-                    keyboardType="url"
-                  />
-                </View>
-              )}
-              <TouchableOpacity style={styles.saveButton} onPress={handleSaveProfile}>
-                <Text style={styles.saveButtonText}>Save Changes</Text>
+                )}
+              </View>
+              <TouchableOpacity
+                style={[styles.saveButton, isLoading && styles.buttonDisabled]}
+                onPress={handleSaveProfile}
+                disabled={isLoading}
+              >
+                {isLoading ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.saveButtonText}>Save Changes</Text>
+                )}
               </TouchableOpacity>
             </ScrollView>
           </View>
@@ -533,6 +569,7 @@ const SettingsScreen = ({ navigation }: any) => {
                     setConfirmEmail('')
                     setEmailPassword('')
                   }}
+                  disabled={isLoading}
                 >
                   <Ionicons name="close" size={24} color={colors.text} />
                 </TouchableOpacity>
@@ -568,6 +605,7 @@ const SettingsScreen = ({ navigation }: any) => {
                     placeholder="Enter your password"
                     placeholderTextColor="#6B7280"
                     secureTextEntry
+                    editable={!isLoading}
                   />
                 </View>
               )}
@@ -585,6 +623,7 @@ const SettingsScreen = ({ navigation }: any) => {
                       placeholderTextColor="#6B7280"
                       keyboardType="email-address"
                       autoCapitalize="none"
+                      editable={!isLoading}
                     />
                   </View>
 
@@ -598,13 +637,22 @@ const SettingsScreen = ({ navigation }: any) => {
                       placeholderTextColor="#6B7280"
                       keyboardType="email-address"
                       autoCapitalize="none"
+                      editable={!isLoading}
                     />
                   </View>
                 </>
               )}
 
-              <TouchableOpacity style={styles.saveButton} onPress={handleChangeEmail}>
-                <Text style={styles.saveButtonText}>Change Email</Text>
+              <TouchableOpacity
+                style={[styles.saveButton, isLoading && styles.buttonDisabled]}
+                onPress={handleChangeEmail}
+                disabled={isLoading}
+              >
+                {isLoading ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.saveButtonText}>Change Email</Text>
+                )}
               </TouchableOpacity>
             </ScrollView>
           </View>
@@ -624,12 +672,15 @@ const SettingsScreen = ({ navigation }: any) => {
             >
               <View style={[styles.modalHeader, { backgroundColor: colors.background }]}>
                 <Text style={[styles.modalTitle, { color: colors.text }]}>Change Password</Text>
-                <TouchableOpacity onPress={() => {
-                  setShowChangePasswordModal(false);
-                  setCurrentPassword('');
-                  setNewPassword('');
-                  setConfirmNewPassword('');
-                }}>
+                <TouchableOpacity
+                  onPress={() => {
+                    setShowChangePasswordModal(false);
+                    setCurrentPassword('');
+                    setNewPassword('');
+                    setConfirmNewPassword('');
+                  }}
+                  disabled={isLoading}
+                >
                   <Ionicons name="close" size={24} color={colors.text} />
                 </TouchableOpacity>
               </View>
@@ -664,6 +715,7 @@ const SettingsScreen = ({ navigation }: any) => {
                     placeholder="Enter current password"
                     placeholderTextColor="#6B7280"
                     secureTextEntry
+                    editable={!isLoading}
                   />
                 </View>
               )}
@@ -679,6 +731,7 @@ const SettingsScreen = ({ navigation }: any) => {
                       placeholder="Enter new password (min 6 characters)"
                       placeholderTextColor="#6B7280"
                       secureTextEntry
+                      editable={!isLoading}
                     />
                   </View>
 
@@ -691,14 +744,23 @@ const SettingsScreen = ({ navigation }: any) => {
                       placeholder="Confirm new password"
                       placeholderTextColor="#6B7280"
                       secureTextEntry
+                      editable={!isLoading}
                     />
                   </View>
                 </>
               )}
 
               {/* ACTION BUTTON — ALWAYS VISIBLE */}
-              <TouchableOpacity style={styles.saveButton} onPress={handleChangePassword}>
-                <Text style={styles.saveButtonText}>Change Password</Text>
+              <TouchableOpacity
+                style={[styles.saveButton, isLoading && styles.buttonDisabled]}
+                onPress={handleChangePassword}
+                disabled={isLoading}
+              >
+                {isLoading ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.saveButtonText}>Change Password</Text>
+                )}
               </TouchableOpacity>
             </ScrollView>
 
@@ -719,10 +781,13 @@ const SettingsScreen = ({ navigation }: any) => {
             >
               <View style={[styles.modalHeader, styles.dangerModalHeader, { backgroundColor: colors.error }]}>
                 <Text style={[styles.modalTitle, { color: '#fff' }]}>Delete Account</Text>
-                <TouchableOpacity onPress={() => {
-                  setShowDeleteAccountModal(false);
-                  setDeletePassword('');
-                }}>
+                <TouchableOpacity
+                  onPress={() => {
+                    setShowDeleteAccountModal(false);
+                    setDeletePassword('');
+                  }}
+                  disabled={isLoading}
+                >
                   <Ionicons name="close" size={24} color="#fff" />
                 </TouchableOpacity>
               </View>
@@ -758,11 +823,20 @@ const SettingsScreen = ({ navigation }: any) => {
                     placeholder="Enter your password to confirm"
                     placeholderTextColor="#6B7280"
                     secureTextEntry
+                    editable={!isLoading}
                   />
                 </View>
               )}
-              <TouchableOpacity style={styles.dangerButton} onPress={handleDeleteAccount}>
-                <Text style={styles.dangerButtonText}>Delete My Account</Text>
+              <TouchableOpacity
+                style={[styles.dangerButton, isLoading && styles.buttonDisabled]}
+                onPress={handleDeleteAccount}
+                disabled={isLoading}
+              >
+                {isLoading ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.dangerButtonText}>Delete My Account</Text>
+                )}
               </TouchableOpacity>
             </ScrollView>
           </View>
@@ -966,6 +1040,9 @@ const getStyles = (colors: any) => StyleSheet.create({
     fontSize: 16,
     fontWeight: '600' as const,
     color: '#fff',
+  },
+  buttonDisabled: {
+    opacity: 0.6,
   },
   infoBox: {
     flexDirection: 'row' as const,

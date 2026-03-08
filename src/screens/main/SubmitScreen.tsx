@@ -210,7 +210,7 @@ export const SubmitScreen = () => {
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],
       allowsEditing: false, // No cropping
       quality: 0.8,
     });
@@ -890,7 +890,7 @@ export const SubmitScreen = () => {
 
         {/* Cover Image */}
         <View style={styles.section}>
-          <Text style={styles.label}>Cover Image (Optional)</Text>
+          <Text style={styles.label}>Cover Image</Text>
           <TouchableOpacity style={styles.imageButton} onPress={handleImagePick}>
             <Ionicons name="image-outline" size={24} color={colors.primary} />
             <Text style={styles.imageButtonText}>Choose Image</Text>

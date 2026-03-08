@@ -50,7 +50,11 @@ export const NotificationProvider: React.FC<NotificationProviderProps> = ({ chil
         setUnreadCount(snapshot.size);
       },
       (error) => {
-        console.error('Error listening to notifications:', error);
+        if (error.code === 'permission-denied') {
+          console.log('Permission denied in notifications listener (likely logout)');
+        } else {
+          console.error('Error listening to notifications:', error);
+        }
       }
     );
 
@@ -88,7 +92,7 @@ export const NotificationProvider: React.FC<NotificationProviderProps> = ({ chil
       );
 
       const snapshot = await getDocs(notificationsQuery);
-      
+
       if (snapshot.empty) {
         setUnreadCount(0);
         return;
@@ -101,7 +105,7 @@ export const NotificationProvider: React.FC<NotificationProviderProps> = ({ chil
       });
 
       await batch.commit();
-      
+
       // The real-time listener will automatically update the count
     } catch (error) {
       console.error('Error marking all notifications as read:', error);

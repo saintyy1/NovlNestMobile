@@ -15,13 +15,14 @@ import CachedImage from '../../components/CachedImage';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { 
-  collection, 
-  query, 
-  where, 
-  orderBy, 
+import {
+  collection,
+  query,
+  where,
+  orderBy,
   getDocs,
-  QueryConstraint 
+  onSnapshot,
+  QueryConstraint
 } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import type { Novel } from '../../types/novel';
@@ -63,7 +64,8 @@ const POEM_GENRES = [
   'Ode',
 ];
 
-const FILTERS = ['Trending', 'New', 'Likes'];
+const NOVEL_FILTERS = ['Trending', 'New', 'Completed'];
+const POEM_FILTERS = ['Trending', 'New', 'Likes'];
 
 type BrowseType = null | 'novels' | 'poems';
 
@@ -82,8 +84,9 @@ export const BrowseScreen = () => {
 
   const styles = getStyles(colors);
 
-  // Get genres based on browse type
+  // Get genres and filters based on browse type
   const genres = browseType === 'novels' ? NOVEL_GENRES : POEM_GENRES;
+  const filters = browseType === 'novels' ? NOVEL_FILTERS : POEM_FILTERS;
 
   // Listen for reset param from back button
   useEffect(() => {
@@ -95,7 +98,7 @@ export const BrowseScreen = () => {
         navigation.setParams({ resetBrowseType: undefined } as any);
       }, 100);
     }
-    
+
     // Handle genre navigation from HomeScreen
     if (params?.selectedGenre && params?.browseType) {
       setBrowseType(params.browseType);
@@ -110,17 +113,17 @@ export const BrowseScreen = () => {
   // Update header based on browse type
   useEffect(() => {
     if (browseType === 'novels') {
-      navigation.setOptions({ 
+      navigation.setOptions({
         title: 'Browse Novels',
       });
       navigation.setParams({ showBackButton: true } as any);
     } else if (browseType === 'poems') {
-      navigation.setOptions({ 
+      navigation.setOptions({
         title: 'Browse Poems',
       });
       navigation.setParams({ showBackButton: true } as any);
     } else {
-      navigation.setOptions({ 
+      navigation.setOptions({
         title: 'Browse',
       });
       navigation.setParams({ showBackButton: false } as any);
@@ -134,148 +137,112 @@ export const BrowseScreen = () => {
     setSelectedFilter('Trending');
   }, [browseType]);
 
-  // Fetch data when filters change
   useEffect(() => {
-    if (browseType) {
+    if (!browseType) return;
+
+    setLoading(true);
+    const collectionName = browseType === 'novels' ? 'novels' : 'poems';
+    const collectionRef = collection(db, collectionName);
+    const queryConstraints: QueryConstraint[] = [where('published', '==', true)];
+
+    if (selectedGenre !== 'All') {
+      queryConstraints.push(where('genres', 'array-contains', selectedGenre));
+    }
+
+    switch (selectedFilter) {
+      case 'Trending':
+        queryConstraints.push(orderBy('views', 'desc'));
+        break;
+      case 'New':
+        queryConstraints.push(orderBy('createdAt', 'desc'));
+        break;
+      case 'Likes':
+        queryConstraints.push(orderBy('likes', 'desc'));
+        break;
+      case 'Completed':
+        if (browseType === 'novels') {
+          queryConstraints.push(where('status', '==', 'completed'));
+          queryConstraints.push(orderBy('createdAt', 'desc'));
+        }
+        break;
+    }
+
+    const q = query(collectionRef, ...queryConstraints);
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      let data: any[] = [];
+      snapshot.forEach((doc) => {
+        const itemData = doc.data();
+        if (browseType === 'novels') {
+          data.push({
+            id: doc.id,
+            title: itemData.title || 'Untitled',
+            authorName: itemData.authorName || 'Unknown',
+            summary: itemData.summary || '',
+            coverImage: itemData.coverImage,
+            coverSmallImage: itemData.coverSmallImage,
+            views: itemData.views || 0,
+            likes: itemData.likes || 0,
+            genres: itemData.genres || [],
+          } as Novel);
+        } else {
+          data.push({
+            id: doc.id,
+            title: itemData.title || 'Untitled',
+            poetName: itemData.poetName || 'Unknown',
+            coverImage: itemData.coverImage,
+            coverSmallImage: itemData.coverSmallImage,
+            content: itemData.content || '',
+            views: itemData.views || 0,
+            likes: itemData.likes || 0,
+            genres: itemData.genres || [],
+          } as Poem);
+        }
+      });
+
+      if (searchQuery.trim()) {
+        const searchLower = searchQuery.toLowerCase();
+        data = data.filter((item) => {
+          if (browseType === 'novels') {
+            return (
+              item.title.toLowerCase().includes(searchLower) ||
+              item.authorName.toLowerCase().includes(searchLower) ||
+              item.summary.toLowerCase().includes(searchLower)
+            );
+          } else {
+            return (
+              item.title.toLowerCase().includes(searchLower) ||
+              item.poetName.toLowerCase().includes(searchLower) ||
+              item.content.toLowerCase().includes(searchLower)
+            );
+          }
+        });
+
+        // Track search for analytics (only initially or on search change)
+        trackSearch({
+          searchTerm: searchQuery.trim(),
+          category: browseType,
+          resultsCount: data.length,
+        });
+      }
+
       if (browseType === 'novels') {
-        fetchNovels();
+        setNovels(data);
       } else {
-        fetchPoems();
+        setPoems(data);
       }
-    }
+      setLoading(false);
+    }, (error) => {
+      if (error.code === 'permission-denied') {
+        console.log(`Permission denied in ${browseType} listener (likely logout)`);
+      } else {
+        console.error(`Error fetching ${browseType}:`, error);
+      }
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
   }, [browseType, selectedGenre, selectedFilter, searchQuery]);
-
-  const fetchNovels = async () => {
-    setLoading(true);
-    try {
-      const novelsRef = collection(db, 'novels');
-      const queryConstraints: QueryConstraint[] = [where('published', '==', true)];
-
-      if (selectedGenre !== 'All') {
-        queryConstraints.push(where('genres', 'array-contains', selectedGenre));
-      }
-
-      switch (selectedFilter) {
-        case 'Trending':
-          queryConstraints.push(orderBy('views', 'desc'));
-          break;
-        case 'New':
-          queryConstraints.push(orderBy('createdAt', 'desc'));
-          break;
-        case 'Likes':
-          queryConstraints.push(orderBy('likes', 'desc'));
-          break;
-      }
-
-      const q = query(novelsRef, ...queryConstraints);
-      const querySnapshot = await getDocs(q);
-
-      let novelsData: Novel[] = [];
-      querySnapshot.forEach((doc) => {
-        const data = doc.data();
-        novelsData.push({
-          id: doc.id,
-          title: data.title || 'Untitled',
-          authorName: data.authorName || 'Unknown',
-          summary: data.summary || '',
-          coverImage: data.coverImage,
-          coverSmallImage: data.coverSmallImage,
-          views: data.views || 0,
-          likes: data.likes || 0,
-          genres: data.genres || [],
-        } as Novel);
-      });
-
-      if (searchQuery.trim()) {
-        const searchLower = searchQuery.toLowerCase();
-        novelsData = novelsData.filter(
-          (novel) =>
-            novel.title.toLowerCase().includes(searchLower) ||
-            novel.authorName.toLowerCase().includes(searchLower) ||
-            novel.summary.toLowerCase().includes(searchLower)
-        );
-        
-        // Track search for analytics
-        trackSearch({
-          searchTerm: searchQuery.trim(),
-          category: 'novels',
-          resultsCount: novelsData.length,
-        });
-      }
-
-      setNovels(novelsData);
-    } catch (error) {
-      console.error('Error fetching novels:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchPoems = async () => {
-    setLoading(true);
-    try {
-      const poemsRef = collection(db, 'poems');
-      const queryConstraints: QueryConstraint[] = [where('published', '==', true)];
-
-      if (selectedGenre !== 'All') {
-        queryConstraints.push(where('genres', 'array-contains', selectedGenre));
-      }
-
-      switch (selectedFilter) {
-        case 'Trending':
-          queryConstraints.push(orderBy('views', 'desc'));
-          break;
-        case 'New':
-          queryConstraints.push(orderBy('createdAt', 'desc'));
-          break;
-        case 'Likes':
-          queryConstraints.push(orderBy('likes', 'desc'));
-          break;
-      }
-
-      const q = query(poemsRef, ...queryConstraints);
-      const querySnapshot = await getDocs(q);
-
-      let poemsData: Poem[] = [];
-      querySnapshot.forEach((doc) => {
-        const data = doc.data();
-        poemsData.push({
-          id: doc.id,
-          title: data.title || 'Untitled',
-          poetName: data.poetName || 'Unknown',
-          coverImage: data.coverImage,
-          coverSmallImage: data.coverSmallImage,
-          content: data.content || '',
-          views: data.views || 0,
-          likes: data.likes || 0,
-          genres: data.genres || [],
-        } as Poem);
-      });
-
-      if (searchQuery.trim()) {
-        const searchLower = searchQuery.toLowerCase();
-        poemsData = poemsData.filter(
-          (poem) =>
-            poem.title.toLowerCase().includes(searchLower) ||
-            poem.poetName.toLowerCase().includes(searchLower) ||
-            poem.content.toLowerCase().includes(searchLower)
-        );
-        
-        // Track search for analytics
-        trackSearch({
-          searchTerm: searchQuery.trim(),
-          category: 'poems',
-          resultsCount: poemsData.length,
-        });
-      }
-
-      setPoems(poemsData);
-    } catch (error) {
-      console.error('Error fetching poems:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const getFirebaseDownloadUrl = (url: string) => {
     if (!url || !url.includes('firebasestorage')) {
@@ -294,7 +261,7 @@ export const BrowseScreen = () => {
 
   const getGenreColor = (genres: string[]) => {
     if (!genres || genres.length === 0) return colors.textSecondary;
-    
+
     const colorMap: Record<string, string> = {
       Fantasy: '#8B5CF6',
       'Sci-Fi': '#3B82F6',
@@ -319,17 +286,13 @@ export const BrowseScreen = () => {
       Elegy: '#6B7280',
       Ode: '#F59E0B',
     };
-    
+
     return colorMap[genres[0]] || colors.textSecondary;
   };
 
   const handleImageError = (id: string) => {
     setImageErrors(prev => ({ ...prev, [id]: true }));
   };
-
-  // Cached image component
-  // Importing dynamically to keep top-level imports minimal.
-  // We'll use a static import at top of file for readability.
 
   const renderNovelCard = (novel: Novel) => {
     const hasImage = (novel.coverSmallImage || novel.coverImage) && !imageErrors[novel.id];
@@ -357,7 +320,7 @@ export const BrowseScreen = () => {
             </View>
           )}
         </View>
-        
+
         <View style={styles.listItemContent}>
           <Text style={styles.listItemTitle} numberOfLines={2}>
             {novel.title}
@@ -414,7 +377,7 @@ export const BrowseScreen = () => {
             </View>
           )}
         </View>
-        
+
         <View style={styles.listItemContent}>
           <Text style={styles.listItemTitle} numberOfLines={2}>
             {poem.title}
@@ -542,8 +505,8 @@ export const BrowseScreen = () => {
         {/* Genre Filter */}
         <View style={styles.filterSection}>
           <Text style={styles.sectionTitle}>Genres</Text>
-          <ScrollView 
-            horizontal 
+          <ScrollView
+            horizontal
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.genreScroll}
           >
@@ -565,7 +528,7 @@ export const BrowseScreen = () => {
         <View style={styles.filterSection}>
           <Text style={styles.sectionTitle}>Sort By</Text>
           <View style={styles.sortButtonContainer}>
-            {FILTERS.map((filter) => (
+            {filters.map((filter) => (
               <TouchableOpacity
                 key={filter}
                 style={[styles.sortButton, selectedFilter === filter && styles.sortButtonActive]}
@@ -600,10 +563,10 @@ export const BrowseScreen = () => {
           </View>
         ) : (
           <View style={styles.emptyContainer}>
-            <Ionicons 
-              name={browseType === 'novels' ? 'book-outline' : 'rose-outline'} 
-              size={56} 
-              color={colors.textSecondary} 
+            <Ionicons
+              name={browseType === 'novels' ? 'book-outline' : 'rose-outline'}
+              size={56}
+              color={colors.textSecondary}
             />
             <Text style={styles.emptyText}>No {browseType} found</Text>
             <Text style={styles.emptySubtext}>Try adjusting your search or filters</Text>
@@ -619,7 +582,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     flex: 1,
     backgroundColor: themeColors.background,
   },
-  
+
   // ===== SELECTION SCREEN =====
   selectionContainer: {
     flexGrow: 1,
@@ -746,7 +709,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     marginBottom: spacing.sm,
     paddingHorizontal: spacing.sm,
   },
-  
+
   genreScroll: {
     paddingHorizontal: spacing.sm,
     gap: spacing.sm,
@@ -803,7 +766,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     color: '#fff',
     fontWeight: '600',
   },
-  
+
   sectionTitle: {
     fontSize: 18,
     fontWeight: '700',
@@ -812,12 +775,12 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
     paddingHorizontal: spacing.sm,
   },
-  
+
   carouselContainer: {
     paddingHorizontal: spacing.sm,
     gap: spacing.md,
   },
-  
+
   carouselCover: {
     width: 140,
     height: 200,
@@ -830,12 +793,12 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     shadowRadius: 4,
     elevation: 2,
   },
-  
+
   carouselImage: {
     width: '100%',
     height: '100%',
   },
-  
+
   carouselImageFallback: {
     width: '100%',
     height: '100%',
@@ -843,7 +806,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     alignItems: 'center',
     padding: spacing.sm,
   },
-  
+
   carouselFallbackText: {
     fontSize: 12,
     fontWeight: '600',
@@ -858,7 +821,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: themeColors.border,
   },
-  
+
   listItemCover: {
     width: 100,
     height: 150,
@@ -872,12 +835,12 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     shadowRadius: 4,
     elevation: 2,
   },
-  
+
   listItemImage: {
     width: '100%',
     height: '100%',
   },
-  
+
   listItemImageFallback: {
     width: '100%',
     height: '100%',
@@ -885,20 +848,20 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     alignItems: 'center',
     padding: spacing.sm,
   },
-  
+
   listItemFallbackText: {
     fontSize: 11,
     fontWeight: '600',
     color: '#fff',
     textAlign: 'center',
   },
-  
+
   listItemContent: {
     flex: 1,
     justifyContent: 'center',
     gap: spacing.sm,
   },
-  
+
   listItemTitle: {
     fontSize: 14,
     fontWeight: '700',
@@ -906,39 +869,39 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     marginBottom: spacing.xs,
     fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
-  
+
   listItemAuthor: {
     fontSize: 14,
     color: themeColors.textSecondary,
     marginBottom: spacing.sm,
     fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
-  
+
   listItemGenres: {
     flexDirection: 'row',
     gap: spacing.xs,
     marginBottom: spacing.sm,
     flexWrap: 'wrap',
   },
-  
+
   genreLabel: {
     fontSize: 13,
     color: themeColors.textSecondary,
     fontWeight: '500',
     fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
-  
+
   listItemStats: {
     flexDirection: 'row',
     gap: spacing.md,
   },
-  
+
   listItemStat: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.xs,
   },
-  
+
   listItemStatText: {
     fontSize: 14,
     color: themeColors.textSecondary,
@@ -950,11 +913,11 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   resultsContainer: {
     marginBottom: spacing.lg,
   },
-  
+
   novelItem: {
     marginBottom: spacing.lg,
   },
-  
+
   coverContainer: {
     width: '100%',
     height: 280,
@@ -968,12 +931,12 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     shadowRadius: 8,
     elevation: 4,
   },
-  
+
   coverImage: {
     width: '100%',
     height: '100%',
   },
-  
+
   coverFallback: {
     width: '100%',
     height: '100%',
@@ -981,18 +944,18 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     alignItems: 'center',
     padding: spacing.md,
   },
-  
+
   coverFallbackText: {
     fontSize: 18,
     fontWeight: '700',
     color: '#fff',
     textAlign: 'center',
   },
-  
+
   itemMetadata: {
     paddingHorizontal: spacing.sm,
   },
-  
+
   itemTitle: {
     fontSize: 16,
     fontWeight: '700',
@@ -1055,7 +1018,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   },
 });
 
-const styles = getStyles({ 
+const styles = getStyles({
   background: '#111827',
   backgroundSecondary: '#1F2937',
   text: '#FFFFFF',

@@ -5,7 +5,9 @@ import { createStackNavigator } from '@react-navigation/stack';
 import { RootStackParamList } from './src/types/navigation';
 import { NotificationsScreen } from './src/screens/main/NotificationsScreen';
 import { StatusBar } from 'expo-status-bar';
-import { View, ActivityIndicator, StyleSheet, TouchableOpacity, Platform } from 'react-native';
+import { View, ActivityIndicator, StyleSheet, TouchableOpacity, Platform, Alert, Linking, AppState, Text } from 'react-native';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AuthProvider, useAuth } from './src/contexts/AuthContext';
 import { ChatProvider } from "./src/contexts/ChatContext"
 import { NotificationProvider } from './src/contexts/NotificationContext';
@@ -31,6 +33,9 @@ import PaymentCallbackScreen from './src/screens/main/PaymentCallbackScreen';
 import EmailActionScreen from './src/screens/main/EmailActionScreen';
 import ChapterEditorScreen from './src/screens/main/ChapterEditorScreen';
 import { initializeAnalytics, trackScreenView, setUserId, cleanupAnalytics } from './src/utils/Analytics-utils';
+import { checkAppVersion, AppConfig } from './src/utils/VersionCheck-utils';
+import { Ionicons } from '@expo/vector-icons';
+import Constants from 'expo-constants';
 
 const Stack = createStackNavigator<RootStackParamList>();
 
@@ -49,13 +54,94 @@ function AppContent() {
   const { currentUser, loading } = useAuth();
   const { colors } = useTheme();
   const routeNameRef = React.useRef<string>('');
+  const [forceUpdateConfig, setForceUpdateConfig] = React.useState<AppConfig | null>(null);
+  const [isCheckingUpdate, setIsCheckingUpdate] = React.useState(false);
 
   // Initialize analytics when app loads
   useEffect(() => {
     initializeAnalytics(currentUser?.uid);
-    
+
     return () => {
       cleanupAnalytics();
+    };
+  }, []);
+
+  const performVersionCheck = async (isBackground = false) => {
+    if (isCheckingUpdate) return;
+    setIsCheckingUpdate(true);
+
+    try {
+      const { status, config } = await checkAppVersion();
+
+      if (status === 'force_update' && config) {
+        setForceUpdateConfig(config);
+        setIsCheckingUpdate(false);
+        return;
+      } else {
+        setForceUpdateConfig(null);
+      }
+
+      if (status === 'optional_update' && config) {
+        const lastPromptKey = `last_update_prompt_${config.latestVersion}`;
+        const lastPromptString = await AsyncStorage.getItem(lastPromptKey);
+
+        if (lastPromptString) {
+          const lastPromptDate = new Date(parseInt(lastPromptString, 10));
+          const now = new Date();
+          const hoursSinceLastPrompt = (now.getTime() - lastPromptDate.getTime()) / (1000 * 60 * 60);
+
+          if (hoursSinceLastPrompt < 24) {
+            setIsCheckingUpdate(false);
+            return;
+          }
+        }
+
+        const title = `Version ${config.latestVersion} Available`;
+        const message = `A new version of NovlNest is available!`;
+        const updateUrl = Platform.OS === 'ios' ? config.iosUpdateUrl : config.androidUpdateUrl;
+
+        Alert.alert(title, message, [
+          {
+            text: 'Later',
+            style: 'cancel',
+            onPress: async () => {
+              await AsyncStorage.setItem(lastPromptKey, Date.now().toString());
+            }
+          },
+          {
+            text: 'Update Now',
+            onPress: () => Linking.openURL(updateUrl),
+          }
+        ], {
+          cancelable: true,
+          onDismiss: async () => {
+            await AsyncStorage.setItem(lastPromptKey, Date.now().toString());
+          }
+        });
+      }
+    } catch (error) {
+      console.error('[VersionCheck] Error in performVersionCheck:', error);
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  };
+
+  // Initial check
+  useEffect(() => {
+    const timer = setTimeout(() => performVersionCheck(), 2000);
+    return () => clearTimeout(timer);
+  }, []);
+
+  // Re-check when app returns to foreground
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', nextAppState => {
+      if (nextAppState === 'active') {
+        performVersionCheck(true);
+      }
+    });
+
+    return () => {
+      subscription.remove();
     };
   }, []);
 
@@ -80,6 +166,52 @@ function AppContent() {
 
     routeNameRef.current = currentRouteName;
   };
+
+  // Show persistent force update screen
+  if (forceUpdateConfig) {
+    const updateUrl = Platform.OS === 'ios' ? forceUpdateConfig.iosUpdateUrl : forceUpdateConfig.androidUpdateUrl;
+
+    return (
+      <SafeAreaView style={[styles.updateScreen, { backgroundColor: colors.background }]}>
+        <View style={styles.updateContent}>
+          <View style={[styles.updateIconContainer, { backgroundColor: colors.primary + '20' }]}>
+            <Ionicons name="cloud-download-outline" size={60} color={colors.primary} />
+          </View>
+
+          <Text style={[styles.updateTitle, { color: colors.text }]}>Update Required</Text>
+          <Text style={[styles.updateSubtitle, { color: colors.textSecondary }]}>
+            A new version of NovlNest is required to continue. Please update now to access the latest features and improved experience.
+          </Text>
+
+          <TouchableOpacity
+            style={[styles.updateButton, { backgroundColor: colors.primary }]}
+            onPress={() => Linking.openURL(updateUrl)}
+          >
+            <Text style={styles.updateButtonText}>Update Now</Text>
+            <Ionicons name="arrow-forward" size={18} color="#fff" style={{ marginLeft: 8 }} />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.checkAgainButton}
+            onPress={() => performVersionCheck()}
+            disabled={isCheckingUpdate}
+          >
+            {isCheckingUpdate ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : (
+              <Text style={[styles.checkAgainText, { color: colors.primary }]}>Check Again</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.updateFooter}>
+          <Text style={[styles.footerText, { color: colors.textSecondary }]}>
+            Current Version: {Constants.expoConfig?.version} → {forceUpdateConfig.latestVersion}
+          </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   // Show loading screen while checking auth state
   if (loading) {
@@ -280,6 +412,7 @@ function AppContent() {
             component={ChapterEditorScreen}
             options={{
               headerShown: true,
+              headerBackTitle: '',
             }}
           />
         </Stack.Navigator>
@@ -315,25 +448,27 @@ export default function App() {
   };
 
   return (
-    <ThemeProvider>
-      <AuthProvider>
-        <ChatProvider>
-          <NotificationProvider>
-            <NavigationContainer 
-              linking={linking}
-              onStateChange={(state) => {
-                const currentRouteName = getActiveRouteName(state);
-                if (currentRouteName) {
-                  trackScreenView(currentRouteName, currentRouteName);
-                }
-              }}
-            >
-              <AppContent />
-            </NavigationContainer>
-          </NotificationProvider>
-        </ChatProvider>
-      </AuthProvider>
-    </ThemeProvider>
+    <SafeAreaProvider>
+      <ThemeProvider>
+        <AuthProvider>
+          <ChatProvider>
+            <NotificationProvider>
+              <NavigationContainer
+                linking={linking}
+                onStateChange={(state) => {
+                  const currentRouteName = getActiveRouteName(state);
+                  if (currentRouteName) {
+                    trackScreenView(currentRouteName, currentRouteName);
+                  }
+                }}
+              >
+                <AppContent />
+              </NavigationContainer>
+            </NotificationProvider>
+          </ChatProvider>
+        </AuthProvider>
+      </ThemeProvider>
+    </SafeAreaProvider>
   );
 }
 
@@ -342,5 +477,72 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  // Update Screen Styles
+  updateScreen: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  updateContent: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+  },
+  updateIconContainer: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 32,
+  },
+  updateTitle: {
+    fontSize: 28,
+    fontWeight: '800' as const,
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  updateSubtitle: {
+    fontSize: 16,
+    lineHeight: 24,
+    textAlign: 'center',
+    marginBottom: 40,
+  },
+  updateButton: {
+    flexDirection: 'row' as const,
+    height: 56,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+    width: '100%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  updateButtonText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '700' as const,
+  },
+  checkAgainButton: {
+    marginTop: 24,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+  },
+  checkAgainText: {
+    fontSize: 16,
+    fontWeight: '600' as const,
+  },
+  updateFooter: {
+    paddingBottom: 32,
+    alignItems: 'center',
+  },
+  footerText: {
+    fontSize: 14,
+    opacity: 0.7,
   },
 });

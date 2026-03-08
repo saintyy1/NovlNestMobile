@@ -93,42 +93,42 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case 'SET_LOADING':
       return { ...state, isLoading: action.payload }
-    
+
     case 'SET_ERROR':
       return { ...state, error: action.payload, isLoading: false }
-    
+
     case 'SET_CONNECTED':
       return { ...state, isConnected: action.payload }
-    
+
     case 'CONVERSATIONS_LOADED':
       return { ...state, conversations: action.payload, isLoading: false }
-    
+
     case 'MESSAGE_RECEIVED':
       const { conversationId, message, conversation } = action.payload
       const conversations = Array.isArray(state.conversations) ? state.conversations : []
-      const updatedConversations = conversations.map(conv => 
+      const updatedConversations = conversations.map(conv =>
         conv.id === conversationId ? conversation : conv
       )
-      
+
       // Add new conversation if it doesn't exist
       if (!conversations.find(conv => conv.id === conversationId)) {
         updatedConversations.unshift(conversation)
       }
-      
+
       return {
         ...state,
         conversations: updatedConversations,
-        messages: state.currentConversation?.id === conversationId 
+        messages: state.currentConversation?.id === conversationId
           ? [...state.messages, message]
           : state.messages
       }
-    
+
     case 'MESSAGE_SENT':
       return {
         ...state,
         messages: [...state.messages, action.payload.message]
       }
-    
+
     case 'MESSAGES_LOADED':
       const newCache = new Map(state.messageCache)
       newCache.set(action.payload.conversationId, action.payload.messages)
@@ -141,7 +141,7 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
         isLoading: false,
         loadingConversations: newLoadingConversationsForLoaded
       }
-    
+
     case 'MESSAGES_APPENDED':
       const updatedCache = new Map(state.messageCache)
       const existingMessages = updatedCache.get(action.payload.conversationId) || []
@@ -149,59 +149,59 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
       updatedCache.set(action.payload.conversationId, combinedMessages)
       return {
         ...state,
-        messages: state.currentConversation?.id === action.payload.conversationId 
-          ? combinedMessages 
+        messages: state.currentConversation?.id === action.payload.conversationId
+          ? combinedMessages
           : state.messages,
         messageCache: updatedCache,
         isLoadingMore: false
       }
-    
+
     case 'SET_HAS_MORE_MESSAGES':
       return {
         ...state,
         hasMoreMessages: action.payload.hasMore
       }
-    
+
     case 'SET_LOADING_MORE':
       return {
         ...state,
         isLoadingMore: action.payload
       }
-    
+
     case 'MESSAGES_READ':
       const { conversationId: readConvId, userId } = action.payload
       const conversationsForRead = Array.isArray(state.conversations) ? state.conversations : []
       return {
         ...state,
-        conversations: conversationsForRead.map(conv => 
-          conv.id === readConvId 
+        conversations: conversationsForRead.map(conv =>
+          conv.id === readConvId
             ? { ...conv, unreadCount: 0 }
             : conv
         ),
-        messages: Array.isArray(state.messages) ? state.messages.map(msg => 
+        messages: Array.isArray(state.messages) ? state.messages.map(msg =>
           msg.receiverId === userId && !msg.read
             ? { ...msg, read: true }
             : msg
         ) : []
       }
-    
+
     case 'MESSAGE_DELETED':
       const { messageId, conversationId: deleteConvId } = action.payload
       const filteredMessages = Array.isArray(state.messages) ? state.messages.filter(msg => msg.id !== messageId) : []
-      
+
       return {
         ...state,
         messages: filteredMessages,
         conversations: Array.isArray(state.conversations) ? state.conversations.map(conv => {
           if (conv.id === deleteConvId && conv.lastMessage?.id === messageId) {
             // If deleted message was the last message, find the new last message from filtered messages
-            const conversationMessages = filteredMessages.filter(msg => 
+            const conversationMessages = filteredMessages.filter(msg =>
               conv.participants.includes(msg.senderId) && conv.participants.includes(msg.receiverId)
             )
-            const newLastMessage = conversationMessages.length > 0 
+            const newLastMessage = conversationMessages.length > 0
               ? conversationMessages[conversationMessages.length - 1]
               : undefined
-            
+
             return {
               ...conv,
               lastMessage: newLastMessage ? {
@@ -218,54 +218,54 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
           return conv
         }) : []
       }
-    
+
     case 'CONVERSATION_UPDATED':
       const { conversationId: updateConvId, lastMessage: newLastMessage } = action.payload
       return {
         ...state,
-        conversations: Array.isArray(state.conversations) ? state.conversations.map(conv => 
-          conv.id === updateConvId 
+        conversations: Array.isArray(state.conversations) ? state.conversations.map(conv =>
+          conv.id === updateConvId
             ? { ...conv, lastMessage: newLastMessage }
             : conv
         ) : []
       }
-    
+
     case 'TYPING_UPDATE':
       const { conversationId: typingConvId, typingUsers } = action.payload
       const conversationsForTyping = Array.isArray(state.conversations) ? state.conversations : []
       return {
         ...state,
-        conversations: conversationsForTyping.map(conv => 
-          conv.id === typingConvId 
+        conversations: conversationsForTyping.map(conv =>
+          conv.id === typingConvId
             ? { ...conv, typingUsers, isTyping: typingUsers.length > 0 }
             : conv
         )
       }
-    
+
     case 'SET_CURRENT_CONVERSATION':
       return {
         ...state,
         currentConversation: action.payload,
         messages: action.payload ? [] : state.messages
       }
-    
+
     case 'ADD_USER':
     case 'UPDATE_USER':
     case 'SET_USER':
       const newUsers = new Map(state.users)
       newUsers.set(action.payload.id, action.payload)
       return { ...state, users: newUsers }
-    
+
     case 'SEARCH_RESULTS':
       return {
         ...state,
         searchResults: action.payload.results,
         isSearching: false
       }
-    
+
     case 'SET_SEARCHING':
       return { ...state, isSearching: action.payload }
-    
+
     case 'SET_CONVERSATION_LOADING':
       const newLoadingConversations = new Set(state.loadingConversations)
       if (action.payload.isLoading) {
@@ -274,7 +274,7 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
         newLoadingConversations.delete(action.payload.conversationId)
       }
       return { ...state, loadingConversations: newLoadingConversations }
-    
+
     default:
       return state
   }
@@ -344,7 +344,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
 
         // Count unique senders/conversations with unread messages
         const uniqueSenders = new Set<string>()
-        
+
         messagesSnapshot.forEach((doc) => {
           const data = doc.data()
           uniqueSenders.add(data.senderId)
@@ -354,7 +354,11 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
         setUnreadCount(conversationsWithUnread)
       },
       (error) => {
-        console.error('❌ Error listening to unread messages:', error)
+        if (error.code === 'permission-denied') {
+          console.log('Permission denied in unread messages listener (likely logout)');
+        } else {
+          console.error('❌ Error listening to unread messages:', error);
+        }
       }
     )
 
@@ -409,7 +413,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
       // Update or create conversation
       const conversationId = [currentUser.uid, receiverId].sort().join('_')
       const conversationRef = doc(db, 'conversations', conversationId)
-      
+
       // Use setDoc with merge to create or update conversation
       await setDoc(conversationRef, {
         id: conversationId,
@@ -447,7 +451,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
           lastSeen: userData.lastSeen?.toDate?.()?.getTime() || Date.now(),
           isAdmin: userData.isAdmin || false
         }
-        
+
         dispatch({ type: 'SET_USER', payload: chatUser })
         return chatUser
       }
@@ -489,10 +493,10 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
 
       const unsubscribe = onSnapshot(conversationsQuery, (snapshot) => {
         const conversations: ChatConversation[] = []
-        
+
         snapshot.forEach((doc) => {
           const data = doc.data()
-          
+
           conversations.push({
             id: doc.id,
             participants: data.participants || [],
@@ -513,9 +517,16 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
         })
 
         dispatch({ type: 'CONVERSATIONS_LOADED', payload: conversations })
-        
+
         // Fetch user data for all participants
         fetchUsersForConversations(conversations)
+      }, (error) => {
+        if (error.code === 'permission-denied') {
+          console.log('Permission denied in conversations listener (likely logout)');
+        } else {
+          console.error('Error loading conversations:', error);
+          dispatch({ type: 'SET_ERROR', payload: 'Failed to load conversations' });
+        }
       })
 
       // Store unsubscribe function for cleanup
@@ -553,7 +564,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
 
       const conversationData = conversationDoc.docs[0].data()
       const participants = conversationData.participants || []
-      
+
       // SECURITY: Verify current user is a participant
       if (!participants.includes(currentUser.uid)) {
         console.error('Unauthorized access attempt to conversation:', conversationId)
@@ -581,7 +592,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
       // Set up real-time listener
       const unsubscribe = onSnapshot(messagesQuery, (snapshot) => {
         const messages: ChatMessage[] = []
-        
+
         snapshot.forEach((doc) => {
           const data = doc.data()
           messages.push({
@@ -611,8 +622,12 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
         // Set pagination state
         dispatch({ type: 'SET_HAS_MORE_MESSAGES', payload: { conversationId, hasMore: messages.length === 50 } })
       }, (error) => {
-        console.error('Error in messages listener:', error)
-        dispatch({ type: 'SET_ERROR', payload: 'Failed to load messages' })
+        if (error.code === 'permission-denied') {
+          console.log('Permission denied in messages listener (likely logout)');
+        } else {
+          console.error('Error in messages listener:', error)
+          dispatch({ type: 'SET_ERROR', payload: 'Failed to load messages' })
+        }
         dispatch({ type: 'SET_CONVERSATION_LOADING', payload: { conversationId, isLoading: false } })
       })
 
@@ -643,7 +658,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
     messageListeners.current.clear()
 
     dispatch({ type: 'SET_CURRENT_CONVERSATION', payload: conversation })
-    
+
     if (conversation) {
       loadMessages(conversation.id)
     }
@@ -656,7 +671,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
         unsubscribe()
       })
       messageListeners.current.clear()
-      
+
       if (conversationListener.current) {
         conversationListener.current()
         conversationListener.current = null
@@ -678,7 +693,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
 
       const conversationData = conversationDoc.docs[0].data()
       const participants = conversationData.participants || []
-      
+
       if (!participants.includes(currentUser.uid)) {
         console.error('Unauthorized access attempt to mark messages as read:', conversationId)
         return
@@ -692,7 +707,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
       )
 
       const messagesSnapshot = await getDocs(unreadMessagesQuery)
-      
+
       // Filter messages that are part of this conversation
       const messagesToUpdate = messagesSnapshot.docs.filter(doc => {
         const data = doc.data()
@@ -700,12 +715,12 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
       })
 
       // Update messages as read
-      const updatePromises = messagesToUpdate.map(doc => 
+      const updatePromises = messagesToUpdate.map(doc =>
         updateDoc(doc.ref, { read: true })
       )
 
       await Promise.all(updatePromises)
-      
+
       // Update local state
       dispatch({ type: 'MESSAGES_READ', payload: { conversationId, userId: currentUser.uid } })
     } catch (error) {
@@ -726,7 +741,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
       if (!conversationDoc.empty) {
         const conversationData = conversationDoc.docs[0].data()
         const participants = conversationData.participants || []
-        
+
         if (!participants.includes(currentUser.uid)) {
           console.error('Unauthorized access attempt to delete message:', conversationId)
           dispatch({ type: 'SET_ERROR', payload: 'Unauthorized access to delete message' })
@@ -746,7 +761,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
       }
 
       const messageData = messageDoc.docs[0].data()
-      
+
       // SECURITY: Only allow users to delete their own messages
       if (messageData.senderId !== currentUser.uid) {
         console.error('Unauthorized attempt to delete message not owned by user:', messageId)
@@ -761,7 +776,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
       const conversationRef = doc(db, 'conversations', conversationId)
       const conversationData = conversationDoc.docs[0].data()
       const participants = conversationData.participants || []
-      
+
       if (conversationData.lastMessage?.id === messageId) {
         // Find the new last message
         const remainingMessagesQuery = query(
@@ -771,9 +786,9 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
           orderBy('timestamp', 'desc'),
           limit(1)
         )
-        
+
         const remainingMessagesSnapshot = await getDocs(remainingMessagesQuery)
-        
+
         if (!remainingMessagesSnapshot.empty) {
           const newLastMessageData = remainingMessagesSnapshot.docs[0].data()
           const newLastMessage: ChatMessage = {
@@ -785,7 +800,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
             read: newLastMessageData.read || false,
             type: newLastMessageData.type || 'text'
           }
-          
+
           await setDoc(conversationRef, {
             lastMessage: {
               id: newLastMessage.id,
@@ -794,7 +809,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
               timestamp: newLastMessage.timestamp
             }
           }, { merge: true })
-          
+
           // Update local state with new last message
           dispatch({ type: 'CONVERSATION_UPDATED', payload: { conversationId, lastMessage: newLastMessage } })
         } else {
@@ -802,7 +817,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
           await setDoc(conversationRef, {
             lastMessage: null
           }, { merge: true })
-          
+
           // Update local state to clear last message
           dispatch({ type: 'CONVERSATION_UPDATED', payload: { conversationId, lastMessage: undefined } })
         }
@@ -810,7 +825,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
 
       // Update local state to remove message
       dispatch({ type: 'MESSAGE_DELETED', payload: { messageId, conversationId } })
-      
+
     } catch (error) {
       console.error('Error deleting message:', error)
       dispatch({ type: 'SET_ERROR', payload: 'Failed to delete message' })

@@ -33,6 +33,11 @@ export interface Novel {
   likedBy?: string[] // Array of user IDs who liked the novel
   rating?: number
   ratingCount?: number
-  coverImage?: string | null
-  coverSmallImage?: string | null
+  coverImage?: string | null;
+  coverSmallImage?: string | null;
+  status?: 'ongoing' | 'completed';
+  epilogue?: {
+    title: string;
+    content: string;
+  };
 }

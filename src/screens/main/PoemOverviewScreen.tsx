@@ -15,7 +15,7 @@ import {
   Platform,
   Modal,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import CachedImage from '../../components/CachedImage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -65,6 +65,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
   const { poemId } = route.params;
   const { currentUser, updatePoemLibrary } = useAuth();
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
 
   const [poem, setPoem] = useState<Poem | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
@@ -894,7 +895,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
               keyboardVerticalOffset={Platform.OS === 'ios' ? 45 : 0}
               style={styles.commentsModalContainer}
             >
-              <View style={styles.commentsModalHeader}>
+              <View style={[styles.commentsModalHeader, { paddingTop: Platform.OS === 'android' ? insets.top : 16 }]}>
                 <Text style={styles.commentsModalTitle}>{totalCommentsCount} Comments</Text>
                 <TouchableOpacity
                   style={styles.commentsModalClose}
@@ -921,7 +922,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
               )}
 
               {currentUser && (
-                <View style={styles.commentsModalInputArea}>
+                <View style={[styles.commentsModalInputArea, { paddingBottom: Math.max(insets.bottom, 25) }]}>
                   {currentUser.photoURL ? (
                     <Image source={{ uri: currentUser.photoURL }} style={styles.fakeCommentAvatar} />
                   ) : (

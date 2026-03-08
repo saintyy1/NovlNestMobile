@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, SafeAreaView } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
@@ -11,92 +12,92 @@ import * as Linking from 'expo-linking';
 const PaymentCallbackScreen = ({ route, navigation }: any) => {
   const { colors } = useTheme();
   const styles = getStyles(colors);
-  
+
   const [status, setStatus] = useState<'loading' | 'success' | 'failed'>('loading');
   const [message, setMessage] = useState('');
 
   const verifyPayment = async (reference: string) => {
     try {
-        const response = await fetch('https://paystack-backend-six.vercel.app/api/index?route=verify-payment', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ reference }),
-        });
+      const response = await fetch('https://paystack-backend-six.vercel.app/api/index?route=verify-payment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ reference }),
+      });
 
-        const data = await response.json();
+      const data = await response.json();
 
-        if (data.status) {
-          setStatus('success');
-          setMessage('Your novel has been successfully promoted!');
-          
-          // Send notification to the user
-          let bookId = data.bookId;
-          let userId = data.userId;
-          let planId = data.planId;
-          let novelTitle = null;
-          let planName = null;
-          let planDuration = null;
-          
-          // If backend doesn't return the data, use AsyncStorage fallback
-          if (!bookId || !userId) {
-            const pendingPayment = await AsyncStorage.getItem('pendingPromotionPayment');
-            if (pendingPayment) {
-              const paymentData = JSON.parse(pendingPayment);
-              bookId = paymentData.bookId;
-              userId = paymentData.userId;
-              planId = paymentData.planId;
-              novelTitle = paymentData.novelTitle;
-              planName = paymentData.planName;
-              planDuration = paymentData.planDuration;
-            }
+      if (data.status) {
+        setStatus('success');
+        setMessage('Your novel has been successfully promoted!');
+
+        // Send notification to the user
+        let bookId = data.bookId;
+        let userId = data.userId;
+        let planId = data.planId;
+        let novelTitle = null;
+        let planName = null;
+        let planDuration = null;
+
+        // If backend doesn't return the data, use AsyncStorage fallback
+        if (!bookId || !userId) {
+          const pendingPayment = await AsyncStorage.getItem('pendingPromotionPayment');
+          if (pendingPayment) {
+            const paymentData = JSON.parse(pendingPayment);
+            bookId = paymentData.bookId;
+            userId = paymentData.userId;
+            planId = paymentData.planId;
+            novelTitle = paymentData.novelTitle;
+            planName = paymentData.planName;
+            planDuration = paymentData.planDuration;
           }
-          
-          if (bookId && userId) {
-            try {
-              // If we don't have novel title from AsyncStorage, fetch from Firestore
-              if (!novelTitle) {
-                const novelDoc = await getDoc(doc(db, 'novels', bookId));
-                if (novelDoc.exists()) {
-                  novelTitle = novelDoc.data().title;
-                }
-              }
-              
-              // Determine plan details if not from AsyncStorage
-              if (!planName || !planDuration) {
-                planDuration = planId === '1-month' ? '30 days' : '60 days';
-                planName = planId === '1-month' ? 'Essential Boost' : 'Premium Growth';
-              }
-              
-              if (novelTitle && planName && planDuration) {
-                await sendPromotionApprovedNotification(
-                  userId,
-                  bookId,
-                  novelTitle,
-                  planName,
-                  planDuration
-                );
-              }
-              
-              // Clear AsyncStorage after successful notification
-              await AsyncStorage.removeItem('pendingPromotionPayment');
-            } catch (notificationError) {
-              console.error('Error sending promotion notification:', notificationError);
-              // Don't fail the whole process if notification fails
-            }
-          }
-        } else {
-          setStatus('failed');
-          setMessage(data.message || 'Payment verification failed');
-          // Clear AsyncStorage on failed payment
-          await AsyncStorage.removeItem('pendingPromotionPayment');
         }
-      } catch (error) {
-        console.error('Payment verification error:', error);
+
+        if (bookId && userId) {
+          try {
+            // If we don't have novel title from AsyncStorage, fetch from Firestore
+            if (!novelTitle) {
+              const novelDoc = await getDoc(doc(db, 'novels', bookId));
+              if (novelDoc.exists()) {
+                novelTitle = novelDoc.data().title;
+              }
+            }
+
+            // Determine plan details if not from AsyncStorage
+            if (!planName || !planDuration) {
+              planDuration = planId === '1-month' ? '30 days' : '60 days';
+              planName = planId === '1-month' ? 'Essential Boost' : 'Premium Growth';
+            }
+
+            if (novelTitle && planName && planDuration) {
+              await sendPromotionApprovedNotification(
+                userId,
+                bookId,
+                novelTitle,
+                planName,
+                planDuration
+              );
+            }
+
+            // Clear AsyncStorage after successful notification
+            await AsyncStorage.removeItem('pendingPromotionPayment');
+          } catch (notificationError) {
+            console.error('Error sending promotion notification:', notificationError);
+            // Don't fail the whole process if notification fails
+          }
+        }
+      } else {
         setStatus('failed');
-        setMessage('An error occurred while verifying payment');
+        setMessage(data.message || 'Payment verification failed');
+        // Clear AsyncStorage on failed payment
+        await AsyncStorage.removeItem('pendingPromotionPayment');
       }
+    } catch (error) {
+      console.error('Payment verification error:', error);
+      setStatus('failed');
+      setMessage('An error occurred while verifying payment');
+    }
   };
 
   useEffect(() => {
@@ -122,15 +123,15 @@ const PaymentCallbackScreen = ({ route, navigation }: any) => {
           return;
         }
       }
-      
+
       // Fallback to route params
       let reference = route.params?.reference;
-      
+
       // If no reference in route params, try AsyncStorage
       if (!reference) {
         reference = await AsyncStorage.getItem('currentPaymentReference');
       }
-      
+
       if (reference) {
         verifyPayment(reference);
         // Clean up the stored reference after using it
@@ -176,7 +177,7 @@ const PaymentCallbackScreen = ({ route, navigation }: any) => {
             </View>
             <Text style={[styles.title, { color: colors.success }]}>Payment Successful!</Text>
             <Text style={[styles.subtitle, { color: colors.textSecondary }]}>{message}</Text>
-            
+
             <View style={styles.buttonContainer}>
               <TouchableOpacity
                 style={[styles.primaryButton, { backgroundColor: colors.primary }]}
@@ -196,7 +197,7 @@ const PaymentCallbackScreen = ({ route, navigation }: any) => {
             </View>
             <Text style={[styles.title, { color: colors.error }]}>Payment Failed</Text>
             <Text style={[styles.subtitle, { color: colors.textSecondary }]}>{message}</Text>
-            
+
             <View style={styles.buttonContainer}>
               <TouchableOpacity
                 style={[styles.primaryButton, { backgroundColor: colors.primary }]}
@@ -205,7 +206,7 @@ const PaymentCallbackScreen = ({ route, navigation }: any) => {
                 <Ionicons name="refresh-outline" size={20} color="#fff" />
                 <Text style={styles.primaryButtonText}>Try Again</Text>
               </TouchableOpacity>
-              
+
               <TouchableOpacity
                 style={[styles.secondaryButton, { borderColor: colors.primary }]}
                 onPress={handleReturnHome}

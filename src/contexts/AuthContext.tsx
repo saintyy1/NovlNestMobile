@@ -579,6 +579,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const batch = writeBatch(db)
 
+      // Cleanup followers/following references in other users
+      const followersToUpdateQuery = query(collection(db, "users"), where("following", "array-contains", userId))
+      const followingToUpdateQuery = query(collection(db, "users"), where("followers", "array-contains", userId))
+
+      const [followersToUpdateSnapshot, followingToUpdateSnapshot] = await Promise.all([
+        getDocs(followersToUpdateQuery),
+        getDocs(followingToUpdateQuery)
+      ])
+
+      followersToUpdateSnapshot.docs.forEach((doc) => {
+        batch.update(doc.ref, { following: arrayRemove(userId) })
+      })
+
+      followingToUpdateSnapshot.docs.forEach((doc) => {
+        batch.update(doc.ref, { followers: arrayRemove(userId) })
+      })
+
       batch.delete(doc(db, "users", userId))
 
       const novelsQuery = query(collection(db, "novels"), where("authorId", "==", userId))

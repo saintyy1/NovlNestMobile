@@ -30,9 +30,9 @@ export const LoginScreen = ({ navigation }: any) => {
   const { colors } = useTheme();
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isGoogleSignInAvailable, setIsGoogleSignInAvailable] = useState(false);
-  
+
   const styles = getStyles(colors);
-  
+
   // Configure Google Sign-In (only works in native builds, not Expo Go)
   React.useEffect(() => {
     const setupGoogleSignIn = async () => {
@@ -43,10 +43,10 @@ export const LoginScreen = ({ navigation }: any) => {
           console.log('Running in Expo Go - Google Sign-In disabled');
           return;
         }
-        
+
         // Dynamically import Google Sign-In (only available in native builds)
         const { GoogleSignin } = require('@react-native-google-signin/google-signin');
-        
+
         await GoogleSignin.configure({
           webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
           offlineAccess: true,
@@ -58,21 +58,22 @@ export const LoginScreen = ({ navigation }: any) => {
         setIsGoogleSignInAvailable(false);
       }
     };
-    
+
     setupGoogleSignIn();
   }, []);
 
   const handleGoogleSignIn = async () => {
+    setIsLoggingIn(true);
     try {
       // Dynamically import Google Sign-In
       const { GoogleSignin } = require('@react-native-google-signin/google-signin');
-      
+
       // Sign out first to show account picker
       await GoogleSignin.signOut();
-      
+
       // Check if your device supports Google Play
       await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
-      
+
       // Get the users ID token
       const signInResult = await GoogleSignin.signIn();
 
@@ -87,18 +88,24 @@ export const LoginScreen = ({ navigation }: any) => {
 
       // Sign-in the user with the credential
       const userCredential = await signInWithCredential(auth, googleCredential);
-      
+
       // Track Google login for analytics
       trackLogin('google', userCredential.user.uid);
-      
+
       // Navigation will happen automatically via auth state change
     } catch (error: any) {
+      setIsLoggingIn(false);
+      if (error.code === 'SIGN_IN_CANCELLED' || error.message?.includes('Sign in cancelled')) {
+        return;
+      }
       console.error('Google Sign-In Error:', error);
       Alert.alert('Error', error.message || 'Failed to sign in with Google');
     }
   };
 
   const handleAppleSignIn = async () => {
+    if (isLoggingIn) return;
+    setIsLoggingIn(true);
     try {
       const credential = await AppleAuthentication.signInAsync({
         requestedScopes: [
@@ -126,6 +133,7 @@ export const LoginScreen = ({ navigation }: any) => {
       trackLogin('apple', userCredential.user.uid);
 
     } catch (error: any) {
+      setIsLoggingIn(false);
       if (error.code === 'ERR_CANCELED') {
         // User cancelled Apple login
         return;
@@ -148,16 +156,18 @@ export const LoginScreen = ({ navigation }: any) => {
     setIsLoggingIn(true);
     try {
       await login(email, password);
-      
+
       // Track email login for analytics
       if (auth.currentUser) {
         trackLogin('email', auth.currentUser.uid);
       }
-      
+
       // Navigation will happen automatically via auth state listener
+      // We DON'T set isLoggingIn(false) here on success to keep the loading state until navigation
     } catch (error: any) {
+      setIsLoggingIn(false);
       let errorMessage = 'Failed to login';
-      
+
       if (error.code === 'auth/user-not-found') {
         errorMessage = 'No account found with this email';
       } else if (error.code === 'auth/wrong-password') {
@@ -169,10 +179,8 @@ export const LoginScreen = ({ navigation }: any) => {
       } else if (error.code === 'auth/invalid-credential') {
         errorMessage = 'Invalid email or password';
       }
-      
+
       Alert.alert('Login Failed', errorMessage);
-    } finally {
-      setIsLoggingIn(false);
     }
   };
 
@@ -184,8 +192,8 @@ export const LoginScreen = ({ navigation }: any) => {
       <View style={styles.content}>
         {/* Logo/Header */}
         <View style={styles.header}>
-          <Image 
-            source={require('../../../assets/images/app-icon.png')} 
+          <Image
+            source={require('../../../assets/images/app-icon.png')}
             style={styles.logo}
             resizeMode="contain"
           />
@@ -193,28 +201,38 @@ export const LoginScreen = ({ navigation }: any) => {
           <Text style={styles.subtitle}>Sign in to continue</Text>
         </View>
 
-        <View style={styles.socialAuthContainer}>
+        <View
+          style={styles.socialAuthContainer}
+          pointerEvents={isLoggingIn ? 'none' : 'auto'}
+        >
           {Platform.OS === 'ios' && (
-          <AppleAuthentication.AppleAuthenticationButton
-            buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
-            buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
-            cornerRadius={6}
-            style={{ width: '100%', height: 44 }}
-            onPress={handleAppleSignIn}
-          />
+            <AppleAuthentication.AppleAuthenticationButton
+              buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
+              buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+              cornerRadius={6}
+              style={{ width: '100%', height: 44, opacity: isLoggingIn ? 0.6 : 1 }}
+              onPress={handleAppleSignIn}
+            />
           )}
 
           {isGoogleSignInAvailable && (
             <TouchableOpacity
-              style={styles.googleButton}
+              style={[styles.googleButton, isLoggingIn && styles.googleButtonDisabled]}
               onPress={handleGoogleSignIn}
+              disabled={isLoggingIn}
             >
-              <Ionicons name="logo-google" size={20} color="#fff" />
-              <Text style={styles.googleButtonText}>Sign in with Google</Text>
+              {isLoggingIn ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <>
+                  <Ionicons name="logo-google" size={20} color="#fff" />
+                  <Text style={styles.googleButtonText}>Sign in with Google</Text>
+                </>
+              )}
             </TouchableOpacity>
           )}
         </View>
-        
+
         <View style={styles.orContainer}>
           <View style={styles.orLine} />
           <Text style={styles.orText}>or</Text>
@@ -251,17 +269,17 @@ export const LoginScreen = ({ navigation }: any) => {
               placeholderTextColor={colors.textSecondary}
             />
             <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
-              <Ionicons 
-                name={showPassword ? "eye-outline" : "eye-off-outline"} 
-                size={20} 
-                color={colors.textSecondary} 
+              <Ionicons
+                name={showPassword ? "eye-outline" : "eye-off-outline"}
+                size={20}
+                color={colors.textSecondary}
               />
             </TouchableOpacity>
           </View>
         </View>
 
         {/* Forgot Password */}
-        <TouchableOpacity 
+        <TouchableOpacity
           style={styles.forgotPassword}
           disabled={isLoggingIn}
           onPress={() => navigation.navigate('ForgotPassword')}
@@ -285,7 +303,7 @@ export const LoginScreen = ({ navigation }: any) => {
         {/* Sign Up Link */}
         <View style={styles.footer}>
           <Text style={styles.footerText}>Don't have an account? </Text>
-          <TouchableOpacity 
+          <TouchableOpacity
             onPress={() => navigation.navigate('Signup')}
             disabled={isLoggingIn}
           >
@@ -343,6 +361,9 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  googleButtonDisabled: {
+    opacity: 0.7,
   },
   orContainer: {
     flexDirection: 'row',
