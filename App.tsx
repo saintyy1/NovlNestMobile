@@ -90,7 +90,7 @@ function AppContent() {
           const now = new Date();
           const hoursSinceLastPrompt = (now.getTime() - lastPromptDate.getTime()) / (1000 * 60 * 60);
 
-          if (hoursSinceLastPrompt < 24) {
+          if (hoursSinceLastPrompt < 48) {
             setIsCheckingUpdate(false);
             return;
           }
