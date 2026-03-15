@@ -64,14 +64,26 @@
           "action": "VIEW",
           "autoVerify": true,
           "data": [
-            {
-              "scheme": "https",
-              "host": "novlnest.com"
-            },
-            {
-              "scheme": "https",
-              "host": "www.novlnest.com"
-            }
+            { "scheme": "https", "host": "novlnest.com", "pathPrefix": "/novel" },
+            { "scheme": "https", "host": "novlnest.com", "pathPrefix": "/poem" },
+            { "scheme": "https", "host": "novlnest.com", "pathPrefix": "/profile" },
+            { "scheme": "https", "host": "novlnest.com", "pathPrefix": "/novels" },
+            { "scheme": "https", "host": "novlnest.com", "pathPrefix": "/poems" },
+            { "scheme": "https", "host": "novlnest.com", "pathPrefix": "/messages" },
+            { "scheme": "https", "host": "novlnest.com", "pathPrefix": "/settings" },
+            { "scheme": "https", "host": "novlnest.com", "pathPrefix": "/notifications" },
+            { "scheme": "https", "host": "novlnest.com", "pathPrefix": "/library" },
+            { "scheme": "https", "host": "novlnest.com", "pathPrefix": "/promote" },
+            { "scheme": "https", "host": "www.novlnest.com", "pathPrefix": "/novel" },
+            { "scheme": "https", "host": "www.novlnest.com", "pathPrefix": "/poem" },
+            { "scheme": "https", "host": "www.novlnest.com", "pathPrefix": "/profile" },
+            { "scheme": "https", "host": "www.novlnest.com", "pathPrefix": "/novels" },
+            { "scheme": "https", "host": "www.novlnest.com", "pathPrefix": "/poems" },
+            { "scheme": "https", "host": "www.novlnest.com", "pathPrefix": "/messages" },
+            { "scheme": "https", "host": "www.novlnest.com", "pathPrefix": "/settings" },
+            { "scheme": "https", "host": "www.novlnest.com", "pathPrefix": "/notifications" },
+            { "scheme": "https", "host": "www.novlnest.com", "pathPrefix": "/library" },
+            { "scheme": "https", "host": "www.novlnest.com", "pathPrefix": "/promote" }
           ],
           "category": [
             "BROWSABLE",

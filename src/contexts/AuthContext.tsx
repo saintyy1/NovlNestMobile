@@ -32,6 +32,7 @@ import {
   addDoc,
   orderBy,
   writeBatch,
+  onSnapshot,
 } from "firebase/firestore"
 import * as AppleAuthentication from "expo-apple-authentication"
 import AsyncStorage from "@react-native-async-storage/async-storage"
@@ -1150,9 +1151,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+    let unsubscribeSnapshot: () => void;
+
+    const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
       if (user) {
+        setFirebaseUser(user)
         await fetchUserData(user)
+        
+        // Listen to live updates of the user document
+        unsubscribeSnapshot = onSnapshot(doc(db, "users", user.uid), (docResp) => {
+          if (docResp.exists()) {
+            const data = docResp.data();
+            setCurrentUser((prev) => {
+              if (!prev) return prev;
+              const updatedUser: ExtendedUser = {
+                ...prev,
+                isAdmin: data.isAdmin || false,
+                emailVisible: data.emailVisible || false,
+                photoURL: data.photoURL || user.photoURL,
+                displayName: data.displayName || user.displayName || user.email?.split("@")[0] || "User",
+                bio: data.bio || "",
+                followers: data.followers || [],
+                following: data.following || [],
+                instagramUrl: data.instagramUrl || "",
+                twitterUrl: data.twitterUrl || "",
+                supportLink: data.supportLink || "",
+                location: data.location || "",
+                library: data.library || [],
+                poemLibrary: data.poemLibrary || [],
+                finishedReads: data.finishedReads || [],
+                pendingEmail: data.pendingEmail,
+              };
+              return updatedUser;
+            });
+          }
+        });
+
       } else {
         setIsAdmin(false)
         setCurrentUser(null)
@@ -1160,10 +1194,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         followCooldowns.forEach((timeout) => clearTimeout(timeout))
         followCooldowns.clear()
         lastUnfollowTimestamps.clear()
+        if (unsubscribeSnapshot) {
+          unsubscribeSnapshot();
+        }
       }
       setLoading(false)
     })
-    return unsubscribe
+
+    return () => {
+      unsubscribeAuth();
+      if (unsubscribeSnapshot) {
+        unsubscribeSnapshot();
+      }
+    };
   }, [])
 
   // Poll for email verification when there's a pending email change

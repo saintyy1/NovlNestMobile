@@ -9,11 +9,13 @@ import {
   TextInput,
   ActivityIndicator,
   Alert,
+  AlertButton,
   Share as RNShare,
   Dimensions,
   KeyboardAvoidingView,
   Platform,
   Modal,
+  Pressable,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -63,7 +65,7 @@ interface AuthorData {
 
 const PoemOverviewScreen = ({ route, navigation }: any) => {
   const { poemId } = route.params;
-  const { currentUser, updatePoemLibrary } = useAuth();
+  const { currentUser, updatePoemLibrary, toggleFollow } = useAuth();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
 
@@ -77,6 +79,17 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
   const [isSummaryExpanded, setIsSummaryExpanded] = useState(false);
   const [authorData, setAuthorData] = useState<AuthorData | null>(null);
 
+  // Follow states
+  const [isFollowing, setIsFollowing] = useState(false);
+  const [isTogglingFollow, setIsTogglingFollow] = useState(false);
+
+  // Keep follow state in sync with AuthContext
+  useEffect(() => {
+    if (currentUser && poem?.poetId) {
+      setIsFollowing(currentUser.following?.includes(poem.poetId) || false);
+    }
+  }, [currentUser?.following, poem?.poetId]);
+
   // Comment states
   const [newComment, setNewComment] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
@@ -85,6 +98,15 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
   const [replyContent, setReplyContent] = useState('');
   const [submittingReply, setSubmittingReply] = useState(false);
   const [deletingComment, setDeletingComment] = useState<string | null>(null);
+  const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
+  const [editContent, setEditContent] = useState('');
+  const [showOptionsModal, setShowOptionsModal] = useState(false);
+  const [selectedCommentForOptions, setSelectedCommentForOptions] = useState<Comment | null>(null);
+
+  const showCommentOptions = (comment: Comment) => {
+    setSelectedCommentForOptions(comment);
+    setShowOptionsModal(true);
+  };
   const commentRefs = useRef<Record<string, View | null>>({});
   const replyInputRef = useRef<TextInput>(null);
 
@@ -130,6 +152,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
 
           if (currentUser) {
             setLiked(poemData.likedBy?.includes(currentUser.uid) || false);
+            setIsFollowing(currentUser.following?.includes(poemData.poetId) || false);
 
             // Increment view count only once per user
             const viewKey = `poem_view_${poemId}_${currentUser.uid}`;
@@ -267,6 +290,31 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
     }
   };
 
+  const handleFollowToggle = async () => {
+    if (!currentUser) {
+      Alert.alert('Login Required', 'Please login to follow authors');
+      return;
+    }
+    if (!poem?.poetId) return;
+
+    try {
+      setIsTogglingFollow(true);
+
+      // Optimistic update to UI
+      setIsFollowing(!isFollowing);
+
+      await toggleFollow(poem.poetId, isFollowing);
+
+    } catch (error) {
+      console.error('Error toggling follow:', error);
+      Alert.alert('Error', 'Failed to update follow status');
+      // Revert on error
+      setIsFollowing(isFollowing);
+    } finally {
+      setIsTogglingFollow(false);
+    }
+  };
+
   const handleCommentSubmit = async () => {
     if (!newComment.trim() || !currentUser || !poem) return;
 
@@ -395,6 +443,33 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
         },
       ]
     );
+  };
+
+  const handleCopyComment = async (text: string) => {
+    await Clipboard.setStringAsync(text);
+    Alert.alert('Copied', 'Comment copied to clipboard');
+  };
+
+  const handleEditSubmit = async () => {
+    if (!editContent.trim() || !currentUser || !editingCommentId) return;
+
+    try {
+      setSubmittingComment(true);
+      await updateDoc(doc(db, 'poemComments', editingCommentId), {
+        content: editContent.trim(),
+        updatedAt: new Date().toISOString(),
+      });
+
+      setEditingCommentId(null);
+      setEditContent('');
+      setShowCommentsModal(false);
+      Alert.alert('Success', 'Comment updated successfully!');
+    } catch (error) {
+      console.error('Error updating comment:', error);
+      Alert.alert('Error', 'Failed to update comment');
+    } finally {
+      setSubmittingComment(false);
+    }
   };
 
   const handleCommentLike = async (commentId: string, isLiked: boolean) => {
@@ -537,6 +612,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
       ref={(ref) => { commentRefs.current[comment.id] = ref; }}
     >
       <View style={styles.commentContainer}>
+        {/* Left Side: Avatar */}
         <TouchableOpacity onPress={() => handleProfileNavigation(comment.userId)}>
           {comment.userPhoto ? (
             <Image source={{ uri: comment.userPhoto }} style={styles.commentAvatar} />
@@ -547,77 +623,79 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
           )}
         </TouchableOpacity>
 
-        <View style={styles.commentContent}>
-          <View style={styles.commentHeader}>
-            {isReply && comment.parentId ? (
-              <View style={styles.replyHeader}>
+        {/* Middle/Right: Main Content Area */}
+        <View style={styles.commentContentWrapper}>
+          <View style={styles.commentMainArea}>
+            {/* Header: Name/Tags */}
+            <View style={styles.commentHeader}>
+              {isReply && comment.parentId ? (
+                <View style={styles.replyHeader}>
+                  <TouchableOpacity onPress={() => handleProfileNavigation(comment.userId)}>
+                    <Text style={styles.commentUserName}>{comment.userName}</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.replyArrow}> {'>'} </Text>
+                  {(() => {
+                    const parent = getParentCommentData(comment.parentId);
+                    return parent ? (
+                      <TouchableOpacity onPress={() => handleProfileNavigation(parent.userId)}>
+                        <Text style={styles.commentUserName}>{parent.userName}</Text>
+                      </TouchableOpacity>
+                    ) : null;
+                  })()}
+                </View>
+              ) : (
                 <TouchableOpacity onPress={() => handleProfileNavigation(comment.userId)}>
                   <Text style={styles.commentUserName}>{comment.userName}</Text>
                 </TouchableOpacity>
-                <Text style={styles.replyArrow}> {'>'} </Text>
-                {(() => {
-                  const parent = getParentCommentData(comment.parentId);
-                  return parent ? (
-                    <TouchableOpacity onPress={() => handleProfileNavigation(parent.userId)}>
-                      <Text style={styles.commentUserName}>{parent.userName}</Text>
-                    </TouchableOpacity>
-                  ) : null;
-                })()}
-              </View>
-            ) : (
-              <TouchableOpacity onPress={() => handleProfileNavigation(comment.userId)}>
-                <Text style={styles.commentUserName}>{comment.userName}</Text>
+              )}
+              {comment.userId === poem?.poetId && (
+                <View style={styles.authorBadge}>
+                  <Text style={styles.authorBadgeText}>Author</Text>
+                </View>
+              )}
+            </View>
+
+            {/* Comment Text with Long Press */}
+            <Pressable
+              onLongPress={() => showCommentOptions(comment)}
+              delayLongPress={300}
+              style={({ pressed }) => [
+                styles.commentTextContainer,
+                pressed && styles.commentTextPressed
+              ]}
+            >
+              <Text style={styles.commentText}>{comment.content}</Text>
+            </Pressable>
+
+            {/* Action Row */}
+            <View style={styles.commentActionsRow}>
+              <Text style={styles.commentDate}>{formatDate(comment.createdAt)}</Text>
+
+              <TouchableOpacity onPress={() => {
+                setReplyingTo(comment.id);
+                setReplyingToUser(comment.userName);
+                setShowCommentsModal(true);
+                setTimeout(() => replyInputRef.current?.focus(), 100);
+              }}>
+                <Text style={styles.commentActionText}>Reply</Text>
               </TouchableOpacity>
-            )}
-            <Text style={styles.commentDate}>{formatDate(comment.createdAt)}</Text>
-            {comment.userId === poem?.poetId && (
-              <View style={styles.authorBadge}>
-                <Text style={styles.authorBadgeText}>Author</Text>
-              </View>
-            )}
+            </View>
           </View>
 
-          <Text style={styles.commentText}>{comment.content}</Text>
-
-          <View style={styles.commentActions}>
+          {/* Far Right: Like Button */}
+          <View style={styles.commentLikeContainer}>
             <TouchableOpacity
               onPress={() => handleCommentLike(comment.id, comment.likedBy?.includes(currentUser?.uid || ''))}
               disabled={!currentUser}
-              style={styles.commentAction}
+              style={styles.commentLikeAction}
             >
               <Ionicons
                 name={comment.likedBy?.includes(currentUser?.uid || '') ? 'heart' : 'heart-outline'}
                 size={16}
                 color={comment.likedBy?.includes(currentUser?.uid || '') ? '#EF4444' : '#9CA3AF'}
               />
-              <Text style={styles.commentActionText}>{comment.likes || 0}</Text>
+              <Text style={styles.commentLikeCount}>{comment.likes || 0}</Text>
             </TouchableOpacity>
-
-            {currentUser && (
-              <TouchableOpacity
-                onPress={() => {
-                  setReplyingTo(comment.id);
-                  setReplyingToUser(comment.userName);
-                  setShowCommentsModal(true);
-                  setTimeout(() => replyInputRef.current?.focus(), 100);
-                }}
-                style={styles.commentAction}
-              >
-                <Ionicons name="return-down-forward-outline" size={16} color="#9CA3AF" />
-                <Text style={styles.commentActionText}>Reply</Text>
-              </TouchableOpacity>
-            )}
-
-            {canDeleteComment(comment) && (
-              <TouchableOpacity
-                onPress={() => handleDeleteComment(comment.id)}
-                disabled={deletingComment === comment.id}
-                style={styles.commentAction}
-              >
-                <Ionicons name="trash-outline" size={16} color="#9CA3AF" />
-                <Text style={styles.commentActionText}>Delete</Text>
-              </TouchableOpacity>
-            )}
           </View>
         </View>
       </View>
@@ -680,9 +758,39 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
 
             <View style={styles.infoSection}>
               <Text style={styles.title}>{poem.title}</Text>
-              <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: poem.poetId })}>
-                <Text style={styles.author}>by {poem.poetName}</Text>
-              </TouchableOpacity>
+              <View style={styles.authorRow}>
+                <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: poem.poetId })}>
+                  <Text style={styles.author}>by {poem.poetName}</Text>
+                </TouchableOpacity>
+                {currentUser && poem.poetId !== currentUser.uid && (
+                  <TouchableOpacity
+                    style={[
+                      styles.followButton,
+                      isFollowing ? styles.followingButton : { backgroundColor: colors.primary }
+                    ]}
+                    onPress={handleFollowToggle}
+                    disabled={isTogglingFollow}
+                  >
+                    {isTogglingFollow ? (
+                      <ActivityIndicator size="small" color={isFollowing ? colors.primary : '#fff'} />
+                    ) : (
+                      <>
+                        <Ionicons
+                          name={isFollowing ? 'checkmark-circle' : 'person-add'}
+                          size={14}
+                          color={isFollowing ? colors.primary : '#fff'}
+                        />
+                        <Text style={[
+                          styles.followButtonText,
+                          isFollowing && { color: colors.primary }
+                        ]}>
+                          {isFollowing ? 'Following' : 'Follow'}
+                        </Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                )}
+              </View>
 
               {/* Stats */}
               <View style={styles.statsRow}>
@@ -931,7 +1039,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
                     </View>
                   )}
                   <View style={styles.commentsModalInputWrapperWrapper}>
-                    {replyingTo && (
+                    {replyingTo && !editingCommentId && (
                       <View style={styles.replyingToBanner}>
                         <Text style={styles.replyingToText}>Replying to {replyingToUser}</Text>
                         <TouchableOpacity
@@ -946,12 +1054,26 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
                         </TouchableOpacity>
                       </View>
                     )}
+                    {editingCommentId && (
+                      <View style={styles.replyingToBanner}>
+                        <Text style={styles.replyingToText}>Editing Comment</Text>
+                        <TouchableOpacity
+                          onPress={() => {
+                            setEditingCommentId(null);
+                            setEditContent('');
+                          }}
+                          style={styles.replyingToCancel}
+                        >
+                          <Ionicons name="close-circle" size={16} color={colors.textSecondary} />
+                        </TouchableOpacity>
+                      </View>
+                    )}
                     <View style={styles.commentsModalInputWrapper}>
                       <TextInput
                         ref={replyInputRef}
-                        value={replyingTo ? replyContent : newComment}
-                        onChangeText={replyingTo ? setReplyContent : setNewComment}
-                        placeholder={replyingTo ? "Write a reply..." : "Add a comment..."}
+                        value={editingCommentId ? editContent : (replyingTo ? replyContent : newComment)}
+                        onChangeText={editingCommentId ? setEditContent : (replyingTo ? setReplyContent : setNewComment)}
+                        placeholder={editingCommentId ? "Edit comment..." : (replyingTo ? "Write a reply..." : "Add a comment...")}
                         placeholderTextColor="#9CA3AF"
                         style={styles.commentsModalInput}
                         multiline
@@ -959,22 +1081,24 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
                       />
                       <TouchableOpacity
                         onPress={() => {
-                          if (replyingTo) {
+                          if (editingCommentId) {
+                            handleEditSubmit();
+                          } else if (replyingTo) {
                             handleReplySubmit(replyingTo);
                           } else {
                             handleCommentSubmit();
                           }
                         }}
-                        disabled={(replyingTo ? !replyContent.trim() : !newComment.trim()) || submittingComment || submittingReply}
+                        disabled={(editingCommentId ? !editContent.trim() : (replyingTo ? !replyContent.trim() : !newComment.trim())) || submittingComment || submittingReply}
                         style={styles.commentsModalSubmitBtn}
                       >
                         {(submittingComment || submittingReply) ? (
                           <ActivityIndicator size="small" color={colors.primary} />
                         ) : (
                           <Ionicons
-                            name="send"
+                            name={editingCommentId ? "checkmark" : "send"}
                             size={20}
-                            color={(replyingTo ? replyContent.trim() : newComment.trim()) ? colors.primary : '#9CA3AF'}
+                            color={(editingCommentId ? editContent.trim() : (replyingTo ? replyContent.trim() : newComment.trim())) ? colors.primary : '#9CA3AF'}
                           />
                         )}
                       </TouchableOpacity>
@@ -983,7 +1107,91 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
                 </View>
               )}
             </KeyboardAvoidingView>
+
+            {/* Comment Options Bottom Sheet (Nested) */}
+            <Modal
+              visible={showOptionsModal}
+              transparent
+              animationType="slide"
+              onRequestClose={() => setShowOptionsModal(false)}
+            >
+              <TouchableOpacity
+                style={styles.optionsModalOverlay}
+                activeOpacity={1}
+                onPress={() => setShowOptionsModal(false)}
+              >
+                <View style={styles.optionsSheet}>
+                  <View style={styles.sheetHandle} />
+                  <Text style={styles.sheetTitle}>Comment Options</Text>
+
+                  <TouchableOpacity
+                    style={styles.sheetOption}
+                    onPress={() => {
+                      if (selectedCommentForOptions) {
+                        setReplyingTo(selectedCommentForOptions.id);
+                        setReplyingToUser(selectedCommentForOptions.userName);
+                        setShowOptionsModal(false);
+                        setTimeout(() => replyInputRef.current?.focus(), 100);
+                      }
+                    }}
+                  >
+                    <Ionicons name="chatbubble-outline" size={24} color={colors.text} />
+                    <Text style={styles.sheetOptionText}>Reply</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.sheetOption}
+                    onPress={() => {
+                      if (selectedCommentForOptions) {
+                        handleCopyComment(selectedCommentForOptions.content || '');
+                        setShowOptionsModal(false);
+                      }
+                    }}
+                  >
+                    <Ionicons name="copy-outline" size={24} color={colors.text} />
+                    <Text style={styles.sheetOptionText}>Copy</Text>
+                  </TouchableOpacity>
+
+                  {selectedCommentForOptions && currentUser && currentUser.uid === selectedCommentForOptions.userId && (
+                    <TouchableOpacity
+                      style={styles.sheetOption}
+                      onPress={() => {
+                        setEditingCommentId(selectedCommentForOptions.id);
+                        setEditContent(selectedCommentForOptions.content || '');
+                        setShowOptionsModal(false);
+                        setTimeout(() => replyInputRef.current?.focus(), 100);
+                      }}
+                    >
+                      <Ionicons name="create-outline" size={24} color={colors.text} />
+                      <Text style={styles.sheetOptionText}>Edit Comment</Text>
+                    </TouchableOpacity>
+                  )}
+
+                  {selectedCommentForOptions && canDeleteComment(selectedCommentForOptions) && (
+                    <TouchableOpacity
+                      style={styles.sheetOption}
+                      onPress={() => {
+                        handleDeleteComment(selectedCommentForOptions.id);
+                        setShowOptionsModal(false);
+                      }}
+                    >
+                      <Ionicons name="trash-outline" size={24} color="#EF4444" />
+                      <Text style={[styles.sheetOptionText, { color: '#EF4444' }]}>Delete Comment</Text>
+                    </TouchableOpacity>
+                  )}
+
+                  <TouchableOpacity
+                    style={[styles.sheetOption, styles.sheetCancelOption]}
+                    onPress={() => setShowOptionsModal(false)}
+                  >
+                    <Text style={styles.sheetCancelText}>Cancel</Text>
+                  </TouchableOpacity>
+                </View>
+              </TouchableOpacity>
+            </Modal>
           </Modal>
+
+
 
 
         </SafeAreaView>
@@ -1071,16 +1279,41 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   },
   title: {
     fontSize: 24,
-    fontWeight: 'bold' as const,
+    fontWeight: 'bold',
     color: themeColors.text,
     marginBottom: 8,
-    textAlign: 'center' as const,
+    textAlign: 'center',
+  },
+  authorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+    gap: 12,
   },
   author: {
-    fontSize: 16,
-    color: themeColors.primary,
-    marginBottom: 20,
-    textAlign: 'center' as const,
+    fontSize: 14,
+    color: themeColors.textSecondary,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    textAlign: 'center',
+  },
+  followButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    gap: 4,
+  },
+  followingButton: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: themeColors.primary,
+  },
+  followButtonText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
   },
   statsRow: {
     flexDirection: 'row' as const,
@@ -1444,7 +1677,11 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     fontSize: 14,
     fontWeight: 'bold' as const,
   },
-  commentContent: {
+  commentContentWrapper: {
+    flex: 1,
+    flexDirection: 'row',
+  },
+  commentMainArea: {
     flex: 1,
   },
   commentHeader: {
@@ -1488,18 +1725,29 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     lineHeight: 20,
     marginBottom: 8,
   },
-  commentActions: {
-    flexDirection: 'row' as const,
-    gap: 16,
-  },
-  commentAction: {
+  commentActionsRow: {
     flexDirection: 'row' as const,
     alignItems: 'center' as const,
-    gap: 4,
+    gap: 16,
+    marginTop: 4,
   },
   commentActionText: {
     color: themeColors.textSecondary,
+    fontSize: 14,
+    fontWeight: 'bold' as const,
+  },
+  commentLikeContainer: {
+    alignItems: 'center' as const,
+    marginLeft: 12,
+    marginTop: 4,
+  },
+  commentLikeAction: {
+    alignItems: 'center' as const,
+  },
+  commentLikeCount: {
+    color: themeColors.textSecondary,
     fontSize: 12,
+    marginTop: 2,
   },
   replyInputContainer: {
     marginTop: 12,
@@ -1642,6 +1890,66 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   },
   replyingToCancel: {
     padding: 2,
+  },
+  optionsModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  optionsSheet: {
+    backgroundColor: themeColors.surface,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingBottom: Platform.OS === 'ios' ? 40 : 24,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+  },
+  sheetHandle: {
+    width: 40,
+    height: 4,
+    backgroundColor: themeColors.border,
+    borderRadius: 2,
+    marginVertical: 12,
+  },
+  sheetTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: themeColors.text,
+    marginBottom: 16,
+  },
+  sheetOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: themeColors.border,
+    gap: 12,
+  },
+  sheetOptionText: {
+    fontSize: 16,
+    color: themeColors.text,
+    fontWeight: '500',
+  },
+  sheetCancelOption: {
+    borderBottomWidth: 0,
+    justifyContent: 'center',
+    marginTop: 8,
+  },
+  sheetCancelText: {
+    fontSize: 16,
+    color: themeColors.textSecondary,
+    fontWeight: '600',
+  },
+  commentTextContainer: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    marginHorizontal: -8,
+  },
+  commentTextPressed: {
+    backgroundColor: themeColors.border,
+    opacity: 0.8,
   },
 });
 

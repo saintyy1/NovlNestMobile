@@ -30,7 +30,7 @@ const PoemReaderScreen = ({ route, navigation }: Props) => {
     const [poem, setPoem] = useState<Poem | null>(null)
     const [loading, setLoading] = useState(true);
     const [fontSize, setFontSize] = useState(18);
-    const { currentUser, isAdmin } = useAuth();
+    const { currentUser, isAdmin, toggleFollow } = useAuth();
     const { colors } = useTheme();
 
     const styles = getStyles(colors);
@@ -44,9 +44,20 @@ const PoemReaderScreen = ({ route, navigation }: Props) => {
         isAdmin || (currentUser && poem && currentUser.uid === poem.poetId)
     );
 
+    // Follow states
+    const [isFollowing, setIsFollowing] = useState(false);
+    const [isTogglingFollow, setIsTogglingFollow] = useState(false);
+
     useEffect(() => {
         fetchPoem();
     }, [id]);
+
+    // Keep follow state in sync with AuthContext
+    useEffect(() => {
+        if (currentUser && poem?.poetId) {
+            setIsFollowing(currentUser.following?.includes(poem.poetId) || false);
+        }
+    }, [currentUser?.following, poem?.poetId]);
 
     const fetchPoem = async () => {
         if (!id) {
@@ -115,6 +126,31 @@ const PoemReaderScreen = ({ route, navigation }: Props) => {
           });
         } catch (error) {
           console.error('Error sharing:', error);
+        }
+    };
+
+    const handleFollowToggle = async () => {
+        if (!currentUser) {
+            Alert.alert('Login Required', 'Please login to follow authors');
+            return;
+        }
+        if (!poem?.poetId) return;
+
+        try {
+            setIsTogglingFollow(true);
+            
+            // Optimistic update to UI
+            setIsFollowing(!isFollowing);
+            
+            await toggleFollow(poem.poetId, isFollowing);
+            
+        } catch (error) {
+            console.error('Error toggling follow:', error);
+            Alert.alert('Error', 'Failed to update follow status');
+            // Revert on error
+            setIsFollowing(isFollowing);
+        } finally {
+            setIsTogglingFollow(false);
         }
     };
 
@@ -210,6 +246,25 @@ const PoemReaderScreen = ({ route, navigation }: Props) => {
                             {poem.content}
                         </Text>
                     </View>
+
+                    {/* Follow Prompt */}
+                    {currentUser && poem?.poetId !== currentUser.uid && !isFollowing && (
+                        <View style={[styles.followPromptContainer, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                            <Text style={[styles.followPromptText, { color: colors.textSecondary }]}>
+                                Enjoying the poem? Follow <Text style={[styles.followPromptAuthor, { color: colors.text }]}>{poem?.poetName}</Text>
+                            </Text>
+                            <TouchableOpacity
+                                style={[styles.followPromptButton, { backgroundColor: colors.primary }]}
+                                onPress={handleFollowToggle}
+                                disabled={isTogglingFollow}
+                            >
+                                {/* @ts-ignore */}
+                                <Icon name="person-add" size={16} color="#fff" />
+                                <Text style={styles.followPromptButtonText}>Follow</Text>
+                            </TouchableOpacity>
+                        </View>
+                    )}
+
                     {/* Bottom Spacing for Controls */}
                     <View style= {{height : 140}}/>
                 </TouchableOpacity>
@@ -478,6 +533,35 @@ const getStyles = (themeColors: any) => StyleSheet.create({
         marginTop: 8,
         fontWeight: '600',
         letterSpacing: 0.5,
+    },
+    followPromptContainer: {
+        width: '100%',
+        padding: 20,
+        borderRadius: 12,
+        borderWidth: 1,
+        alignItems: 'center',
+        marginBottom: 24,
+    },
+    followPromptText: {
+        fontSize: 15,
+        marginBottom: 12,
+        textAlign: 'center',
+    },
+    followPromptAuthor: {
+        fontWeight: 'bold',
+    },
+    followPromptButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 20,
+        paddingVertical: 10,
+        borderRadius: 20,
+        gap: 8,
+    },
+    followPromptButtonText: {
+        color: '#fff',
+        fontSize: 14,
+        fontWeight: '600',
     },
     bottomBar: {
         position: 'absolute',

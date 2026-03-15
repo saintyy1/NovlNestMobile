@@ -1,18 +1,16 @@
+import { NavigatorScreenParams } from '@react-navigation/native';
+import { MainTabParamList } from '../components/navigation/MainTabNavigator';
+
 export type RootStackParamList = {
-  MainTabs: undefined;
+  MainTabs: NavigatorScreenParams<MainTabParamList>;
   Notifications: undefined;
-  Profile: undefined;
+  Profile: { userId?: string };
   Messages: undefined;
   Settings: undefined;
   PrivacyPolicy: undefined;
   TermsOfService: undefined;
   Support: undefined;
   MyTickets: undefined;
-  Browse: {
-    browseType?: 'novels' | 'poems';
-    selectedGenre?: string;
-    resetBrowseType?: boolean;
-  };
   NovelOverview: { id: string };
   ChaptersList: undefined;
   NovelReader: { novelId: string; chapterNumber?: number };

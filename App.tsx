@@ -1,6 +1,6 @@
 // App.tsx
 import React, { useEffect } from 'react';
-import { NavigationContainer, NavigationState } from '@react-navigation/native';
+import { NavigationContainer, NavigationState, LinkingOptions } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { RootStackParamList } from './src/types/navigation';
 import { NotificationsScreen } from './src/screens/main/NotificationsScreen';
@@ -429,20 +429,34 @@ function AppContent() {
 }
 
 export default function App() {
-  const linking = {
-    prefixes: ['novlnest://', 'https://novlnest.com', 'https://auth.expo.io'],
+  const linking: LinkingOptions<RootStackParamList> = {
+    prefixes: [
+      'novlnest://', 
+      'https://novlnest.com', 
+      'https://www.novlnest.com', 
+      'https://auth.expo.io'
+    ],
     config: {
       screens: {
-        Auth: 'auth',
-        PaymentCallback: 'payment-callback',
-        EmailAction: {
-          path: 'auth/action',
-          parse: {
-            mode: (mode: string) => mode,
-            oobCode: (oobCode: string) => oobCode,
-            apiKey: (apiKey: string) => apiKey,
-          },
+        MainTabs: {
+          screens: {
+            Home: 'home',
+            Browse: 'browse',
+            Library: 'library',
+            Submit: 'submit',
+          }
         },
+        NovelOverview: 'novel/:id',
+        PoemOverview: 'poem/:id',
+        NovelReader: 'novel/:novelId/read',
+        PoemReader: 'poem/:id/read',
+        Profile: 'profile/:userId',
+        Notifications: 'notifications',
+        Messages: 'messages',
+        Settings: 'settings',
+        EmailAction: 'auth-action',
+        PaymentCallback: 'PaymentCallback',
+        PromoteScreen: 'promote',
       },
     },
   };
@@ -453,7 +467,7 @@ export default function App() {
         <AuthProvider>
           <ChatProvider>
             <NotificationProvider>
-              <NavigationContainer
+              <NavigationContainer<RootStackParamList>
                 linking={linking}
                 onStateChange={(state) => {
                   const currentRouteName = getActiveRouteName(state);
