@@ -17,5 +17,6 @@ export interface Poem {
   ratingCount?: number
   coverImage?: string | null
   coverSmallImage?: string | null
+  publicDomain?: boolean
 }
 

@@ -12,6 +12,7 @@ import {
   Platform,
 } from 'react-native';
 import CachedImage from '../../components/CachedImage';
+import { withCache, CACHE_TTL, invalidateCache } from '../../utils/cache';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
@@ -144,6 +145,10 @@ const EditChapterScreen = ({ route, navigation }: any) => {
         chapters: updatedChapters,
         updatedAt: new Date().toISOString(),
       });
+
+      // Invalidate novel and specific chapter cache
+      await invalidateCache(`novel_${novelId}`);
+      await invalidateCache(`chapter_${novelId}_${chapterIdx}`);
 
       // Update local state
       setOriginalChapter({ ...chapter });

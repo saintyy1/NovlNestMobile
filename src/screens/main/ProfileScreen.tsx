@@ -44,29 +44,13 @@ import { db } from '../../firebase/config';
 import { ref, uploadBytes, deleteObject } from 'firebase/storage';
 import { storage } from '../../firebase/config';
 import CachedImage from '../../components/CachedImage';
+import { withCache, CACHE_TTL, invalidateCache, invalidateByPrefix } from '../../utils/cache';
+import { sendPushNotification } from '../../services/PushNotificationService';
 
 const { width } = Dimensions.get('window');
 const CARD_WIDTH = (width - 48) / 2; // 2 columns with spacing
 
-// Helper function to convert Firebase Storage URL to download URL format that bypasses CORS
-const getFirebaseDownloadUrl = (url: string) => {
-  if (!url || !url.includes("firebasestorage.app")) {
-    return url;
-  }
 
-  try {
-    // Convert Firebase Storage URL to download URL format that bypasses CORS
-    const urlParts = url.split("/");
-    const bucketName = urlParts[3]; // Extract bucket name
-    const filePath = urlParts.slice(4).join("/"); // Extract file path
-
-    // Create download URL format that doesn't require CORS
-    return `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodeURIComponent(filePath)}?alt=media`;
-  } catch (error) {
-    console.log(`Error converting Firebase URL: ${error}`);
-    return url;
-  }
-};
 
 interface Announcement {
   id: string;
@@ -103,6 +87,23 @@ const ProfileScreen = ({ route, navigation }: any) => {
   const { currentUser, updateUserPhoto, toggleFollow, updateUserProfile } = useAuth();
   const { colors } = useTheme();
   const styles = getStyles(colors);
+
+  const getFirebaseDownloadUrl = (url: string) => {
+    if (!url || !url.includes("firebasestorage.app")) {
+      return url;
+    }
+    
+    try {
+      const urlParts = url.split("/");
+      const bucketName = urlParts[3];
+      const filePath = urlParts.slice(4).join("/");
+      return `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodeURIComponent(filePath)}?alt=media`;
+    } catch (error) {
+      console.log("Error converting Firebase URL:", error);
+      return url;
+    }
+  };
+
   const [profileUser, setProfileUser] = useState<any>(null);
   const [userNovels, setUserNovels] = useState<Novel[]>([]);
   const [userPoems, setUserPoems] = useState<Poem[]>([]);
@@ -178,11 +179,15 @@ const ProfileScreen = ({ route, navigation }: any) => {
       const targetUserId = userId || currentUser?.uid;
 
       if (targetUserId) {
-        const userDoc = await getDoc(doc(db, 'users', targetUserId));
-        if (userDoc.exists()) {
-          fetchedUser = { uid: userDoc.id, ...userDoc.data() };
-        } else if (targetUserId === currentUser?.uid) {
-          // Fallback to currentUser if Firestore fetch fails for own profile
+        fetchedUser = await withCache(`profile_user_${targetUserId}`, async () => {
+          const userDoc = await getDoc(doc(db, 'users', targetUserId));
+          if (userDoc.exists()) {
+            return { uid: userDoc.id, ...userDoc.data() };
+          }
+          return null;
+        }, CACHE_TTL.PROFILE);
+
+        if (!fetchedUser && targetUserId === currentUser?.uid) {
           fetchedUser = currentUser;
         }
       }
@@ -205,29 +210,35 @@ const ProfileScreen = ({ route, navigation }: any) => {
 
       // Fetch novels
       if (targetUserId) {
-        const novelsQuery = query(
-          collection(db, 'novels'),
-          where('authorId', '==', targetUserId),
-          orderBy('createdAt', 'desc')
-        );
-        const novelsSnapshot = await getDocs(novelsQuery);
-        const novels: Novel[] = [];
-        novelsSnapshot.forEach((doc) => {
-          novels.push({ id: doc.id, ...doc.data() } as Novel);
-        });
+        const novels = await withCache(`profile_novels_${targetUserId}`, async () => {
+          const novelsQuery = query(
+            collection(db, 'novels'),
+            where('authorId', '==', targetUserId),
+            orderBy('createdAt', 'desc')
+          );
+          const novelsSnapshot = await getDocs(novelsQuery);
+          const list: Novel[] = [];
+          novelsSnapshot.forEach((doc) => {
+            list.push({ id: doc.id, ...doc.data() } as Novel);
+          });
+          return list;
+        }, CACHE_TTL.PROFILE);
         setUserNovels(novels);
 
         // Fetch poems
-        const poemsQuery = query(
-          collection(db, 'poems'),
-          where('poetId', '==', targetUserId),
-          orderBy('createdAt', 'desc')
-        );
-        const poemsSnapshot = await getDocs(poemsQuery);
-        const poems: Poem[] = [];
-        poemsSnapshot.forEach((doc) => {
-          poems.push({ id: doc.id, ...doc.data() } as Poem);
-        });
+        const poems = await withCache(`profile_poems_${targetUserId}`, async () => {
+          const poemsQuery = query(
+            collection(db, 'poems'),
+            where('poetId', '==', targetUserId),
+            orderBy('createdAt', 'desc')
+          );
+          const poemsSnapshot = await getDocs(poemsQuery);
+          const list: Poem[] = [];
+          poemsSnapshot.forEach((doc) => {
+            list.push({ id: doc.id, ...doc.data() } as Poem);
+          });
+          return list;
+        }, CACHE_TTL.PROFILE);
         setUserPoems(poems);
       }
     } catch (err) {
@@ -302,6 +313,8 @@ const ProfileScreen = ({ route, navigation }: any) => {
           try {
             const base64data = reader.result as string;
             await updateUserPhoto(base64data);
+            // Invalidate profile cache
+            await invalidateCache(`profile_user_${currentUser.uid}`);
             Alert.alert('Success', 'Profile picture updated!');
             fetchUserData();
           } catch (uploadError) {
@@ -325,6 +338,8 @@ const ProfileScreen = ({ route, navigation }: any) => {
     try {
       setIsUploadingPhoto(true);
       await updateUserPhoto(null);
+      // Invalidate profile cache
+      await invalidateCache(`profile_user_${currentUser.uid}`);
       Alert.alert('Success', 'Profile picture removed!');
       fetchUserData();
     } catch (error) {
@@ -365,6 +380,8 @@ const ProfileScreen = ({ route, navigation }: any) => {
     setIsTogglingFollow(true);
     try {
       await toggleFollow(profileUser.uid, isFollowing);
+      // Invalidate profile cache
+      await invalidateCache(`profile_user_${profileUser.uid}`);
       setIsFollowing(!isFollowing);
       setFollowersCount((prev) => (isFollowing ? prev - 1 : prev + 1));
       Alert.alert('Success', isFollowing ? 'Unfollowed' : 'Following');
@@ -388,8 +405,9 @@ const ProfileScreen = ({ route, navigation }: any) => {
 
       // Notify followers
       if (profileUser?.followers?.length > 0) {
-        const notificationPromises = profileUser.followers.map((followerId: string) =>
-          addDoc(collection(db, 'notifications'), {
+        const notificationPromises = profileUser.followers.map((followerId: string) => {
+          // Create Firestore notification
+          const firestoreNotification = addDoc(collection(db, 'notifications'), {
             toUserId: followerId,
             fromUserId: currentUser.uid,
             fromUserName: currentUser.displayName || 'Author',
@@ -397,8 +415,18 @@ const ProfileScreen = ({ route, navigation }: any) => {
             announcementContent: newAnnouncementContent.trim(),
             createdAt: new Date().toISOString(),
             read: false,
-          })
-        );
+          });
+
+          // Send Push Notification
+          const pushNotification = sendPushNotification(
+            followerId,
+            `${currentUser.displayName || 'Author'} 📢`,
+            newAnnouncementContent.trim().substring(0, 100) + (newAnnouncementContent.trim().length > 100 ? '...' : ''),
+            { url: `novlnest://profile/${currentUser.uid}` }
+          );
+
+          return Promise.all([firestoreNotification, pushNotification]);
+        });
         await Promise.all(notificationPromises);
       }
 
@@ -480,6 +508,12 @@ const ProfileScreen = ({ route, navigation }: any) => {
         updatedAt: new Date().toISOString(),
       });
 
+      // Invalidate caches
+      await invalidateCache(`novel_${selectedNovel.id}`);
+      await invalidateByPrefix("profile_");
+      await invalidateByPrefix("home_");
+      await invalidateByPrefix("browse_");
+
       setUserNovels((prev) =>
         prev.map((n) =>
           n.id === selectedNovel.id
@@ -509,6 +543,12 @@ const ProfileScreen = ({ route, navigation }: any) => {
         status: 'completed',
         updatedAt: new Date().toISOString(),
       });
+
+      // Invalidate caches
+      await invalidateCache(`novel_${selectedNovel.id}`);
+      await invalidateByPrefix("profile_");
+      await invalidateByPrefix("home_");
+      await invalidateByPrefix("browse_");
 
       Alert.alert('Success', 'Novel marked as completed!');
       setShowCompletionModal(false);
@@ -573,6 +613,11 @@ const ProfileScreen = ({ route, navigation }: any) => {
           onPress: async () => {
             try {
               await deleteDoc(doc(db, 'novels', novel.id));
+              // Invalidate caches
+              await invalidateCache(`novel_${novel.id}`);
+              await invalidateByPrefix("profile_");
+              await invalidateByPrefix("home_");
+              await invalidateByPrefix("browse_");
               setUserNovels((prev) => prev.filter((n) => n.id !== novel.id));
               Alert.alert('Success', 'Novel deleted!');
             } catch (error) {
@@ -605,6 +650,12 @@ const ProfileScreen = ({ route, navigation }: any) => {
         updatedAt: new Date().toISOString(),
       });
 
+      // Invalidate caches
+      await invalidateCache(`poem_${selectedPoem.id}`);
+      await invalidateByPrefix("profile_");
+      await invalidateByPrefix("home_");
+      await invalidateByPrefix("browse_");
+
       setUserPoems((prev) =>
         prev.map((p) =>
           p.id === selectedPoem.id
@@ -636,6 +687,11 @@ const ProfileScreen = ({ route, navigation }: any) => {
           onPress: async () => {
             try {
               await deleteDoc(doc(db, 'poems', poem.id));
+              // Invalidate caches
+              await invalidateCache(`poem_${poem.id}`);
+              await invalidateByPrefix("profile_");
+              await invalidateByPrefix("home_");
+              await invalidateByPrefix("browse_");
               setUserPoems((prev) => prev.filter((p) => p.id !== poem.id));
               Alert.alert('Success', 'Poem deleted!');
             } catch (error) {
@@ -687,6 +743,11 @@ const ProfileScreen = ({ route, navigation }: any) => {
         const novelRef = doc(db, 'novels', selectedNovel.id);
         await updateDoc(novelRef, { coverImage: coverUrl, coverSmallImage: coverSmallUrl });
 
+        // Invalidate caches
+        await invalidateCache(`novel_${selectedNovel.id}`);
+        await invalidateByPrefix("home_");
+        await invalidateByPrefix("browse_");
+
         setUserNovels((prevNovels) =>
           prevNovels.map((novel) =>
             novel.id === selectedNovel.id ? { ...novel, coverImage: coverUrl, coverSmallImage: coverSmallUrl } : novel
@@ -722,6 +783,11 @@ const ProfileScreen = ({ route, navigation }: any) => {
 
       const novelRef = doc(db, 'novels', selectedNovel.id);
       await updateDoc(novelRef, { coverImage: null, coverSmallImage: null });
+
+      // Invalidate caches
+      await invalidateCache(`novel_${selectedNovel.id}`);
+      await invalidateByPrefix("home_");
+      await invalidateByPrefix("browse_");
 
       setUserNovels((prevNovels) =>
         prevNovels.map((novel) =>
@@ -779,6 +845,11 @@ const ProfileScreen = ({ route, navigation }: any) => {
 
         const poemRef = doc(db, 'poems', selectedPoem.id);
         await updateDoc(poemRef, { coverImage: coverUrl, coverSmallImage: coverSmallUrl });
+
+        // Invalidate caches
+        await invalidateCache(`poem_${selectedPoem.id}`);
+        await invalidateByPrefix("home_");
+        await invalidateByPrefix("browse_");
 
         setUserPoems((prevPoems) =>
           prevPoems.map((poem) =>
@@ -915,7 +986,11 @@ const ProfileScreen = ({ route, navigation }: any) => {
                 style={styles.avatarContainer}
               >
                 {profileUser?.photoURL ? (
-                  <Image source={{ uri: profileUser.photoURL }} style={styles.heroAvatar} />
+                  <CachedImage 
+                    uri={getFirebaseDownloadUrl(profileUser.photoURL)} 
+                    style={styles.heroAvatar} 
+                    placeholderColor={colors.backgroundSecondary}
+                  />
                 ) : (
                   <View style={[styles.heroAvatarPlaceholder, { backgroundColor: colors.primary }]}>
                     <Text style={styles.heroAvatarText}>{getUserInitials(displayName)}</Text>
@@ -1264,6 +1339,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
                           uri={getFirebaseDownloadUrl(novel.coverSmallImage || novel.coverImage || '')}
                           style={styles.cardCover}
                           resizeMode="cover"
+                          placeholderColor={colors.backgroundSecondary}
                         />
                       ) : (
                         <View style={[styles.cardCoverPlaceholder, { backgroundColor: getGenreColorClass(novel.genres)[0] }]}>
@@ -1337,6 +1413,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
                           uri={getFirebaseDownloadUrl(poem.coverSmallImage || poem.coverImage || '')}
                           style={styles.cardCover}
                           resizeMode="cover"
+                          placeholderColor={colors.backgroundSecondary}
                         />
                       ) : (
                         <View style={[styles.cardCoverPlaceholder, { backgroundColor: '#EC4899' }]}>

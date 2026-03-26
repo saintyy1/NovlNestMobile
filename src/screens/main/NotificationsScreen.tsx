@@ -11,6 +11,7 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import CachedImage from '../../components/CachedImage';
 import { collection, query, where, orderBy, onSnapshot, doc, getDoc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
@@ -241,8 +242,8 @@ export const NotificationsScreen = ({ navigation }: any) => {
 
     if (fromUserData?.photoURL) {
       return (
-        <Image
-          source={{ uri: fromUserData.photoURL }}
+        <CachedImage
+          uri={fromUserData.photoURL}
           style={styles.avatar}
         />
       );

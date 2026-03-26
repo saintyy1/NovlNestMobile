@@ -18,6 +18,7 @@ import {
   Pressable,
 } from 'react-native';
 import CachedImage from '../../components/CachedImage';
+import ClassicsBadge from '../../components/ClassicsBadge';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -38,12 +39,15 @@ import {
   addDoc,
   deleteDoc,
   getDocs,
+  limit,
 } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { Novel } from '../../types/novel';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { trackNovelView, trackContentInteraction, trackShare } from '../../utils/Analytics-utils';
+import { withCache, CACHE_TTL, invalidateCache, invalidateByPrefix } from '../../utils/cache';
+import { sendPushNotification } from '../../services/PushNotificationService';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -65,8 +69,9 @@ interface AuthorData {
 }
 
 const NovelOverviewScreen = ({ route, navigation }: any) => {
-  const { novelId } = route.params;
-  const { currentUser, updateUserLibrary, markNovelAsFinished, toggleFollow } = useAuth();
+  const { novelId: novelIdParam, id } = route.params;
+  const novelId = novelIdParam || id;
+  const { currentUser, updateUserLibrary, toggleFollow } = useAuth();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
 
@@ -79,6 +84,8 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
   const [liked, setLiked] = useState(false);
   const [isSummaryExpanded, setIsSummaryExpanded] = useState(false);
   const [authorData, setAuthorData] = useState<AuthorData | null>(null);
+  const [relatedNovels, setRelatedNovels] = useState<Novel[]>([]);
+  const [loadingRelated, setLoadingRelated] = useState(false);
 
   // Follow states
   const [isFollowing, setIsFollowing] = useState(false);
@@ -109,6 +116,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
     setShowOptionsModal(true);
   };
   const commentRefs = useRef<Record<string, View | null>>({});
+  const activeLikeRequests = useRef(0);
   const replyInputRef = useRef<TextInput>(null);
 
   const [showTipModal, setShowTipModal] = useState(false);
@@ -130,56 +138,77 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
   // Fetch novel data
   useEffect(() => {
     const fetchNovel = async () => {
-      if (!novelId) return;
+      if (!novelId) {
+        setError('Novel ID is missing');
+        setLoading(false);
+        return;
+      }
       try {
         setLoading(true);
         const novelDocRef = doc(db, 'novels', novelId);
-        const novelDoc = await getDoc(novelDocRef);
 
-        if (novelDoc.exists()) {
-          const novelData = { id: novelDoc.id, ...novelDoc.data() } as Novel;
-          setNovel(novelData);
 
-          // Track novel view for analytics
-          trackNovelView({
-            novelId: novelData.id,
-            title: novelData.title,
-            authorId: novelData.authorId,
-            authorName: novelData.authorName,
-            genres: novelData.genres,
-          });
+        const novelData = await withCache(`novel_${novelId}`, async () => {
+          const novelDoc = await getDoc(novelDocRef);
+          if (novelDoc.exists()) {
+            return { id: novelDoc.id, ...novelDoc.data() } as Novel;
+          }
+          throw new Error('Novel not found');
+        }, CACHE_TTL.CONTENT);
 
-          if (currentUser) {
-            setLiked(novelData.likedBy?.includes(currentUser.uid) || false);
-            setIsFollowing(currentUser.following?.includes(novelData.authorId) || false);
+        setNovel(novelData);
 
-            // Increment view count only once per user
-            const viewKey = `novel_view_${novelId}_${currentUser.uid}`;
-            const hasViewed = await AsyncStorage.getItem(viewKey);
+        // Track novel view for analytics
+        trackNovelView({
+          novelId: novelData.id,
+          title: novelData.title,
+          authorId: novelData.authorId,
+          authorName: novelData.authorName,
+          genres: novelData.genres,
+        });
 
-            if (!hasViewed) {
-              try {
-                await updateDoc(novelDocRef, { views: increment(1) });
-                await AsyncStorage.setItem(viewKey, 'true');
-                setNovel(prev => prev ? { ...prev, views: (prev.views || 0) + 1 } : null);
-              } catch (error) {
-                console.error('Error incrementing view count:', error);
-              }
+        if (currentUser) {
+          // Increment view count only once per user
+          const viewKey = `novel_view_${novelId}_${currentUser.uid}`;
+          const hasViewed = await AsyncStorage.getItem(viewKey);
+
+          if (!hasViewed) {
+            try {
+              await updateDoc(novelDocRef, { views: increment(1) });
+              await AsyncStorage.setItem(viewKey, 'true');
+              // Invalidate cache immediately so return visits show updated view count
+              await invalidateCache(`novel_${novelId}`);
+              setNovel(prev => prev ? { ...prev, views: (prev.views || 0) + 1 } : null);
+            } catch (error) {
+              console.error('Error incrementing view count:', error);
             }
           }
-        } else {
-          setError('Novel not found');
         }
-      } catch (error) {
-        console.error('Error fetching novel:', error);
-        setError('Failed to load novel');
+      } catch (error: any) {
+        if (error.message === 'Novel not found') {
+          setError('Novel not found');
+        } else {
+          console.error('Error fetching novel:', error);
+          setError('Failed to load novel');
+        }
       } finally {
         setLoading(false);
       }
     };
 
     fetchNovel();
-  }, [novelId, currentUser]);
+  }, [novelId]); // Removed currentUser dependency
+
+  // Handle user-specific state (liked, isFollowing)
+  useEffect(() => {
+    if (novel && currentUser) {
+      setLiked(novel.likedBy?.includes(currentUser.uid) || false);
+      setIsFollowing(currentUser.following?.includes(novel.authorId) || false);
+    } else if (!currentUser) {
+      setLiked(false);
+      setIsFollowing(false);
+    }
+  }, [novel?.id, currentUser?.uid, currentUser?.following]);
 
   // Fetch author data
   useEffect(() => {
@@ -260,31 +289,148 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
     return () => unsubscribe();
   }, [novelId, buildCommentTree]);
 
+  // Fetch related novels
+  useEffect(() => {
+    const fetchRelatedNovels = async () => {
+      if (!novel?.id) return;
+
+      try {
+        setLoadingRelated(true);
+        const cacheKey = `related_novels_${novel.id}`;
+
+        const relatedItems = await withCache(cacheKey, async () => {
+          let items: Novel[] = [];
+          const seenIds = new Set<string>();
+          seenIds.add(novel.id);
+
+          // 1. Try fetching by same genre
+          if (novel.genres && novel.genres.length > 0) {
+            const primaryGenre = novel.genres[0];
+            const genreQuery = query(
+              collection(db, 'novels'),
+              where('published', '==', true),
+              where('genres', 'array-contains', primaryGenre),
+              limit(12)
+            );
+            const genreSnapshot = await getDocs(genreQuery);
+            const userGenreItems: Novel[] = [];
+            const classicGenreItems: Novel[] = [];
+
+            genreSnapshot.forEach((doc) => {
+              const data = { id: doc.id, ...doc.data() } as Novel;
+              if (!seenIds.has(data.id)) {
+                if (data.publicDomain) {
+                  classicGenreItems.push(data);
+                } else {
+                  userGenreItems.push(data);
+                }
+                seenIds.add(data.id);
+              }
+            });
+            items.push(...userGenreItems, ...classicGenreItems);
+          }
+
+          // 2. Fallback: fetch latest published novels if we don't have enough
+          if (items.length < 5) {
+            const latestQuery = query(
+              collection(db, 'novels'),
+              where('published', '==', true),
+              orderBy('createdAt', 'desc'),
+              limit(12)
+            );
+            const latestSnapshot = await getDocs(latestQuery);
+            const userLatestItems: Novel[] = [];
+            const classicLatestItems: Novel[] = [];
+
+            latestSnapshot.forEach((doc) => {
+              const data = { id: doc.id, ...doc.data() } as Novel;
+              if (!seenIds.has(data.id)) {
+                if (data.publicDomain) {
+                  classicLatestItems.push(data);
+                } else {
+                  userLatestItems.push(data);
+                }
+                seenIds.add(data.id);
+              }
+            });
+            items.push(...userLatestItems, ...classicLatestItems);
+          }
+
+          return items.slice(0, 7);
+        }, CACHE_TTL.FEED);
+
+        setRelatedNovels(relatedItems);
+      } catch (error) {
+        console.error('Error fetching related novels:', error);
+      } finally {
+        setLoadingRelated(false);
+      }
+    };
+
+    fetchRelatedNovels();
+  }, [novel?.id, novel?.genres]);
+
   const handleLike = async () => {
     if (!novel?.id || !currentUser) {
       Alert.alert('Error', 'Please login to like novels');
       return;
     }
 
+    const previousNovel = novel;
+    const previousLiked = liked;
+    const newLikeStatus = !liked;
+    
+    activeLikeRequests.current++;
+
     try {
       const novelRef = doc(db, 'novels', novel.id);
-      const newLikeStatus = !liked;
+      
+      // Full optimistic update
       setLiked(newLikeStatus);
+      setNovel(prev => {
+        if (!prev) return null;
+        const newLikedBy = newLikeStatus 
+          ? [...(prev.likedBy || []), currentUser.uid]
+          : (prev.likedBy || []).filter(id => id !== currentUser.uid);
+        return { ...prev, likes: newLikedBy.length, likedBy: newLikedBy };
+      });
 
       await updateDoc(novelRef, {
-        likes: increment(newLikeStatus ? 1 : -1),
+        likes: newLikeStatus ? (novel.likedBy?.length || 0) + 1 : Math.max(0, (novel.likedBy?.length || 0) - 1),
         likedBy: newLikeStatus ? arrayUnion(currentUser.uid) : arrayRemove(currentUser.uid),
       });
 
       await updateUserLibrary(novel.id, newLikeStatus, novel.title, novel.authorId);
 
-      const updatedNovelDoc = await getDoc(novelRef);
-      if (updatedNovelDoc.exists()) {
-        setNovel({ ...updatedNovelDoc.data(), id: novel.id } as Novel);
+      // Verify with server ONLY if this is the last pending request
+      activeLikeRequests.current--;
+      
+      if (activeLikeRequests.current === 0) {
+        const updatedNovelDoc = await getDoc(novelRef);
+        if (updatedNovelDoc.exists() && activeLikeRequests.current === 0) {
+          const serverData = { ...updatedNovelDoc.data(), id: novel.id } as Novel;
+          
+          // Double verify server sync: if likes field doesn't match likedBy length, fix it
+          if (serverData.likes !== (serverData.likedBy?.length || 0)) {
+            await updateDoc(novelRef, { likes: serverData.likedBy?.length || 0 });
+            serverData.likes = serverData.likedBy?.length || 0;
+          }
+          
+          setNovel(serverData);
+          
+          // After successful update, invalidate relevant caches to ensure fresh data app-wide
+          await invalidateCache(`novel_${novel.id}`);
+          await invalidateByPrefix("home_");
+          await invalidateByPrefix("browse_");
+        }
       }
     } catch (error) {
       console.error('Error updating likes:', error);
-      setLiked(!liked);
+      activeLikeRequests.current = Math.max(0, activeLikeRequests.current - 1);
+      if (activeLikeRequests.current === 0) {
+        setLiked(previousLiked);
+        setNovel(previousNovel);
+      }
       Alert.alert('Error', 'Failed to update like status');
     }
   };
@@ -334,17 +480,27 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
         await addDoc(collection(db, 'notifications'), {
           toUserId: novel.authorId,
           fromUserId: currentUser.uid,
-          fromUserName: currentUser.displayName || 'Anonymous User',
-          type: 'novel_comment',
+          fromUserName: currentUser.displayName || "Anonymous User",
+          type: "novel_comment",
           novelId: novel.id,
           novelTitle: novel.title,
           commentContent: newComment.trim(),
           createdAt: new Date().toISOString(),
           read: false,
         });
+
+        // Send Push Notification
+        await sendPushNotification(
+          novel.authorId,
+          "New Comment! 💬",
+          `${currentUser.displayName || "Someone"} commented on your novel "${novel.title}".`,
+          { url: `novlnest://novel/${novel.id}` }
+        )
       }
 
       setNewComment('');
+      // Invalidate cache to update comment stats on return visits
+      await invalidateCache(`novel_${novel.id}`);
       Alert.alert('Success', 'Comment posted successfully!');
     } catch (error) {
       console.error('Error submitting comment:', error);
@@ -379,8 +535,8 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
         await addDoc(collection(db, 'notifications'), {
           toUserId: novel.authorId,
           fromUserId: currentUser.uid,
-          fromUserName: currentUser.displayName || 'Anonymous User',
-          type: 'novel_reply',
+          fromUserName: currentUser.displayName || "Anonymous User",
+          type: "novel_reply",
           novelId: novel.id,
           novelTitle: novel.title,
           commentContent: replyContent.trim(),
@@ -388,14 +544,22 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
           createdAt: new Date().toISOString(),
           read: false,
         });
+
+        // Send Push Notification
+        await sendPushNotification(
+          novel.authorId,
+          `${currentUser.displayName || "Someone"} 💬`,
+          `Replied to a comment on your novel "${novel.title}"`,
+          { url: `novlnest://novel/${novel.id}` }
+        )
       }
 
       if (parentCommentAuthorId && parentCommentAuthorId !== novel.authorId && parentCommentAuthorId !== currentUser.uid) {
         await addDoc(collection(db, 'notifications'), {
           toUserId: parentCommentAuthorId,
           fromUserId: currentUser.uid,
-          fromUserName: currentUser.displayName || 'Anonymous User',
-          type: 'comment_reply',
+          fromUserName: currentUser.displayName || "Anonymous User",
+          type: "comment_reply",
           novelId: novel.id,
           novelTitle: novel.title,
           commentContent: replyContent.trim(),
@@ -403,10 +567,20 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
           createdAt: new Date().toISOString(),
           read: false,
         });
+
+        // Send Push Notification
+        await sendPushNotification(
+          parentCommentAuthorId,
+          `${currentUser.displayName || "Someone"} 💬`,
+          `Replied to your comment in "${novel.title}"`,
+          { url: `novlnest://novel/${novel.id}` }
+        )
       }
 
       setReplyContent('');
       setReplyingTo(null);
+      // Invalidate cache for fresh stats
+      await invalidateCache(`novel_${novel.id}`);
       Alert.alert('Success', 'Reply posted successfully!');
     } catch (error) {
       console.error('Error submitting reply:', error);
@@ -431,6 +605,10 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
             try {
               setDeletingComment(commentId);
               await deleteDoc(doc(db, 'comments', commentId));
+              // Invalidate cache after deletion
+              if (novel) {
+                await invalidateCache(`novel_${novel.id}`);
+              }
               Alert.alert('Success', 'Comment deleted successfully!');
             } catch (error) {
               console.error('Error deleting comment:', error);
@@ -462,6 +640,10 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
       setEditingCommentId(null);
       setEditContent('');
       setShowCommentsModal(false);
+      // Invalidate cache after edit
+      if (novel) {
+        await invalidateCache(`novel_${novel.id}`);
+      }
       Alert.alert('Success', 'Comment updated successfully!');
     } catch (error) {
       console.error('Error updating comment:', error);
@@ -518,6 +700,14 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
               createdAt: new Date().toISOString(),
               read: false,
             });
+
+            // Send Push Notification
+            await sendPushNotification(
+              commentAuthorId,
+              `${currentUser.displayName || 'Someone'} ❤️`,
+              `Liked your comment on "${novel?.title || 'a novel'}"`,
+              { url: `novlnest://novel/${novel?.id}` }
+            );
           }
         }
       }
@@ -559,6 +749,8 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
     if (!currentUser) return false;
     return comment.userId === currentUser.uid || (novel && novel.authorId === currentUser.uid);
   };
+
+
 
   const getFirebaseDownloadUrl = (url: string) => {
     if (!url || !url.includes('firebasestorage')) {
@@ -614,7 +806,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
         {/* Left Side: Avatar */}
         <TouchableOpacity onPress={() => handleProfileNavigation(comment.userId)}>
           {comment.userPhoto ? (
-            <Image source={{ uri: comment.userPhoto }} style={styles.commentAvatar} />
+            <CachedImage uri={comment.userPhoto} style={styles.commentAvatar} />
           ) : (
             <View style={styles.commentAvatarPlaceholder}>
               <Text style={styles.commentAvatarText}>{getUserInitials(comment.userName)}</Text>
@@ -756,6 +948,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
               uri={getFirebaseDownloadUrl(novel.coverImage)}
               style={styles.coverImage}
               resizeMode="cover"
+              placeholderColor={colors.backgroundSecondary}
             />
           ) : (
             <View style={styles.placeholderCover}>
@@ -765,13 +958,16 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
         </View>
 
         <View style={styles.infoSection}>
+          {novel.publicDomain && (
+            <ClassicsBadge style={{ marginBottom: 8 }} />
+          )}
           <Text style={styles.title}>{novel.title}</Text>
           <View style={styles.authorRow}>
             <TouchableOpacity onPress={() => navigation.navigate('Profile', { userId: novel.authorId })}>
               <Text style={styles.author}>by {novel.authorName}</Text>
             </TouchableOpacity>
 
-            {currentUser && !isAuthor && (
+            {currentUser && !isAuthor && !novel.publicDomain && (
               <TouchableOpacity
                 style={[
                   styles.followButton,
@@ -822,7 +1018,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
             <View style={styles.statItem}>
               <Ionicons name="heart-outline" size={18} color="#9CA3AF" />
               <Text style={styles.statText}>Votes</Text>
-              <Text style={styles.statValue}>{novel.likes || 0}</Text>
+              <Text style={styles.statValue}>{novel.likedBy?.length || 0}</Text>
             </View>
             <View style={styles.statDivider} />
             <View style={styles.statItem}>
@@ -857,7 +1053,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
 
           {/* Secondary Actions */}
           <View style={styles.secondaryActions}>
-            {authorData?.supportLink && (
+            {authorData?.supportLink && !novel.publicDomain && (
               <TouchableOpacity
                 style={styles.giftButton}
                 onPress={() => setShowTipModal(true)}
@@ -1109,6 +1305,45 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
             )}
           </View>
 
+          {/* More like this */}
+          {relatedNovels.length > 0 && (
+            <View style={styles.relatedSection}>
+              <Text style={styles.sectionTitle}>
+                {novel?.genres && novel.genres[0] ? `More ${novel.genres[0]} Stories` : 'Recommended For You'}
+              </Text>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.relatedScroll}
+              >
+                {relatedNovels.map((item) => (
+                  <TouchableOpacity
+                    key={item.id}
+                    style={styles.relatedCard}
+                    onPress={() => {
+                      navigation.replace('NovelOverview', { novelId: item.id });
+                    }}
+                  >
+                    {item.coverSmallImage || item.coverImage ? (
+                      <CachedImage
+                        uri={getFirebaseDownloadUrl(item.coverSmallImage || item.coverImage || '')}
+                        style={styles.relatedCover}
+                        resizeMode="cover"
+                        placeholderColor={colors.backgroundSecondary}
+                      />
+                    ) : (
+                      <View style={[styles.relatedCover, { backgroundColor: colors.backgroundSecondary }]}>
+                        <Text style={styles.fallbackTitle} numberOfLines={3}>
+                          {item.title}
+                        </Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+
           {/* Comments Section */}
           <View style={styles.commentsSection}>
             <Text style={styles.sectionTitle}>
@@ -1141,7 +1376,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
                 onPress={() => setShowCommentsModal(true)}
               >
                 {currentUser.photoURL ? (
-                  <Image source={{ uri: currentUser.photoURL }} style={styles.fakeCommentAvatar} />
+                  <CachedImage uri={currentUser.photoURL} style={styles.fakeCommentAvatar} />
                 ) : (
                   <View style={styles.fakeCommentAvatarPlaceholder}>
                     <Text style={styles.fakeCommentAvatarText}>{getUserInitials(currentUser.displayName || 'U')}</Text>
@@ -1271,7 +1506,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
           {currentUser && (
             <View style={[styles.commentsModalInputArea, { paddingBottom: Math.max(insets.bottom, 25) }]}>
               {currentUser.photoURL ? (
-                <Image source={{ uri: currentUser.photoURL }} style={styles.fakeCommentAvatar} />
+                <CachedImage uri={currentUser.photoURL} style={styles.fakeCommentAvatar} />
               ) : (
                 <View style={styles.fakeCommentAvatarPlaceholder}>
                   <Text style={styles.fakeCommentAvatarText}>{getUserInitials(currentUser.displayName || 'U')}</Text>
@@ -1599,6 +1834,44 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     borderRadius: 25,
     gap: 8,
   },
+  relatedSection: {
+    paddingBottom: 20,
+    backgroundColor: themeColors.background,
+  },
+  relatedScroll: {
+    paddingTop: 12,
+    gap: 16,
+  },
+  relatedCard: {
+    width: 120,
+  },
+  relatedCover: {
+    width: 120,
+    height: 180,
+    borderRadius: 8,
+    marginBottom: 8,
+    backgroundColor: themeColors.card,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  relatedTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: themeColors.text,
+    marginBottom: 2,
+  },
+  relatedAuthor: {
+    fontSize: 12,
+    color: themeColors.textSecondary,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  fallbackTitle: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: themeColors.text,
+    textAlign: 'center',
+    padding: 8,
+  },
   readButtonText: {
     color: '#fff',
     fontSize: 16,
@@ -1678,6 +1951,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   sectionTitle: {
     fontSize: 18,
     fontWeight: 'bold' as const,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
     color: themeColors.text,
     marginBottom: 12,
   },

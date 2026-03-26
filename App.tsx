@@ -36,6 +36,10 @@ import { initializeAnalytics, trackScreenView, setUserId, cleanupAnalytics } fro
 import { checkAppVersion, AppConfig } from './src/utils/VersionCheck-utils';
 import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
+import { navigationRef } from './src/utils/navigation';
+import { ensureInitialized } from './src/utils/cache';
+import * as Notifications from 'expo-notifications';
+import { usePushNotifications } from './src/hooks/usePushNotifications';
 
 const Stack = createStackNavigator<RootStackParamList>();
 
@@ -56,10 +60,15 @@ function AppContent() {
   const routeNameRef = React.useRef<string>('');
   const [forceUpdateConfig, setForceUpdateConfig] = React.useState<AppConfig | null>(null);
   const [isCheckingUpdate, setIsCheckingUpdate] = React.useState(false);
+  const [isCacheReady, setIsCacheReady] = React.useState(false);
 
-  // Initialize analytics when app loads
+  // Initialize push notifications
+  usePushNotifications();
+
+  // Initialize analytics and cache when app loads
   useEffect(() => {
     initializeAnalytics(currentUser?.uid);
+    ensureInitialized().then(() => setIsCacheReady(true));
 
     return () => {
       cleanupAnalytics();
@@ -213,8 +222,8 @@ function AppContent() {
     );
   }
 
-  // Show loading screen while checking auth state
-  if (loading) {
+  // Show loading screen while checking auth state or cache
+  if (loading || !isCacheReady) {
     return (
       <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
         <ActivityIndicator size="large" color={colors.primary} />
@@ -436,6 +445,37 @@ export default function App() {
       'https://www.novlnest.com', 
       'https://auth.expo.io'
     ],
+    async getInitialURL() {
+      // 1. Check if the app was opened by a deep link
+      const url = await Linking.getInitialURL();
+      if (url != null) return url;
+
+      // 2. Check if the app was opened by a push notification
+      const response = await Notifications.getLastNotificationResponseAsync();
+      const notificationUrl = response?.notification.request.content.data?.url;
+      if (typeof notificationUrl === 'string') return notificationUrl;
+
+      return null;
+    },
+    subscribe(listener) {
+      const onReceiveURL = ({ url }: { url: string }) => listener(url);
+
+      // Listen to deep link events
+      const linkingSubscription = Linking.addEventListener('url', onReceiveURL);
+
+      // Listen to push notification events
+      const notificationSubscription = Notifications.addNotificationResponseReceivedListener(response => {
+        const url = response.notification.request.content.data?.url;
+        if (typeof url === 'string') {
+          listener(url);
+        }
+      });
+
+      return () => {
+        linkingSubscription.remove();
+        notificationSubscription.remove();
+      };
+    },
     config: {
       screens: {
         MainTabs: {
@@ -444,6 +484,7 @@ export default function App() {
             Browse: 'browse',
             Library: 'library',
             Submit: 'submit',
+            Messages: 'messages/:userId?',
           }
         },
         NovelOverview: 'novel/:id',
@@ -452,9 +493,7 @@ export default function App() {
         PoemReader: 'poem/:id/read',
         Profile: 'profile/:userId',
         Notifications: 'notifications',
-        Messages: 'messages',
         Settings: 'settings',
-        EmailAction: 'auth-action',
         PaymentCallback: 'PaymentCallback',
         PromoteScreen: 'promote',
       },
@@ -468,6 +507,7 @@ export default function App() {
           <ChatProvider>
             <NotificationProvider>
               <NavigationContainer<RootStackParamList>
+                ref={navigationRef}
                 linking={linking}
                 onStateChange={(state) => {
                   const currentRouteName = getActiveRouteName(state);

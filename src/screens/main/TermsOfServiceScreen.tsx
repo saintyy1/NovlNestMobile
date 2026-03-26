@@ -156,7 +156,7 @@ const TermsOfServiceScreen = () => {
             <Ionicons name="mail" size={24} color={colors.primary} />
             <View style={styles.contactInfo}>
               <Text style={styles.contactLabel}>Email</Text>
-              <Text style={styles.contactValue}>n0velnest999@gmail.com</Text>
+              <Text style={styles.contactValue}>info@novlnest.com</Text>
             </View>
           </View>
         </Section>

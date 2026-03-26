@@ -12,7 +12,9 @@ import {
   Alert,
 } from 'react-native';
 import CachedImage from '../../components/CachedImage';
+import ClassicsBadge from '../../components/ClassicsBadge';
 import { Ionicons } from '@expo/vector-icons';
+
 import { collection, query, orderBy, limit, getDocs, where, updateDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import type { Novel } from '../../types/novel';
@@ -23,6 +25,7 @@ import { spacing, typography } from '../../theme';
 import { sendPromotionEndedNotification } from "../../services/notificationServices";
 import { getReadingProgress, ReadingProgress, deleteReadingProgress } from '../../services/readingProgressService';
 import { useAuth } from '../../contexts/AuthContext';
+import { withCache, CACHE_TTL } from '../../utils/cache';
 
 interface BannerSlide {
   id: string
@@ -39,6 +42,7 @@ export const HomeScreen = ({ navigation }: any) => {
   const [trendingNovels, setTrendingNovels] = useState<Novel[]>([]);
   const [trendingPoems, setTrendingPoems] = useState<Poem[]>([]);
   const [newReleases, setNewReleases] = useState<Novel[]>([]);
+  const [timelessStories, setTimelessStories] = useState<Novel[]>([]);
   const [loading, setLoading] = useState(true);
   const [imageErrors, setImageErrors] = useState<Record<string, boolean>>({});
   const [banners, setBanners] = useState<BannerSlide[]>([])
@@ -49,30 +53,29 @@ export const HomeScreen = ({ navigation }: any) => {
   const styles = getStyles(colors);
 
   useEffect(() => {
-    const q = query(
-      collection(db, "banners"),
-      where("isActive", "==", true),
-      orderBy("priority", "asc")
-    )
-
-    const unsubscribe = onSnapshot(q, snapshot => {
-      const data = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-      })) as BannerSlide[]
-
-      setBanners(data)
-      setLoadingBanners(false)
-    }, (error) => {
-      if (error.code === 'permission-denied') {
-        console.log('Permission denied in banners listener (likely logout)');
-      } else {
-        console.error('Error listening to banners:', error);
+    const fetchBanners = async () => {
+      try {
+        const bannersData = await withCache('home_banners', async () => {
+          const q = query(
+            collection(db, "banners"),
+            where("isActive", "==", true),
+            orderBy("priority", "asc")
+          )
+          const snapshot = await getDocs(q)
+          return snapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data(),
+          })) as BannerSlide[]
+        }, CACHE_TTL.FEED)
+        
+        setBanners(bannersData)
+      } catch (error: any) {
+        if (error.code !== 'permission-denied') console.error('Error fetching banners:', error)
+      } finally {
+        setLoadingBanners(false)
       }
-      setLoadingBanners(false);
-    })
-
-    return () => unsubscribe()
+    }
+    fetchBanners()
   }, [])
 
   useEffect(() => {
@@ -89,11 +92,46 @@ export const HomeScreen = ({ navigation }: any) => {
       limit(10)
     );
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const progress = snapshot.docs.map(doc => ({
-        ...doc.data(),
-      } as ReadingProgress));
-      setReadingProgress(progress);
+    const unsubscribe = onSnapshot(q, async (snapshot) => {
+      const finishedIds = currentUser.finishedReads || [];
+      const rawProgress = snapshot.docs.map(doc => ({ ...doc.data() } as ReadingProgress));
+      
+      const filteredProgress = rawProgress.filter(p => !finishedIds.includes(p.novelId));
+
+      if (filteredProgress.length === 0) {
+        setReadingProgress([]);
+        return;
+      }
+
+      const novelIds = [...new Set(filteredProgress.map(p => p.novelId))];
+
+      try {
+        const novelsRef = collection(db, 'novels');
+        const novelsQuery = query(novelsRef, where('__name__', 'in', novelIds));
+        const novelsSnapshot = await getDocs(novelsQuery);
+
+        const existingNovelIds = new Set(
+          novelsSnapshot.docs
+            .filter(doc => doc.data()?.published === true)
+            .map(doc => doc.id)
+        );
+
+        const finalProgress = filteredProgress.filter(p => existingNovelIds.has(p.novelId));
+
+        // Clean up deleted/unpublished novels from DB
+        const missingIds = novelIds.filter(id => !existingNovelIds.has(id));
+        for (const missingId of missingIds) {
+          // Fire and forget deletion
+          deleteReadingProgress(currentUser.uid, missingId).catch(err => 
+            console.error('Error auto-cleaning progress:', err)
+          );
+        }
+
+        setReadingProgress(finalProgress);
+      } catch (error) {
+        console.error('Error checking novels availability:', error);
+        setReadingProgress(filteredProgress);
+      }
     }, (error) => {
       if (error.code === 'permission-denied') {
         console.log('Permission denied in reading progress listener (likely logout)');
@@ -142,7 +180,6 @@ export const HomeScreen = ({ navigation }: any) => {
 
     return colorMap[genres[0]] || colors.textSecondary;
   };
-
   const getFirebaseDownloadUrl = (url: string) => {
     if (!url || !url.includes('firebasestorage')) {
       return url;
@@ -159,134 +196,158 @@ export const HomeScreen = ({ navigation }: any) => {
     }
   };
 
+
   useEffect(() => {
-    const novelsRef = collection(db, 'novels');
-    const q = query(
-      novelsRef,
-      where('isPromoted', '==', true),
-      where('published', '==', true),
-      orderBy("createdAt", "desc"),
-      limit(7)
-    );
+    const fetchPromoted = async () => {
+      try {
+        const promotionalData = await withCache('home_promotional', async () => {
+          const novelsRef = collection(db, 'novels');
+          const q = query(
+            novelsRef,
+            where('isPromoted', '==', true),
+            where('published', '==', true),
+            orderBy("createdAt", "desc"),
+            limit(7)
+          );
+          const snapshot = await getDocs(q);
+          const dataList: Novel[] = [];
+          const now = new Date();
 
-    const unsubscribe = onSnapshot(q, async (snapshot) => {
-      const promotionalData: Novel[] = [];
-      const now = new Date();
+          for (const docSnap of snapshot.docs) {
+            const data = docSnap.data() as any;
+            const endDate = data.promotionEndDate?.toDate?.() || data.promotionEndDate;
 
-      for (const docSnap of snapshot.docs) {
-        const data = docSnap.data() as any;
-        const endDate = data.promotionEndDate?.toDate?.() || data.promotionEndDate;
-
-        if (endDate && endDate < now) {
-          if (!data.promotionEndNotificationSent) {
-            try {
-              await sendPromotionEndedNotification(data.authorId, docSnap.id, data.title);
-            } catch (error) {
-              console.error("Error sending promotion ended notification:", error);
+            if (endDate && endDate < now) {
+              if (!data.promotionEndNotificationSent) {
+                try {
+                  await sendPromotionEndedNotification(data.authorId, docSnap.id, data.title);
+                } catch (error) {}
+              }
+              await updateDoc(docSnap.ref, {
+                isPromoted: false,
+                promotionStartDate: null,
+                promotionEndDate: null,
+                reference: null,
+                promotionPlan: null,
+                promotionEndNotificationSent: true
+              });
+            } else {
+              dataList.push({ id: docSnap.id, ...data } as Novel);
             }
           }
-          await updateDoc(docSnap.ref, {
-            isPromoted: false,
-            promotionStartDate: null,
-            promotionEndDate: null,
-            reference: null,
-            promotionPlan: null,
-            promotionEndNotificationSent: true
+          return dataList;
+        }, CACHE_TTL.FEED);
+        setPromotedNovels(promotionalData);
+      } catch (error: any) {
+        if (error.code !== 'permission-denied') console.error('Error fetching promoted:', error);
+      }
+    };
+    fetchPromoted();
+  }, []);
+
+  useEffect(() => {
+    const fetchTrending = async () => {
+      try {
+        const trendingData = await withCache('home_trending', async () => {
+          const novelsRef = collection(db, 'novels');
+          const q = query(
+            novelsRef,
+            where('published', '==', true),
+            orderBy('views', 'desc')
+          );
+          const snapshot = await getDocs(q);
+          const novels: Novel[] = [];
+          snapshot.forEach((doc) => {
+            const novelData = { id: doc.id, ...doc.data() } as Novel;
+            if (!novelData.isPromoted && !novelData.publicDomain) {
+              novels.push(novelData);
+            }
           });
-        } else {
-          promotionalData.push({ id: docSnap.id, ...data } as Novel);
-        }
+          return novels.slice(0, 7);
+        }, CACHE_TTL.FEED);
+        setTrendingNovels(trendingData);
+      } catch (error: any) {
+        if (error.code !== 'permission-denied') console.error('Error fetching trending novels:', error);
       }
-      setPromotedNovels(promotionalData);
-    }, (error) => {
-      if (error.code === 'permission-denied') {
-        console.log('Permission denied in promoted novels listener (likely logout)');
-      } else {
-        console.error('Error in promoted novels listener:', error);
-      }
-    });
-
-    return () => unsubscribe();
+    };
+    fetchTrending();
   }, []);
 
   useEffect(() => {
-    const novelsRef = collection(db, 'novels');
-    const q = query(novelsRef, where('published', '==', true), orderBy('views', 'desc'));
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const novels: Novel[] = [];
-      snapshot.forEach((doc) => {
-        const novelData = { id: doc.id, ...doc.data() } as Novel;
-        if (!novelData.isPromoted) {
-          novels.push(novelData);
-        }
-      });
-      setTrendingNovels(novels.slice(0, 7));
-    }, (error) => {
-      if (error.code === 'permission-denied') {
-        console.log('Permission denied in trending novels listener (likely logout)');
-      } else {
-        console.error('Error in trending novels listener:', error);
+    const fetchNewReleases = async () => {
+      try {
+        const newReleasesData = await withCache('home_new_releases', async () => {
+          const novelsRef = collection(db, 'novels');
+          const q = query(novelsRef, where('published', '==', true), where('publicDomain', '==', false), orderBy('createdAt', 'desc'), limit(7));
+          const snapshot = await getDocs(q);
+          return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Novel));
+        }, CACHE_TTL.FEED);
+        setNewReleases(newReleasesData);
+      } catch (error: any) {
+        if (error.code !== 'permission-denied') console.error('Error fetching new releases:', error);
       }
-    });
+    };
+    fetchNewReleases();
+  }, []);
 
-    return () => unsubscribe();
+  // For Timeless Stories
+  useEffect(() => {
+    const fetchTimeless = async () => {
+      try {
+        const timelessData = await withCache('home_timeless', async () => {
+          const novelsRef = collection(db, 'novels');
+          const q = query(novelsRef, where('published', '==', true), where('publicDomain', '==', true), orderBy('createdAt', 'desc'), limit(7));
+          const snapshot = await getDocs(q);
+          return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Novel));
+        }, CACHE_TTL.FEED);
+        setTimelessStories(timelessData);
+      } catch (error: any) {
+        if (error.code !== 'permission-denied') console.error('Error fetching timeless stories:', error);
+      }
+    };
+    fetchTimeless();
   }, []);
 
   useEffect(() => {
-    const novelsRef = collection(db, 'novels');
-    const q = query(novelsRef, where('published', '==', true), orderBy('createdAt', 'desc'), limit(7));
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const novels: Novel[] = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Novel));
-      setNewReleases(novels);
-    }, (error) => {
-      if (error.code === 'permission-denied') {
-        console.log('Permission denied in new releases listener (likely logout)');
-      } else {
-        console.error('Error in new releases listener:', error);
+    const fetchPoems = async () => {
+      try {
+        const poemsData = await withCache('home_trending_poems', async () => {
+          const poemsRef = collection(db, 'poems');
+          const q = query(
+            poemsRef,
+            where('published', '==', true),
+            orderBy('views', 'desc'),
+            limit(7)
+          );
+          const snapshot = await getDocs(q);
+          return snapshot.docs.map(doc => {
+            const data = doc.data();
+            return {
+              id: doc.id,
+              title: data.title || 'Untitled',
+              poetName: data.poetName || 'Unknown',
+              description: data.description || '',
+              content: data.content || '',
+              genres: data.genres || [],
+              poetId: data.poetId || '',
+              published: data.published || false,
+              createdAt: data.createdAt || '',
+              updatedAt: data.updatedAt || '',
+              likes: data.likes || 0,
+              views: data.views || 0,
+              coverImage: data.coverImage,
+              coverSmallImage: data.coverSmallImage,
+            } as Poem;
+          });
+        }, CACHE_TTL.FEED);
+        setTrendingPoems(poemsData);
+      } catch (error: any) {
+        if (error.code !== 'permission-denied') console.error('Error fetching trending poems:', error);
+      } finally {
+        setLoading(false);
       }
-    });
-
-    return () => unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    const poemsRef = collection(db, 'poems');
-    const q = query(poemsRef, where('published', '==', true), orderBy('views', 'desc'), limit(7));
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const poems: Poem[] = snapshot.docs.map(doc => {
-        const data = doc.data();
-        return {
-          id: doc.id,
-          title: data.title || 'Untitled',
-          poetName: data.poetName || 'Unknown',
-          description: data.description || '',
-          content: data.content || '',
-          genres: data.genres || [],
-          poetId: data.poetId || '',
-          published: data.published || false,
-          createdAt: data.createdAt || '',
-          updatedAt: data.updatedAt || '',
-          likes: data.likes || 0,
-          views: data.views || 0,
-          coverImage: data.coverImage,
-          coverSmallImage: data.coverSmallImage,
-        } as Poem;
-      });
-      setTrendingPoems(poems);
-      setLoading(false);
-    }, (error) => {
-      if (error.code === 'permission-denied') {
-        console.log('Permission denied in trending poems listener (likely logout)');
-      } else {
-        console.error('Error in trending poems listener:', error);
-      }
-      setLoading(false);
-    });
-
-    return () => unsubscribe();
+    };
+    fetchPoems();
   }, []);
 
   const handleImageError = (novelId: string) => {
@@ -312,24 +373,30 @@ export const HomeScreen = ({ navigation }: any) => {
         style={styles.novelCard}
         onPress={() => { navigation.navigate('NovelOverview', { novelId: novel.id }); }}
       >
-        {hasImage ? (
-          <CachedImage
-            uri={getFirebaseDownloadUrl(novel.coverSmallImage || novel.coverImage || '')}
-            style={styles.novelCover}
-            onError={() => handleImageError(novel.id)}
-            resizeMode="cover"
-          />
-        ) : (
-          <View style={[styles.novelCover, { backgroundColor: getGenreColor(novel.genres) }]}>
-            <Text style={styles.fallbackTitle} numberOfLines={3}>
-              {novel.title}
-            </Text>
-            <View style={styles.fallbackDivider} />
-            <Text style={styles.fallbackAuthor} numberOfLines={1}>
-              {novel.authorName}
-            </Text>
-          </View>
-        )}
+        <View>
+          {hasImage ? (
+            <CachedImage
+              uri={getFirebaseDownloadUrl(novel.coverSmallImage || novel.coverImage || '')}
+              style={styles.novelCover}
+              onError={() => handleImageError(novel.id)}
+              resizeMode="cover"
+              placeholderColor={colors.backgroundSecondary}
+            />
+          ) : (
+            <View style={[styles.novelCover, { backgroundColor: getGenreColor(novel.genres) }]}>
+              <Text style={styles.fallbackTitle} numberOfLines={3}>
+                {novel.title}
+              </Text>
+              <View style={styles.fallbackDivider} />
+              <Text style={styles.fallbackAuthor} numberOfLines={1}>
+                {novel.authorName}
+              </Text>
+            </View>
+          )}
+          {novel.publicDomain && (
+            <ClassicsBadge style={styles.cardBadge} />
+          )}
+        </View>
         <View style={styles.novelStats}>
           <View style={styles.novelStat}>
             <Ionicons name="eye" size={14} color={colors.textSecondary} />
@@ -355,24 +422,29 @@ export const HomeScreen = ({ navigation }: any) => {
           navigation.navigate('PoemOverview', { poemId: poem.id });
         }}
       >
-        {hasImage ? (
-          <CachedImage
-            uri={getFirebaseDownloadUrl(poem.coverSmallImage || poem.coverImage || '')}
-            style={styles.novelCover}
-            onError={() => handleImageError(poem.id)}
-            resizeMode="cover"
-          />
-        ) : (
-          <View style={[styles.novelCover, { backgroundColor: getGenreColor(poem.genres) }]}>
-            <Text style={styles.fallbackTitle} numberOfLines={3}>
-              {poem.title}
-            </Text>
-            <View style={styles.fallbackDivider} />
-            <Text style={styles.fallbackAuthor} numberOfLines={1}>
-              {poem.poetName}
-            </Text>
-          </View>
-        )}
+        <View>
+          {hasImage ? (
+            <CachedImage
+              uri={getFirebaseDownloadUrl(poem.coverSmallImage || poem.coverImage || '')}
+              style={styles.novelCover}
+              onError={() => handleImageError(poem.id)}
+              resizeMode="cover"
+            />
+          ) : (
+            <View style={[styles.novelCover, { backgroundColor: getGenreColor(poem.genres) }]}>
+              <Text style={styles.fallbackTitle} numberOfLines={3}>
+                {poem.title}
+              </Text>
+              <View style={styles.fallbackDivider} />
+              <Text style={styles.fallbackAuthor} numberOfLines={1}>
+                {poem.poetName}
+              </Text>
+            </View>
+          )}
+          {poem.publicDomain && (
+            <ClassicsBadge style={styles.cardBadge} />
+          )}
+        </View>
         <View style={styles.novelStats}>
           <View style={styles.novelStat}>
             <Ionicons name="eye" size={14} color={colors.textSecondary} />
@@ -535,6 +607,25 @@ export const HomeScreen = ({ navigation }: any) => {
 
       <View style={styles.section}>
         <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Timeless Stories</Text>
+        </View>
+        {timelessStories.length > 0 ? (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.horizontalScroll}
+          >
+            {timelessStories.map(renderNovelCard)}
+          </ScrollView>
+        ) : (
+          <View style={styles.emptySection}>
+            <Text style={styles.emptyText}>No timeless stories at the moment</Text>
+          </View>
+        )}
+      </View>
+
+      <View style={styles.section}>
+        <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Poetry</Text>
         </View>
         {trendingPoems.length > 0 ? (
@@ -636,6 +727,13 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: spacing.sm,
+  },
+  cardBadge: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    zIndex: 1,
+    transform: [{ scale: 0.8 }],
   },
   novelStats: {
     flexDirection: 'row',

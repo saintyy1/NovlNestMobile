@@ -40,4 +40,5 @@ export interface Novel {
     title: string;
     content: string;
   };
+  publicDomain?: boolean;
 }

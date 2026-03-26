@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import CachedImage from './CachedImage';
 import { doc, getDoc, updateDoc, arrayRemove } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { useAuth } from '../contexts/AuthContext';
@@ -172,7 +173,7 @@ const UserListDrawer: React.FC<UserListDrawerProps> = ({
       >
         <View style={styles.avatarContainer}>
           {item.photoURL ? (
-            <Image source={{ uri: item.photoURL }} style={styles.avatar} />
+            <CachedImage uri={item.photoURL} style={styles.avatar} />
           ) : (
             <View style={styles.avatarPlaceholder}>
               <Text style={styles.avatarText}>{getUserInitials(item.displayName)}</Text>

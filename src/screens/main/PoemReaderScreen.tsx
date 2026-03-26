@@ -12,13 +12,15 @@ import {
     Alert,
     Share as RNShare,
 } from 'react-native';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, increment } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import type { Poem } from '../../types/poem';
+import { withCache, CACHE_TTL, invalidateCache } from '../../utils/cache';
 import Icon from '@expo/vector-icons/Ionicons';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../../types/navigation';
@@ -66,38 +68,62 @@ const PoemReaderScreen = ({ route, navigation }: Props) => {
         }
 
         try {
-            const poemDoc = await getDoc(doc(db, 'poems', id));
-            if (poemDoc.exists()) {
-                const data = poemDoc.data();
-                const poemData: Poem = {
-                    id: poemDoc.id,
-                    title: data.title || 'Untitled',
-                    description: data.description || '',
-                    content: data.content || '',
-                    genres: data.genres || [],
-                    poetId: data.poetId || '',
-                    poetName: data.poetName || 'Unknown',
-                    isPromoted: data.isPromoted || false,
-                    published: data.published || false,
-                    createdAt: data.createdAt || '',
-                    updatedAt: data.updatedAt || '',
-                    likes: data.likes || 0,
-                    views: data.views || 0,
-                    likedBy: data.likedBy || [],
-                    rating: data.rating || 0,
-                    ratingCount: data.ratingCount || 0,
-                    coverImage: data.coverImage || null,
-                    coverSmallImage: data.coverSmallImage || null,
-                };
+            const poemData = await withCache(`poem_${id}`, async () => {
+                const poemDoc = await getDoc(doc(db, 'poems', id));
+                if (poemDoc.exists()) {
+                    const data = poemDoc.data();
+                    return {
+                        id: poemDoc.id,
+                        title: data.title || 'Untitled',
+                        description: data.description || '',
+                        content: data.content || '',
+                        genres: data.genres || [],
+                        poetId: data.poetId || '',
+                        poetName: data.poetName || 'Unknown',
+                        isPromoted: data.isPromoted || false,
+                        published: data.published || false,
+                        createdAt: data.createdAt || '',
+                        updatedAt: data.updatedAt || '',
+                        likes: data.likes || 0,
+                        views: data.views || 0,
+                        likedBy: data.likedBy || [],
+                        rating: data.rating || 0,
+                        ratingCount: data.ratingCount || 0,
+                        coverImage: data.coverImage || null,
+                        coverSmallImage: data.coverSmallImage || null,
+                        publicDomain: data.publicDomain || false,
+                    } as Poem;
+                }
+                throw new Error('Poem not found');
+            }, CACHE_TTL.CONTENT);
 
-                setPoem(poemData);
-            } else {
-                Alert.alert('Not Found', 'This poem could not be found.');
-                setLoading(false);
+            setPoem(poemData);
+
+            if (currentUser) {
+                // Increment view count only once per user
+                const viewKey = `poem_view_${id}_${currentUser.uid}`;
+                const hasViewed = await AsyncStorage.getItem(viewKey);
+
+                if (!hasViewed) {
+                    try {
+                        const poemDocRef = doc(db, 'poems', id);
+                        await updateDoc(poemDocRef, { views: increment(1) });
+                        await AsyncStorage.setItem(viewKey, 'true');
+                        // Invalidate cache immediately
+                        await invalidateCache(`poem_${id}`);
+                        setPoem(prev => prev ? { ...prev, views: (prev.views || 0) + 1 } : null);
+                    } catch (viewError) {
+                        console.error('Error incrementing view count in reader:', viewError);
+                    }
+                }
             }
-        } catch (error) {
-            console.error('Error fetching poem:', error);
-            Alert.alert('Error', 'Failed to load poem. Please try again.');
+        } catch (error: any) {
+            if (error.message === 'Poem not found') {
+                Alert.alert('Not Found', 'This poem could not be found.');
+            } else {
+                console.error('Error fetching poem:', error);
+                Alert.alert('Error', 'Failed to load poem. Please try again.');
+            }
             setLoading(false);
         } finally {
             setLoading(false);
@@ -143,6 +169,8 @@ const PoemReaderScreen = ({ route, navigation }: Props) => {
             setIsFollowing(!isFollowing);
             
             await toggleFollow(poem.poetId, isFollowing);
+            // Invalidate profile cache
+            await invalidateCache(`profile_user_${poem.poetId}`);
             
         } catch (error) {
             console.error('Error toggling follow:', error);
@@ -248,7 +276,7 @@ const PoemReaderScreen = ({ route, navigation }: Props) => {
                     </View>
 
                     {/* Follow Prompt */}
-                    {currentUser && poem?.poetId !== currentUser.uid && !isFollowing && (
+                    {currentUser && poem?.poetId !== currentUser.uid && !isFollowing && !poem.publicDomain && (
                         <View style={[styles.followPromptContainer, { backgroundColor: colors.surface, borderColor: colors.border }]}>
                             <Text style={[styles.followPromptText, { color: colors.textSecondary }]}>
                                 Enjoying the poem? Follow <Text style={[styles.followPromptAuthor, { color: colors.text }]}>{poem?.poetName}</Text>

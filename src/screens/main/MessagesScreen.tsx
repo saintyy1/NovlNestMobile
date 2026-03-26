@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 // SafeAreaView removed - using View instead to allow header to extend under status bar
 import { SafeAreaView } from 'react-native-safe-area-context';
+import CachedImage from '../../components/CachedImage';
 import { Ionicons } from '@expo/vector-icons';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase/config';
@@ -22,6 +23,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useChat, ChatConversation, ChatMessage } from '../../contexts/ChatContext';
 import { useNotifications } from '../../contexts/NotificationContext';
+import { sendPushNotification } from '../../services/PushNotificationService';
 
 // User Avatar Component
 const UserAvatar = ({ navigation, currentUser, colors }: any) => {
@@ -38,8 +40,8 @@ const UserAvatar = ({ navigation, currentUser, colors }: any) => {
       }}
     >
       {currentUser?.photoURL && !imageError ? (
-        <Image
-          source={{ uri: currentUser.photoURL }}
+        <CachedImage
+          uri={currentUser.photoURL}
           style={{ width: '100%', height: '100%' }}
           onError={() => setImageError(true)}
         />
@@ -238,6 +240,14 @@ export const MessagesScreen = ({ navigation, route }: any) => {
       await sendMessage(receiverId, messageInput.trim(), 'text');
       setMessageInput('');
 
+      // Send Push Notification
+      await sendPushNotification(
+        receiverId,
+        `${currentUser.displayName || 'Someone'} ✉️`,
+        messageInput.trim(),
+        { url: `novlnest://messages/${currentUser.uid}` }
+      );
+
       // Scroll to bottom after sending
       setTimeout(() => {
         flatListRef.current?.scrollToEnd({ animated: true });
@@ -349,7 +359,7 @@ export const MessagesScreen = ({ navigation, route }: any) => {
       >
         <View style={styles.avatarContainer}>
           {user?.photoURL ? (
-            <Image source={{ uri: user.photoURL }} style={styles.avatar} />
+            <CachedImage uri={user.photoURL} style={styles.avatar} />
           ) : (
             <View style={styles.avatarPlaceholder}>
               <Text style={styles.avatarText}>
@@ -564,7 +574,7 @@ export const MessagesScreen = ({ navigation, route }: any) => {
             onPress={() => navigation.navigate('Profile', { userId: otherParticipant })}
           >
             {otherUser?.photoURL ? (
-              <Image source={{ uri: otherUser.photoURL }} style={styles.chatHeaderAvatar} />
+              <CachedImage uri={otherUser.photoURL} style={styles.chatHeaderAvatar} />
             ) : (
               <View style={styles.chatHeaderAvatarPlaceholder}>
                 <Text style={styles.chatHeaderAvatarText}>

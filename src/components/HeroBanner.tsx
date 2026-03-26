@@ -184,16 +184,10 @@ const HeroBanner = ({ slides, autoSlideInterval = 4000 }: HeroBannerProps) => {
                   style={styles.slideButton}
                   activeOpacity={0.9}
                 >
-                  {!loadedImages[slide.id] && (
-                    <View style={[styles.loadingPlaceholder, { backgroundColor: colors.backgroundSecondary }]}>
-                      <ActivityIndicator size="small" color={colors.primary} />
-                    </View>
-                  )}
-                  <Image
-                    source={{ uri: slide.imageUrl }}
-                    style={[styles.image, !loadedImages[slide.id] && styles.hiddenImage]}
+                  <CachedImage
+                    uri={slide.imageUrl}
+                    style={styles.image}
                     resizeMode="cover"
-                    onLoad={() => handleImageLoad(slide.id)}
                   />
                   <View style={styles.overlay} />
                 </TouchableOpacity>
@@ -240,16 +234,10 @@ const HeroBanner = ({ slides, autoSlideInterval = 4000 }: HeroBannerProps) => {
                 activeOpacity={0.9}
               >
                 <View style={[styles.mobileSlideInner, { backgroundColor: colors.backgroundSecondary }]}>
-                  {!loadedImages[slide.id] && (
-                    <View style={[styles.loadingPlaceholder, { backgroundColor: colors.backgroundSecondary }]}>
-                      <ActivityIndicator size="small" color={colors.primary} />
-                    </View>
-                  )}
-                  <Image
-                    source={{ uri: slide.imageUrl }}
-                    style={[styles.image, !loadedImages[slide.id] && styles.hiddenImage]}
+                  <CachedImage
+                    uri={slide.imageUrl}
+                    style={styles.image}
                     resizeMode="cover"
-                    onLoad={() => handleImageLoad(slide.id)}
                   />
                   <View style={styles.overlay} />
                 </View>

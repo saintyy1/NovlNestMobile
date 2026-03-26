@@ -30,6 +30,7 @@ import type { Poem } from '../../types/poem';
 import { useTheme } from '../../contexts/ThemeContext';
 import { spacing, typography } from '../../theme';
 import { trackSearch } from '../../utils/Analytics-utils';
+import { withCache, CACHE_TTL } from '../../utils/cache';
 
 const NOVEL_GENRES = [
   'All',
@@ -80,6 +81,7 @@ export const BrowseScreen = () => {
   const [novels, setNovels] = useState<Novel[]>([]);
   const [poems, setPoems] = useState<Poem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [isClassics, setIsClassics] = useState(false);
   const [imageErrors, setImageErrors] = useState<Record<string, boolean>>({});
 
   const styles = getStyles(colors);
@@ -93,6 +95,7 @@ export const BrowseScreen = () => {
     const params = route.params as any;
     if (params?.resetBrowseType) {
       setBrowseType(null);
+      setIsClassics(false);
       // Clear the param after resetting
       setTimeout(() => {
         navigation.setParams({ resetBrowseType: undefined } as any);
@@ -103,16 +106,22 @@ export const BrowseScreen = () => {
     if (params?.selectedGenre && params?.browseType) {
       setBrowseType(params.browseType);
       setSelectedGenre(params.selectedGenre);
+      setIsClassics(params.isClassics || false);
       // Clear params after setting
       setTimeout(() => {
-        navigation.setParams({ selectedGenre: undefined, browseType: undefined } as any);
+        navigation.setParams({ selectedGenre: undefined, browseType: undefined, isClassics: undefined } as any);
       }, 100);
     }
   }, [route.params]);
 
   // Update header based on browse type
   useEffect(() => {
-    if (browseType === 'novels') {
+    if (isClassics) {
+      navigation.setOptions({
+        title: 'Timeless Collection',
+      });
+      navigation.setParams({ showBackButton: true } as any);
+    } else if (browseType === 'novels') {
       navigation.setOptions({
         title: 'Browse Novels',
       });
@@ -128,7 +137,7 @@ export const BrowseScreen = () => {
       });
       navigation.setParams({ showBackButton: false } as any);
     }
-  }, [browseType, navigation]);
+  }, [browseType, isClassics, navigation]);
 
   // Reset filters when browse type changes
   useEffect(() => {
@@ -140,109 +149,124 @@ export const BrowseScreen = () => {
   useEffect(() => {
     if (!browseType) return;
 
-    setLoading(true);
-    const collectionName = browseType === 'novels' ? 'novels' : 'poems';
-    const collectionRef = collection(db, collectionName);
-    const queryConstraints: QueryConstraint[] = [where('published', '==', true)];
+    const fetchBrowseData = async () => {
+      setLoading(true);
+      const collectionName = browseType === 'novels' ? 'novels' : 'poems';
+      const collectionRef = collection(db, collectionName);
+      const queryConstraints: QueryConstraint[] = [where('published', '==', true)];
 
-    if (selectedGenre !== 'All') {
-      queryConstraints.push(where('genres', 'array-contains', selectedGenre));
-    }
+      if (isClassics) {
+        queryConstraints.push(where('publicDomain', '==', true));
+      }
 
-    switch (selectedFilter) {
-      case 'Trending':
-        queryConstraints.push(orderBy('views', 'desc'));
-        break;
-      case 'New':
-        queryConstraints.push(orderBy('createdAt', 'desc'));
-        break;
-      case 'Likes':
-        queryConstraints.push(orderBy('likes', 'desc'));
-        break;
-      case 'Completed':
-        if (browseType === 'novels') {
-          queryConstraints.push(where('status', '==', 'completed'));
+      if (selectedGenre !== 'All') {
+        queryConstraints.push(where('genres', 'array-contains', selectedGenre));
+      }
+
+      switch (selectedFilter) {
+        case 'Trending':
+          queryConstraints.push(orderBy('views', 'desc'));
+          break;
+        case 'New':
           queryConstraints.push(orderBy('createdAt', 'desc'));
-        }
-        break;
-    }
-
-    const q = query(collectionRef, ...queryConstraints);
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      let data: any[] = [];
-      snapshot.forEach((doc) => {
-        const itemData = doc.data();
-        if (browseType === 'novels') {
-          data.push({
-            id: doc.id,
-            title: itemData.title || 'Untitled',
-            authorName: itemData.authorName || 'Unknown',
-            summary: itemData.summary || '',
-            coverImage: itemData.coverImage,
-            coverSmallImage: itemData.coverSmallImage,
-            views: itemData.views || 0,
-            likes: itemData.likes || 0,
-            genres: itemData.genres || [],
-          } as Novel);
-        } else {
-          data.push({
-            id: doc.id,
-            title: itemData.title || 'Untitled',
-            poetName: itemData.poetName || 'Unknown',
-            coverImage: itemData.coverImage,
-            coverSmallImage: itemData.coverSmallImage,
-            content: itemData.content || '',
-            views: itemData.views || 0,
-            likes: itemData.likes || 0,
-            genres: itemData.genres || [],
-          } as Poem);
-        }
-      });
-
-      if (searchQuery.trim()) {
-        const searchLower = searchQuery.toLowerCase();
-        data = data.filter((item) => {
+          break;
+        case 'Likes':
+          queryConstraints.push(orderBy('likes', 'desc'));
+          break;
+        case 'Completed':
           if (browseType === 'novels') {
-            return (
-              item.title.toLowerCase().includes(searchLower) ||
-              item.authorName.toLowerCase().includes(searchLower) ||
-              item.summary.toLowerCase().includes(searchLower)
-            );
-          } else {
-            return (
-              item.title.toLowerCase().includes(searchLower) ||
-              item.poetName.toLowerCase().includes(searchLower) ||
-              item.content.toLowerCase().includes(searchLower)
-            );
+            queryConstraints.push(where('status', '==', 'completed'));
+            queryConstraints.push(orderBy('createdAt', 'desc'));
           }
-        });
-
-        // Track search for analytics (only initially or on search change)
-        trackSearch({
-          searchTerm: searchQuery.trim(),
-          category: browseType,
-          resultsCount: data.length,
-        });
+          break;
       }
 
-      if (browseType === 'novels') {
-        setNovels(data);
-      } else {
-        setPoems(data);
-      }
-      setLoading(false);
-    }, (error) => {
-      if (error.code === 'permission-denied') {
-        console.log(`Permission denied in ${browseType} listener (likely logout)`);
-      } else {
-        console.error(`Error fetching ${browseType}:`, error);
-      }
-      setLoading(false);
-    });
+      const q = query(collectionRef, ...queryConstraints);
+      const cacheKey = `browse_${browseType}_${isClassics}_${selectedGenre}_${selectedFilter}`;
 
-    return () => unsubscribe();
-  }, [browseType, selectedGenre, selectedFilter, searchQuery]);
+      try {
+        const rawData = await withCache(cacheKey, async () => {
+          const snapshot = await getDocs(q);
+          let dataList: any[] = [];
+          
+          snapshot.forEach((doc) => {
+            const itemData = doc.data();
+            // If browsing community content, filter out classics
+            if (!isClassics && itemData.publicDomain === true) return;
+            
+            if (browseType === 'novels') {
+              dataList.push({
+                id: doc.id,
+                title: itemData.title || 'Untitled',
+                authorName: itemData.authorName || 'Unknown',
+                summary: itemData.summary || '',
+                coverImage: itemData.coverImage,
+                coverSmallImage: itemData.coverSmallImage,
+                views: itemData.views || 0,
+                likes: itemData.likes || 0,
+                genres: itemData.genres || [],
+              } as Novel);
+            } else {
+              dataList.push({
+                id: doc.id,
+                title: itemData.title || 'Untitled',
+                poetName: itemData.poetName || 'Unknown',
+                coverImage: itemData.coverImage,
+                coverSmallImage: itemData.coverSmallImage,
+                content: itemData.content || '',
+                views: itemData.views || 0,
+                likes: itemData.likes || 0,
+                genres: itemData.genres || [],
+              } as Poem);
+            }
+          });
+          return dataList;
+        }, CACHE_TTL.FEED);
+
+        let filteredData = [...rawData];
+
+        if (searchQuery.trim()) {
+          const searchLower = searchQuery.toLowerCase();
+          filteredData = filteredData.filter((item) => {
+            if (browseType === 'novels') {
+              return (
+                item.title.toLowerCase().includes(searchLower) ||
+                item.authorName.toLowerCase().includes(searchLower) ||
+                item.summary.toLowerCase().includes(searchLower)
+              );
+            } else {
+              return (
+                item.title.toLowerCase().includes(searchLower) ||
+                item.poetName.toLowerCase().includes(searchLower) ||
+                item.content.toLowerCase().includes(searchLower)
+              );
+            }
+          });
+
+          // Track search for analytics
+          trackSearch({
+            searchTerm: searchQuery.trim(),
+            category: browseType,
+            resultsCount: filteredData.length,
+          });
+        }
+
+        if (browseType === 'novels') {
+          setNovels(filteredData);
+        } else {
+          setPoems(filteredData);
+        }
+      } catch (error: any) {
+        if (error.code !== 'permission-denied') {
+          console.error(`Error fetching ${browseType}:`, error);
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchBrowseData();
+  }, [browseType, isClassics, selectedGenre, selectedFilter, searchQuery]);
 
   const getFirebaseDownloadUrl = (url: string) => {
     if (!url || !url.includes('firebasestorage')) {
@@ -425,7 +449,10 @@ export const BrowseScreen = () => {
           {/* Novels Section */}
           <TouchableOpacity
             style={styles.largeCard}
-            onPress={() => setBrowseType('novels')}
+            onPress={() => {
+              setBrowseType('novels');
+              setIsClassics(false);
+            }}
             activeOpacity={0.85}
           >
             <View style={[styles.largeCardGradient, { backgroundColor: colors.primary + '20' }]}>
@@ -447,7 +474,10 @@ export const BrowseScreen = () => {
           {/* Poems Section */}
           <TouchableOpacity
             style={styles.largeCard}
-            onPress={() => setBrowseType('poems')}
+            onPress={() => {
+              setBrowseType('poems');
+              setIsClassics(false);
+            }}
             activeOpacity={0.85}
           >
             <View style={[styles.largeCardGradient, { backgroundColor: '#EC4899' + '20' }]}>
@@ -457,10 +487,35 @@ export const BrowseScreen = () => {
                 </View>
                 <View style={styles.largeCardTextContainer}>
                   <Text style={styles.largeCardTitle}>Poems</Text>
-                  <Text style={styles.largeCardSubtitle}>Beautiful verses</Text>
+                  <Text style={styles.largeCardSubtitle}>Beautiful community verses</Text>
                 </View>
                 <View style={styles.largeCardArrow}>
                   <Ionicons name="chevron-forward" size={24} color="#EC4899" />
+                </View>
+              </View>
+            </View>
+          </TouchableOpacity>
+
+          {/* Timeless Collection Section */}
+          <TouchableOpacity
+            style={styles.largeCard}
+            onPress={() => {
+              setBrowseType('novels');
+              setIsClassics(true);
+            }}
+            activeOpacity={0.85}
+          >
+            <View style={[styles.largeCardGradient, { backgroundColor: '#F59E0B' + '20' }]}>
+              <View style={styles.largeCardContent}>
+                <View style={[styles.largeCardIcon, { backgroundColor: '#F59E0B' }]}>
+                  <Ionicons name="library" size={28} color="#fff" />
+                </View>
+                <View style={styles.largeCardTextContainer}>
+                  <Text style={styles.largeCardTitle}>Timeless Collection</Text>
+                  <Text style={styles.largeCardSubtitle}>Public domain classics</Text>
+                </View>
+                <View style={styles.largeCardArrow}>
+                  <Ionicons name="chevron-forward" size={24} color="#F59E0B" />
                 </View>
               </View>
             </View>
@@ -477,10 +532,18 @@ export const BrowseScreen = () => {
     <SafeAreaView style={styles.container} edges={['left', 'right']}>
       {/* Header */}
       <View style={styles.browseHeader}>
-        <TouchableOpacity onPress={() => setBrowseType(null)} style={styles.browseHeaderButton}>
+        <TouchableOpacity
+          onPress={() => {
+            setBrowseType(null);
+            setIsClassics(false);
+          }}
+          style={styles.browseHeaderButton}
+        >
           <Ionicons name="arrow-back" size={24} color={colors.primary} />
         </TouchableOpacity>
-        <Text style={styles.browseHeaderTitle}>{browseType === 'novels' ? 'Novels' : 'Poems'}</Text>
+        <Text style={styles.browseHeaderTitle}>
+          {isClassics ? 'Timeless Collection' : (browseType === 'novels' ? 'Novels' : 'Poems')}
+        </Text>
         <View style={{ width: 40 }} />
       </View>
 
@@ -523,6 +586,30 @@ export const BrowseScreen = () => {
             ))}
           </ScrollView>
         </View>
+
+        {isClassics && (
+          <View style={styles.filterSection}>
+            <Text style={styles.sectionTitle}>Category</Text>
+            <View style={styles.sortButtonContainer}>
+              <TouchableOpacity
+                style={[styles.sortButton, browseType === 'novels' && styles.sortButtonActive]}
+                onPress={() => setBrowseType('novels')}
+              >
+                <Text style={[styles.sortButtonText, browseType === 'novels' && styles.sortButtonTextActive]}>
+                  Classic Novels
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.sortButton, browseType === 'poems' && styles.sortButtonActive]}
+                onPress={() => setBrowseType('poems')}
+              >
+                <Text style={[styles.sortButtonText, browseType === 'poems' && styles.sortButtonTextActive]}>
+                  Classic Poems
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
 
         {/* Sort Filter */}
         <View style={styles.filterSection}>

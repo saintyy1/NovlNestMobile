@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
+import CachedImage from '../../components/CachedImage';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import { collection, doc, setDoc } from 'firebase/firestore';
@@ -23,6 +24,7 @@ import { db, storage } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { spacing } from '../../theme';
+import { invalidateByPrefix } from '../../utils/cache';
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getDrafts, saveDraft, deleteDraft, DraftData } from '../../utils/draftStorage';
@@ -430,6 +432,7 @@ export const SubmitScreen = () => {
           coverSmallImage: coverSmallUrl || null,
           likes: 0,
           views: 0,
+          publicDomain: false,
         });
 
         // Track novel creation for analytics
@@ -457,6 +460,7 @@ export const SubmitScreen = () => {
           coverSmallImage: coverSmallUrl || null,
           likes: 0,
           views: 0,
+          publicDomain: false,
         });
 
         // Track poem creation for analytics
@@ -469,6 +473,11 @@ export const SubmitScreen = () => {
           userId: currentUser?.uid || '',
         });
       }
+
+      // Invalidate relevant prefixes to show the new content
+      await invalidateByPrefix("profile_");
+      await invalidateByPrefix("home_");
+      await invalidateByPrefix("browse_");
 
       Alert.alert(
         'Success',
@@ -539,7 +548,7 @@ export const SubmitScreen = () => {
               >
                 <View style={styles.selectionDraftThumb}>
                   {latest.data.coverImage ? (
-                    <Image source={{ uri: latest.data.coverImage }} style={styles.selectionDraftThumbImage} />
+                    <CachedImage uri={latest.data.coverImage} style={styles.selectionDraftThumbImage} />
                   ) : (
                     <View style={[styles.selectionDraftThumbImage, { backgroundColor: colors.primary + '22', justifyContent: 'center', alignItems: 'center' }]}>
                       <Text style={{ color: colors.primary, fontWeight: '800' }}>{(latest.data.title || 'R').charAt(0).toUpperCase()}</Text>
@@ -897,7 +906,7 @@ export const SubmitScreen = () => {
           </TouchableOpacity>
           {coverImage && (
             <View style={styles.imagePreview}>
-              <Image source={{ uri: coverImage }} style={styles.previewImage} />
+              <CachedImage uri={coverImage} style={styles.previewImage} />
               <TouchableOpacity
                 style={styles.removeImageButton}
                 onPress={() => setCoverImage(null)}

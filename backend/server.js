@@ -4,6 +4,39 @@ const pdfParse = require('pdf-parse');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const admin = require('firebase-admin');
+const { Expo } = require('expo-server-sdk');
+require('dotenv').config();
+
+// Initialize Firebase Admin
+if (!admin.apps.length) {
+  try {
+    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount)
+      });
+      console.log('Firebase Admin initialized with service account JSON');
+    } else if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_PRIVATE_KEY && process.env.FIREBASE_CLIENT_EMAIL) {
+      admin.initializeApp({
+        credential: admin.credential.cert({
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        })
+      });
+      console.log('Firebase Admin initialized with individual environment variables');
+    } else {
+      admin.initializeApp();
+      console.log('Firebase Admin initialized with default credentials');
+    }
+  } catch (error) {
+    console.error('Firebase Admin initialization error:', error.message);
+  }
+}
+
+const db = admin.firestore();
+const expo = new Expo();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -71,6 +104,118 @@ app.post('/api/process-pdf', upload.single('pdf'), async (req, res) => {
       success: false,
       error: error.message || 'Failed to process PDF'
     });
+  }
+});
+
+// Send Push Notification endpoint
+app.get('/api/notify-user', (req, res) => {
+  res.json({ success: true, message: 'Push notification endpoint is active (POST required)' });
+});
+
+app.post('/api/notify-user', async (req, res) => {
+  const { toUserId, title, body, data } = req.body;
+
+  if (!toUserId || !title || !body) {
+    return res.status(400).json({ success: false, error: 'Missing required fields' });
+  }
+
+  try {
+    const userDoc = await db.collection('users').doc(toUserId).get();
+    if (!userDoc.exists) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+
+    const userData = userDoc.data();
+    const pushToken = userData.pushToken;
+    const enabled = userData.pushNotificationsEnabled !== false;
+
+    if (!pushToken || !enabled) {
+      return res.json({ success: true, message: 'Push skipped (not enabled or no token)' });
+    }
+
+    if (!Expo.isExpoPushToken(pushToken)) {
+      console.error(`Push token ${pushToken} is not a valid Expo push token`);
+      return res.status(400).json({ success: false, error: 'Invalid push token' });
+    }
+
+    const messages = [{
+      to: pushToken,
+      sound: 'default',
+      title,
+      body,
+      data: data || {},
+    }];
+
+    const chunks = expo.chunkPushNotifications(messages);
+    for (let chunk of chunks) {
+      try {
+        await expo.sendPushNotificationsAsync(chunk);
+      } catch (error) {
+        console.error('Error sending push chunk:', error);
+      }
+    }
+
+    res.json({ success: true, message: 'Push notification sent' });
+
+  } catch (error) {
+    console.error('Error in /api/send-push:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Broadcast endpoint for admin-initiated push notifications
+app.post('/api/admin/broadcast', async (req, res) => {
+  const { title, body, data } = req.body;
+  
+  if (!title || !body) {
+    return res.status(400).json({ success: false, error: 'Title and body are required' });
+  }
+
+  // Verify Admin secret
+  const authHeader = req.headers.authorization;
+  if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+
+  try {
+    // 1. Fetch all users
+    const usersSnapshot = await db.collection('users').get();
+
+    if (usersSnapshot.empty) {
+      return res.json({ success: true, message: 'No users to notify' });
+    }
+
+    const messages = [];
+    usersSnapshot.forEach(doc => {
+      const userData = doc.data();
+      const enabled = userData.pushNotificationsEnabled !== false;
+      if (enabled && userData.pushToken && Expo.isExpoPushToken(userData.pushToken)) {
+        messages.push({
+          to: userData.pushToken,
+          sound: 'default',
+          title: title,
+          body: body,
+          data: data || { type: 'broadcast' }
+        });
+      }
+    });
+
+    // 2. Send in chunks
+    const chunks = expo.chunkPushNotifications(messages);
+    let successCount = 0;
+    for (let chunk of chunks) {
+      try {
+        await expo.sendPushNotificationsAsync(chunk);
+        successCount += chunk.length;
+      } catch (error) {
+        console.error('Error sending broadcast chunk:', error);
+      }
+    }
+
+    res.json({ success: true, message: `Broadcast sent to ${successCount} users` });
+  } catch (error) {
+    console.error('Error in /api/admin/broadcast:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

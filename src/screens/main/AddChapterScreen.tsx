@@ -12,6 +12,7 @@ import {
   Platform,
 } from 'react-native';
 import CachedImage from '../../components/CachedImage';
+import { withCache, CACHE_TTL, invalidateCache, invalidateByPrefix } from '../../utils/cache';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import {
@@ -30,6 +31,7 @@ import { Novel } from '../../types/novel';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { spacing } from '../../theme';
+import { sendPushNotification } from '../../services/PushNotificationService';
 
 interface Chapter {
   title: string;
@@ -142,6 +144,12 @@ const AddChaptersScreen = ({ route, navigation }: any) => {
         updatedAt: new Date().toISOString(),
       });
 
+      // Invalidate novel cache and relevant prefixes
+      await invalidateCache(`novel_${novelId}`);
+      await invalidateByPrefix("home_");
+      await invalidateByPrefix("browse_");
+      await invalidateByPrefix("profile_");
+
       try {
         // Find all users who have this novel in their library
         const usersQuery = query(
@@ -167,6 +175,14 @@ const AddChaptersScreen = ({ route, navigation }: any) => {
               createdAt: new Date().toISOString(),
               read: false,
             });
+
+            // Send Push Notification
+            await sendPushNotification(
+              userId,
+              `${novel.title} 📖`,
+              `New chapter: ${validChapters[0]?.title || 'untitled'}`,
+              { url: `novlnest://novel/${novelId}/read?chapter=${novel.chapters.length}` }
+            );
           }
         });
 

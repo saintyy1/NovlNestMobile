@@ -860,6 +860,34 @@ const SettingsScreen = ({ navigation }: any) => {
             }
           />
           <SettingItem
+            icon="notifications-outline"
+            title="Push Notifications"
+            subtitle="Get alerts for likes, follows, and more"
+            showArrow={false}
+            rightComponent={
+              <Switch
+                value={currentUser?.pushNotificationsEnabled ?? true}
+                onValueChange={async (value) => {
+                  try {
+                    await updateUserProfile(
+                      undefined, 
+                      undefined, 
+                      undefined, 
+                      undefined, 
+                      undefined, 
+                      undefined, 
+                      value
+                    );
+                  } catch (e) {
+                    Alert.alert('Error', 'Failed to update notification settings');
+                  }
+                }}
+                trackColor={{ false: '#4B5563', true: colors.primary }}
+                thumbColor="#fff"
+              />
+            }
+          />
+          <SettingItem
             icon="language-outline"
             title="Language"
             subtitle="English"

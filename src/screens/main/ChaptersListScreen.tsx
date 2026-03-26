@@ -14,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import type { Novel } from '../../types/novel';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { withCache, invalidateCache, invalidateByPrefix } from '../../utils/cache';
 import {
     doc,
     getDoc,
@@ -171,6 +172,11 @@ const ChaptersListScreen = ({ route, navigation }: any) => {
                                                                             const updatedChapters = [...(novelData.chapters || [])];
                                                                             updatedChapters.splice(index, 1);
                                                                             await updateDoc(novelRef, { chapters: updatedChapters });
+                                                                            
+                                                                            // Invalidate novel and all chapters (since indices shifted)
+                                                                            await invalidateCache(`novel_${novel.id}`);
+                                                                            await invalidateByPrefix(`chapter_${novel.id}`);
+                                                                            
                                                                             Alert.alert('Success', 'Chapter deleted successfully!');
                                                                         }
                                                                     } catch (error) {
@@ -234,6 +240,11 @@ const ChaptersListScreen = ({ route, navigation }: any) => {
                                                                     epilogue: epilogueData,
                                                                     updatedAt: new Date().toISOString(),
                                                                 });
+
+                                                                // Invalidate novel and epilogue cache
+                                                                await invalidateCache(`novel_${novel.id}`);
+                                                                await invalidateCache(`chapter_${novel.id}_epilogue`);
+
                                                                 Alert.alert('Success', 'Epilogue updated successfully!');
                                                             } catch (error) {
                                                                 console.error('Error updating epilogue:', error);
@@ -260,6 +271,11 @@ const ChaptersListScreen = ({ route, navigation }: any) => {
                                                                             epilogue: deleteField(),
                                                                             status: 'ongoing',
                                                                         });
+
+                                                                        // Invalidate novel and epilogue cache
+                                                                        await invalidateCache(`novel_${novel.id}`);
+                                                                        await invalidateCache(`chapter_${novel.id}_epilogue`);
+
                                                                         Alert.alert('Success', 'Epilogue deleted successfully!');
                                                                     } catch (error) {
                                                                         console.error('Error deleting epilogue:', error);

@@ -36,7 +36,6 @@ const getFirebaseDownloadUrl = (url: string) => {
     return url;
   }
 };
-
 const getGenreColor = (genres: string[]) => {
   if (!genres || genres.length === 0) return colors.textSecondary;
 
@@ -93,9 +92,9 @@ export const LibraryScreen = ({ navigation }: any) => {
 
     setLoading(true);
     try {
-      const likedNovelIds = currentUser.library || [];
-      const finishedNovelIds = currentUser.finishedReads || [];
-      const likedPoemIds = currentUser.poemLibrary || [];
+      const likedNovelIds = Array.from(new Set(currentUser.library || []));
+      const finishedNovelIds = Array.from(new Set(currentUser.finishedReads || []));
+      const likedPoemIds = Array.from(new Set(currentUser.poemLibrary || []));
 
       const allNovelIds = Array.from(new Set([...likedNovelIds, ...finishedNovelIds]));
 

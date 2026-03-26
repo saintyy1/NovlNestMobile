@@ -345,7 +345,7 @@ const SupportScreen = ({ navigation }: any) => {
               </View>
               <View>
                 <Text style={styles.infoTitle}>Email Support</Text>
-                <Text style={styles.infoText}>n0velnest999@gmail.com</Text>
+                <Text style={styles.infoText}>info@novlnest.com</Text>
               </View>
             </View>
             <View style={styles.infoRow}>

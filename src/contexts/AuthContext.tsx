@@ -37,6 +37,8 @@ import {
 import * as AppleAuthentication from "expo-apple-authentication"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import { auth, db, actionCodeSettings } from "../firebase/config"
+import { sendPushNotification } from "../services/PushNotificationService"
+import { deleteReadingProgress } from "../services/readingProgressService"
 
 // Extend the Firebase User type with custom properties
 export interface ExtendedUser extends User {
@@ -56,6 +58,8 @@ export interface ExtendedUser extends User {
   finishedReads?: string[]
   pendingEmail?: string | null
   emailVisible?: boolean
+  pushToken?: string
+  pushNotificationsEnabled?: boolean
 }
 
 interface AuthContextType {
@@ -71,12 +75,13 @@ interface AuthContextType {
   refreshUser: () => Promise<void>
   updateUserPhoto: (photoBase64: string | null) => Promise<void>
   updateUserProfile: (
-    displayName: string,
-    bio: string,
-    instagramUrl: string,
-    twitterUrl: string,
-    supportLink: string,
-    location: string
+    displayName?: string,
+    bio?: string,
+    instagramUrl?: string,
+    twitterUrl?: string,
+    supportLink?: string,
+    location?: string,
+    pushNotificationsEnabled?: boolean
   ) => Promise<void>
   toggleFollow: (targetUserId: string, isFollowing: boolean) => Promise<void>
   updateUserLibrary: (novelId: string, add: boolean, novelTitle: string, novelAuthorId: string) => Promise<void>
@@ -255,6 +260,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           poemLibrary: data.poemLibrary || [],
           finishedReads: data.finishedReads || [],
           pendingEmail: data.pendingEmail,
+          pushToken: data.pushToken,
+          pushNotificationsEnabled: data.pushNotificationsEnabled,
         } as ExtendedUser
         setCurrentUser(extendedUser)
         setFirebaseUser(user)
@@ -280,6 +287,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           poemLibrary: [],
           finishedReads: [],
           pendingEmail: null,
+          pushNotificationsEnabled: true,
         }
         await setDoc(doc(db, "users", user.uid), newUserData)
         const extendedUser = {
@@ -300,6 +308,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           poemLibrary: newUserData.poemLibrary,
           finishedReads: newUserData.finishedReads,
           pendingEmail: newUserData.pendingEmail,
+          pushNotificationsEnabled: true,
         } as ExtendedUser
         setCurrentUser(extendedUser)
         setFirebaseUser(user)
@@ -342,28 +351,50 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }
 
   const updateUserProfile = async (
-    displayName: string,
-    bio: string,
-    instagramUrl: string,
-    twitterUrl: string,
-    supportLink: string,
-    location: string
+    displayName?: string,
+    bio?: string,
+    instagramUrl?: string,
+    twitterUrl?: string,
+    supportLink?: string,
+    location?: string,
+    pushNotificationsEnabled?: boolean
   ) => {
     if (!currentUser || !firebaseUser) throw new Error("No user logged in")
+    const previousUser = { ...currentUser };
+
     try {
-      await updateDoc(doc(db, "users", currentUser.uid), {
-        displayName: displayName,
-        bio: bio,
-        instagramUrl: instagramUrl,
-        twitterUrl: twitterUrl,
-        supportLink: supportLink,
-        location: location,
+      const updates: any = {
         updatedAt: new Date().toISOString(),
-      })
-      if (firebaseUser.displayName !== displayName) {
+      };
+      if (displayName !== undefined) updates.displayName = displayName;
+      if (bio !== undefined) updates.bio = bio;
+      if (instagramUrl !== undefined) updates.instagramUrl = instagramUrl;
+      if (twitterUrl !== undefined) updates.twitterUrl = twitterUrl;
+      if (supportLink !== undefined) updates.supportLink = supportLink;
+      if (location !== undefined) updates.location = location;
+      if (pushNotificationsEnabled !== undefined) updates.pushNotificationsEnabled = pushNotificationsEnabled;
+
+      // 🚀 Optimistic update
+      setCurrentUser((prev) =>
+        prev ? { 
+          ...prev, 
+          displayName: displayName !== undefined ? displayName : prev.displayName,
+          bio: bio !== undefined ? bio : prev.bio,
+          instagramUrl: instagramUrl !== undefined ? instagramUrl : prev.instagramUrl,
+          twitterUrl: twitterUrl !== undefined ? twitterUrl : prev.twitterUrl,
+          supportLink: supportLink !== undefined ? supportLink : prev.supportLink,
+          location: location !== undefined ? location : prev.location,
+          pushNotificationsEnabled: pushNotificationsEnabled !== undefined ? pushNotificationsEnabled : (prev.pushNotificationsEnabled ?? true) 
+        } : null
+      )
+
+      await updateDoc(doc(db, "users", currentUser.uid), updates)
+      
+      if (displayName !== undefined && firebaseUser.displayName !== displayName) {
         await updateProfile(firebaseUser, { displayName })
       }
-      if (currentUser.displayName !== displayName) {
+      
+      if (displayName !== undefined && previousUser.displayName !== displayName) {
         const novelsRef = collection(db, "novels")
         const q = query(novelsRef, where("authorId", "==", currentUser.uid))
         const querySnapshot = await getDocs(q)
@@ -372,11 +403,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           await updateDoc(novelRef, { authorName: displayName })
         }
       }
-      setCurrentUser((prev) =>
-        prev ? { ...prev, displayName, bio, instagramUrl, twitterUrl, supportLink, location } : null
-      )
     } catch (error) {
       console.error("Error updating user profile:", error)
+      // ⏪ Rollback on error
+      setCurrentUser(previousUser)
       throw error
     }
   }
@@ -705,6 +735,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           read: false,
         })
 
+        // Send Push Notification
+        await sendPushNotification(
+          targetUserId,
+          `${currentUser.displayName || "Someone"} 👤`,
+          `Started following you`,
+          { url: `novlnest://profile/${currentUser.uid}` }
+        )
+
         const announcementsQuery = query(
           collection(db, "announcements"),
           where("authorId", "==", targetUserId),
@@ -752,9 +790,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setCurrentUser((prev) =>
         prev
           ? {
-            ...prev,
-            library: add ? [...(prev.library || []), novelId] : (prev.library || []).filter((id) => id !== novelId),
-          }
+              ...prev,
+              library: add 
+                ? (prev.library?.includes(novelId) ? prev.library : [...(prev.library || []), novelId])
+                : (prev.library || []).filter((id) => id !== novelId),
+            }
           : null
       )
 
@@ -772,6 +812,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             read: false,
           })
           await setNovelLikeCooldown(currentUser.uid, novelId)
+
+          // Send Push Notification
+          await sendPushNotification(
+            novelAuthorId,
+            `${currentUser.displayName || "Someone"} ❤️`,
+            `Liked your novel "${novelTitle}"`,
+            { url: `novlnest://novel/${novelId}` }
+          )
         }
 
         const libraryCooldownActive = await checkNovelAddedToLibraryCooldown(currentUser.uid, novelId)
@@ -787,6 +835,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             read: false,
           })
           await setNovelAddedToLibraryCooldown(currentUser.uid, novelId)
+
+          // Send Push Notification
+          await sendPushNotification(
+            novelAuthorId,
+            `${currentUser.displayName || "Someone"} 📚`,
+            `Added "${novelTitle}" to their library`,
+            { url: `novlnest://novel/${novelId}` }
+          )
         }
       } else if (!add) {
         await clearNovelLikeCooldown(currentUser.uid, novelId)
@@ -816,17 +872,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             createdAt: new Date().toISOString(),
             read: false,
           })
+
+          // Send Push Notification
+          await sendPushNotification(
+            novelAuthorId,
+            `${currentUser.displayName || "Someone"} 🎉`,
+            `Finished reading "${novelTitle}"`,
+            { url: `novlnest://novel/${novelId}` }
+          )
         }
         await updateDoc(userRef, {
           finishedReads: arrayUnion(novelId),
           library: arrayRemove(novelId),
           updatedAt: new Date().toISOString(),
         })
+        
+        // Remove from continue reading section
+        await deleteReadingProgress(currentUser.uid, novelId);
         setCurrentUser((prev) =>
           prev
             ? {
               ...prev,
-              finishedReads: [...(prev.finishedReads || []), novelId],
+              finishedReads: (prev.finishedReads?.includes(novelId) ? prev.finishedReads : [...(prev.finishedReads || []), novelId]),
               library: (prev.library || []).filter((id) => id !== novelId),
             }
             : null
@@ -842,7 +909,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             ? {
               ...prev,
               finishedReads: (prev.finishedReads || []).filter((id) => id !== novelId),
-              library: [...(prev.library || []), novelId],
+              library: (prev.library?.includes(novelId) ? prev.library : [...(prev.library || []), novelId]),
             }
             : null
         )
@@ -866,7 +933,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           ? {
             ...prev,
             poemLibrary: add
-              ? [...(prev.poemLibrary || []), poemId]
+              ? (prev.poemLibrary?.includes(poemId) ? prev.poemLibrary : [...(prev.poemLibrary || []), poemId])
               : (prev.poemLibrary || []).filter((id) => id !== poemId),
           }
           : null
@@ -886,6 +953,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             read: false,
           })
           await setPoemLikeCooldown(currentUser.uid, poemId)
+
+          // Send Push Notification
+          await sendPushNotification(
+            poetId,
+            `${currentUser.displayName || "Someone"} ❤️`,
+            `Liked your poem "${poemTitle}"`,
+            { url: `novlnest://poem/${poemId}` }
+          )
         }
 
         const libraryCooldownActive = await checkPoemAddedToLibraryCooldown(currentUser.uid, poemId)
@@ -901,6 +976,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             read: false,
           })
           await setPoemAddedToLibraryCooldown(currentUser.uid, poemId)
+
+          // Send Push Notification
+          await sendPushNotification(
+            poetId,
+            `${currentUser.displayName || "Someone"} 📚`,
+            `Added "${poemTitle}" to their library`,
+            { url: `novlnest://poem/${poemId}` }
+          )
         }
       } else if (!add) {
         await clearPoemLikeCooldown(currentUser.uid, poemId)
