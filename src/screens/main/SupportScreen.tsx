@@ -9,12 +9,13 @@ import {
   Alert,
   ActivityIndicator,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { collection, addDoc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { useAlert } from '../../contexts/AlertContext';
 
 interface FAQItem {
   id: string;
@@ -26,6 +27,8 @@ interface FAQItem {
 const SupportScreen = ({ navigation }: any) => {
   const { currentUser } = useAuth();
   const { colors } = useTheme();
+  const { showAlert, showToast } = useAlert();
+  const insets = useSafeAreaInsets();
   const styles = getStyles(colors);
   const [subject, setSubject] = useState('');
   const [message, setMessage] = useState('');
@@ -95,7 +98,7 @@ const SupportScreen = ({ navigation }: any) => {
 
   const handleSubmit = async () => {
     if (!subject || !message.trim()) {
-      Alert.alert('Error', 'Please fill out all fields');
+      showToast({ message: 'Please fill out all fields', type: 'error' });
       return;
     }
 
@@ -117,23 +120,24 @@ const SupportScreen = ({ navigation }: any) => {
         responses: [],
       });
 
-      Alert.alert(
-        'Success',
-        `Your support ticket has been submitted!\n\nTicket ID: ${ticketId}\n\nYou can track your ticket in "My Tickets" screen.`,
-        [
+      showAlert({
+        title: 'Success',
+        message: `Your support ticket has been submitted!\n\nTicket ID: ${ticketId}\n\nYou can track your ticket in "My Tickets" screen.`,
+        type: 'success',
+        buttons: [
           {
             text: 'View Tickets',
             onPress: () => navigation.navigate('MyTickets'),
           },
           { text: 'OK' },
         ]
-      );
+      });
 
       setSubject('');
       setMessage('');
     } catch (error) {
       console.error('Error sending message:', error);
-      Alert.alert('Error', 'Failed to send message. Please try again.');
+      showToast({ message: 'Failed to send message. Please try again.', type: 'error' });
     } finally {
       setLoading(false);
     }
@@ -153,7 +157,11 @@ const SupportScreen = ({ navigation }: any) => {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['bottom', 'left', 'right']}>
-      <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+      <ScrollView 
+        style={styles.container} 
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 20) }}
+      >
         {/* Header */}
         <View style={styles.header}>
           <View style={styles.iconContainer}>

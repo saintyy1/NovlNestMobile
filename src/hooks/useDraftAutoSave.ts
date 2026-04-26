@@ -4,7 +4,10 @@ import { getDrafts, saveDraft, DraftData } from '../utils/draftStorage';
 import { collection, doc, setDoc } from 'firebase/firestore';
 import { db } from '../firebase/config';
 
-export type SaveStatus = 'Saving...' | 'Saved' | 'Offline — saving locally' | null;
+export type SaveStatus = 'Saving...' | 'Saved' | 'Offline — saving locally' | 'Limit reached — cannot save' | null;
+
+const MAX_DRAFTS = 5;
+
 
 interface UseDraftAutoSaveProps {
     draftId: string | null;
@@ -38,6 +41,13 @@ export function useDraftAutoSave({
         return JSON.stringify(oldData) !== JSON.stringify(newData);
     };
 
+    // Reset save status when switching content types or starting a fresh draft
+    useEffect(() => {
+        setSaveStatus(null);
+        pendingSaveRef.current = false;
+        if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    }, [submitType, draftId === null]);
+
     useEffect(() => {
         const hasData = checkHasData(draftData, submitType);
 
@@ -52,7 +62,9 @@ export function useDraftAutoSave({
 
             if (hasData) {
                 pendingSaveRef.current = true;
-                setSaveStatus('Saving...');
+                if (saveStatus !== 'Limit reached — cannot save') {
+                    setSaveStatus('Saving...');
+                }
 
                 if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
                 saveTimeoutRef.current = setTimeout(() => {
@@ -71,6 +83,18 @@ export function useDraftAutoSave({
 
         try {
             const currentDraftId = draftIdRef.current;
+
+            // If we are about to create a NEW draft (no draftId yet), check the limit
+            if (!currentDraftId) {
+                const existingDrafts = await getDrafts(currentUser.uid);
+                const currentTypeDrafts = existingDrafts.filter(d => d.type === submitType);
+                if (currentTypeDrafts.length >= MAX_DRAFTS) {
+                    setSaveStatus('Limit reached — cannot save');
+                    pendingSaveRef.current = false;
+                    return;
+                }
+            }
+
             const newId = (currentDraftId && currentDraftId.startsWith(`${submitType}-`))
                 ? currentDraftId
                 : `${submitType}-${Date.now()}`;

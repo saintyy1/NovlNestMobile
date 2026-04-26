@@ -24,6 +24,7 @@ interface ThemeColors {
 interface ThemeContextType {
   theme: ThemeType;
   colors: ThemeColors;
+  isDark: boolean;
   toggleTheme: () => Promise<void>;
   setTheme: (theme: ThemeType) => Promise<void>;
 }
@@ -99,10 +100,11 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     await setTheme(theme === 'dark' ? 'light' : 'dark');
   };
 
-  const colors = theme === 'dark' ? darkTheme : lightTheme;
+  const isDark = theme === 'dark';
+  const colors = isDark ? darkTheme : lightTheme;
 
   return (
-    <ThemeContext.Provider value={{ theme, colors, toggleTheme, setTheme }}>
+    <ThemeContext.Provider value={{ theme, colors, isDark, toggleTheme, setTheme }}>
       {!isLoading && children}
     </ThemeContext.Provider>
   );

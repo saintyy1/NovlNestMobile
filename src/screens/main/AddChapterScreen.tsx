@@ -8,12 +8,12 @@ import {
   TouchableOpacity,
   Image,
   ActivityIndicator,
-  Alert,
   Platform,
+  DeviceEventEmitter,
 } from 'react-native';
 import CachedImage from '../../components/CachedImage';
 import { withCache, CACHE_TTL, invalidateCache, invalidateByPrefix } from '../../utils/cache';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import {
   doc,
@@ -31,7 +31,8 @@ import { Novel } from '../../types/novel';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { spacing } from '../../theme';
-import { sendPushNotification } from '../../services/PushNotificationService';
+import { sendPushNotification, broadcastNotification } from '../../services/PushNotificationService';
+import { useAlert } from '../../contexts/AlertContext';
 
 interface Chapter {
   title: string;
@@ -42,6 +43,8 @@ const AddChaptersScreen = ({ route, navigation }: any) => {
   const { novelId } = route.params;
   const { currentUser } = useAuth();
   const { colors } = useTheme();
+  const { showAlert, showToast } = useAlert();
+  const insets = useSafeAreaInsets();
 
   const [novel, setNovel] = useState<Novel | null>(null);
   const [newChapters, setNewChapters] = useState<Chapter[]>([]);
@@ -69,14 +72,14 @@ const AddChaptersScreen = ({ route, navigation }: any) => {
       const novelDoc = await getDoc(doc(db, 'novels', novelId));
       if (novelDoc.exists()) {
         const novelData = { id: novelDoc.id, ...novelDoc.data() } as Novel;
-        
+
         // Check if current user is the author
         if (novelData.authorId !== currentUser.uid) {
           setError('You are not authorized to add chapters to this novel.');
           setLoading(false);
           return;
         }
-        
+
         setNovel(novelData);
       } else {
         setError('Novel not found.');
@@ -94,10 +97,11 @@ const AddChaptersScreen = ({ route, navigation }: any) => {
   };
 
   const removeChapter = (index: number) => {
-    Alert.alert(
-      'Remove Chapter',
-      'Are you sure you want to remove this chapter?',
-      [
+    showAlert({
+      title: 'Remove Chapter',
+      message: 'Are you sure you want to remove this chapter?',
+      type: 'warning',
+      buttons: [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Remove',
@@ -109,7 +113,7 @@ const AddChaptersScreen = ({ route, navigation }: any) => {
           },
         },
       ]
-    );
+    });
   };
 
   const getWordCount = (text: string) => {
@@ -120,17 +124,22 @@ const AddChaptersScreen = ({ route, navigation }: any) => {
     if (!novelId || !novel) return;
 
     // Validate chapters
-    const validChapters = newChapters.filter(
-      (chapter) => chapter.title.trim() && chapter.content.trim()
-    );
-    
+    const now = new Date().toISOString();
+    const validChapters = newChapters
+      .filter((chapter) => chapter.title.trim() && chapter.content.trim())
+      .map((chapter) => ({
+        ...chapter,
+        createdAt: now,
+        updatedAt: now,
+      }));
+
     if (validChapters.length === 0) {
-      Alert.alert('Error', 'Please add at least one chapter with both title and content.');
+      showToast({ message: 'Please add at least one chapter with both title and content.', type: 'error' });
       return;
     }
-    
+
     if (validChapters.length !== newChapters.length) {
-      Alert.alert('Error', 'All chapters must have both title and content.');
+      showToast({ message: 'All chapters must have both title and content.', type: 'error' });
       return;
     }
 
@@ -151,65 +160,51 @@ const AddChaptersScreen = ({ route, navigation }: any) => {
       await invalidateByPrefix("profile_");
 
       try {
-        // Find all users who have this novel in their library
-        const usersQuery = query(
-          collection(db, 'users'),
-          where('library', 'array-contains', novelId)
-        );
-        const usersSnapshot = await getDocs(usersQuery);
-
-        // Create notifications for each user who has the novel in their library
-        const notificationPromises = usersSnapshot.docs.map(async (userDoc) => {
-          const userId = userDoc.id;
-          // Don't notify the author themselves
-          if (userId !== currentUser?.uid) {
-            await addDoc(collection(db, 'notifications'), {
-              toUserId: userId,
-              fromUserId: currentUser?.uid,
-              fromUserName: currentUser?.displayName || 'Author',
-              type: 'new_chapter',
-              novelId: novelId,
-              novelTitle: novel.title,
-              chapterCount: validChapters.length,
-              chapterTitles: validChapters.map((chapter) => chapter.title),
-              createdAt: new Date().toISOString(),
-              read: false,
-            });
-
-            // Send Push Notification
-            await sendPushNotification(
-              userId,
-              `${novel.title} 📖`,
-              `New chapter: ${validChapters[0]?.title || 'untitled'}`,
-              { url: `novlnest://novel/${novelId}/read?chapter=${novel.chapters.length}` }
-            );
+        // Send Broadcast Notification via Backend
+        await broadcastNotification(
+          { type: 'library_users', id: novelId },
+          {
+            fromUserId: currentUser?.uid,
+            fromUserName: currentUser?.displayName || 'Author',
+            type: 'new_chapter',
+            novelId: novelId,
+            novelTitle: novel.title,
+            chapterCount: validChapters.length,
+            chapterTitles: validChapters.map((chapter) => chapter.title),
+          },
+          {
+            title: `${novel.title} 📖`,
+            body: `New chapter: ${validChapters[0]?.title || 'untitled'}`,
+            data: { url: `novlnest://novel/${novelId}/read?chapter=${novel.chapters.length}` }
           }
-        });
-
-        await Promise.all(notificationPromises);
-        console.log(`Sent new chapter notifications to ${usersSnapshot.docs.length} users`);
+        );
+        console.log(`Successfully initiated broadcast for novel: ${novelId}`);
       } catch (notificationError) {
         console.error('Error sending chapter notifications:', notificationError);
-        // Don't fail the entire operation if notifications fail
       }
 
-      Alert.alert(
-        'Success',
-        `Successfully added ${validChapters.length} new chapter(s)!`,
-        [
+      showAlert({
+        title: 'Success',
+        message: `Successfully added ${validChapters.length} new chapter(s)!`,
+        type: 'success',
+        buttons: [
           {
             text: 'OK',
             onPress: () => navigation.goBack(),
           },
         ]
-      );
+      });
 
       // Reset form
       setNewChapters([]);
     } catch (err) {
       console.error('Error adding chapters:', err);
       setError('Failed to add chapters. Please try again.');
-      Alert.alert('Error', 'Failed to add chapters. Please try again.');
+      showAlert({
+        title: 'Error',
+        message: 'Failed to add chapters. Please try again.',
+        type: 'error'
+      });
     } finally {
       setSubmitting(false);
     }
@@ -231,7 +226,7 @@ const AddChaptersScreen = ({ route, navigation }: any) => {
     }
   };
 
-  const styles = getStyles(colors);
+  const styles = getStyles(colors, insets);
 
   if (loading) {
     return (
@@ -310,8 +305,8 @@ const AddChaptersScreen = ({ route, navigation }: any) => {
         <View style={styles.section}>
           <View style={styles.chaptersHeader}>
             <Text style={styles.sectionTitle}>New Chapters</Text>
-            <TouchableOpacity 
-              style={styles.addButton} 
+            <TouchableOpacity
+              style={styles.addButton}
               onPress={() => {
                 const chapterNumber = getChapterNumber(newChapters.length);
                 navigation.navigate('ChapterEditor', {
@@ -319,6 +314,7 @@ const AddChaptersScreen = ({ route, navigation }: any) => {
                   initialTitle: '',
                   initialContent: '',
                   onSave: (newChapter: { title: string; content: string }) => {
+                    if (!newChapter) return;
                     setNewChapters([...newChapters, {
                       title: newChapter.title,
                       content: newChapter.content,
@@ -351,12 +347,33 @@ const AddChaptersScreen = ({ route, navigation }: any) => {
                     initialTitle: chapter.title,
                     initialContent: chapter.content,
                     onSave: (updatedChapter: { title: string; content: string }) => {
-                      const updatedChapters = [...newChapters];
-                      updatedChapters[index] = {
-                        title: updatedChapter.title,
-                        content: updatedChapter.content,
-                      };
-                      setNewChapters(updatedChapters);
+                      if (!updatedChapter) return;
+                      setNewChapters(prev => {
+                        const next = [...prev];
+                        next[index] = {
+                          title: updatedChapter.title,
+                          content: updatedChapter.content,
+                        };
+                        return next;
+                      });
+                    },
+                    onAutoSave: (updatedChapter: { title: string; content: string }) => {
+                      if (!updatedChapter) return;
+                      DeviceEventEmitter.emit('draftSaveStatus', 'Saving...');
+
+                      setNewChapters(prev => {
+                        const next = [...prev];
+                        next[index] = {
+                          title: updatedChapter.title,
+                          content: updatedChapter.content,
+                        };
+                        return next;
+                      });
+
+                      setTimeout(() => {
+                        DeviceEventEmitter.emit('draftSaveStatus', 'Draft updated');
+                        setTimeout(() => DeviceEventEmitter.emit('draftSaveStatus', null), 2000);
+                      }, 500);
                     }
                   });
                 }}
@@ -367,18 +384,18 @@ const AddChaptersScreen = ({ route, navigation }: any) => {
                     <Text style={styles.chapterNumber}>Chapter {getChapterNumber(index)}</Text>
                     <Ionicons name="create-outline" size={16} color={colors.primary} />
                   </View>
-                  <TouchableOpacity 
+                  <TouchableOpacity
                     onPress={() => removeChapter(index)}
                     hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                   >
                     <Ionicons name="trash-outline" size={20} color={colors.error} />
                   </TouchableOpacity>
                 </View>
-                
+
                 <Text style={styles.chapterTitleText} numberOfLines={2}>
                   {chapter.title || `Chapter ${getChapterNumber(index)} (Untitled)`}
                 </Text>
-                
+
                 <Text style={styles.chapterPreview} numberOfLines={3}>
                   {chapter.content || 'No content yet. Tap to edit.'}
                 </Text>
@@ -432,7 +449,7 @@ const AddChaptersScreen = ({ route, navigation }: any) => {
   );
 };
 
-const getStyles = (colors: any) => StyleSheet.create({
+const getStyles = (colors: any, insets: any) => StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: colors.background,
@@ -504,7 +521,7 @@ const getStyles = (colors: any) => StyleSheet.create({
     backgroundColor: colors.background,
   },
   scrollContent: {
-    paddingBottom: 120,
+    paddingBottom: 120 + insets.bottom,
   },
   novelCard: {
     backgroundColor: colors.card,
@@ -687,6 +704,7 @@ const getStyles = (colors: any) => StyleSheet.create({
     left: 0,
     right: 0,
     padding: spacing.lg,
+    paddingBottom: Math.max(insets.bottom, spacing.lg),
     backgroundColor: colors.background,
     borderTopWidth: 1,
     borderTopColor: colors.border,

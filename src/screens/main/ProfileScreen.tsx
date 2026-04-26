@@ -6,8 +6,6 @@ import {
   TouchableOpacity,
   Image,
   TextInput,
-  Alert,
-  AlertButton,
   RefreshControl,
   ActivityIndicator,
   Modal,
@@ -22,6 +20,7 @@ import { Ionicons, FontAwesome6, MaterialCommunityIcons } from '@expo/vector-ico
 import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useFocusEffect } from '@react-navigation/native';
 import UserListDrawer from '../../components/UserListDrawer';
 import type { Novel } from '../../types/novel';
 import type { Poem } from '../../types/poem';
@@ -43,14 +42,18 @@ import {
 import { db } from '../../firebase/config';
 import { ref, uploadBytes, deleteObject } from 'firebase/storage';
 import { storage } from '../../firebase/config';
+import { compressForCover, generateSmallCover } from '../../utils/imageUtils';
 import CachedImage from '../../components/CachedImage';
-import { withCache, CACHE_TTL, invalidateCache, invalidateByPrefix } from '../../utils/cache';
-import { sendPushNotification } from '../../services/PushNotificationService';
-
-const { width } = Dimensions.get('window');
-const CARD_WIDTH = (width - 48) / 2; // 2 columns with spacing
-
-
+import {
+  withCache,
+  CACHE_TTL,
+  invalidateCache,
+  invalidateByPrefix,
+  invalidateAnnouncementCache,
+  invalidateProfileCache
+} from '../../utils/cache';
+import { broadcastNotification } from '../../services/PushNotificationService';
+import { useAlert } from '../../contexts/AlertContext';
 
 interface Announcement {
   id: string;
@@ -85,14 +88,15 @@ const ProfileScreen = ({ route, navigation }: any) => {
   const insets = useSafeAreaInsets();
   const { userId } = route.params || {};
   const { currentUser, updateUserPhoto, toggleFollow, updateUserProfile } = useAuth();
+  const { showAlert, showToast } = useAlert();
   const { colors } = useTheme();
-  const styles = getStyles(colors);
+  const styles = getStyles(colors, insets);
 
   const getFirebaseDownloadUrl = (url: string) => {
     if (!url || !url.includes("firebasestorage.app")) {
       return url;
     }
-    
+
     try {
       const urlParts = url.split("/");
       const bucketName = urlParts[3];
@@ -173,7 +177,6 @@ const ProfileScreen = ({ route, navigation }: any) => {
     }
 
     try {
-      setLoading(true);
       let fetchedUser: any = null;
 
       const targetUserId = userId || currentUser?.uid;
@@ -219,7 +222,8 @@ const ProfileScreen = ({ route, navigation }: any) => {
           const novelsSnapshot = await getDocs(novelsQuery);
           const list: Novel[] = [];
           novelsSnapshot.forEach((doc) => {
-            list.push({ id: doc.id, ...doc.data() } as Novel);
+            const { chapters, ...rest } = doc.data() as any;
+            list.push({ id: doc.id, ...rest } as Novel);
           });
           return list;
         }, CACHE_TTL.PROFILE);
@@ -235,7 +239,8 @@ const ProfileScreen = ({ route, navigation }: any) => {
           const poemsSnapshot = await getDocs(poemsQuery);
           const list: Poem[] = [];
           poemsSnapshot.forEach((doc) => {
-            list.push({ id: doc.id, ...doc.data() } as Poem);
+            const { content, ...rest } = doc.data() as any;
+            list.push({ id: doc.id, ...rest } as Poem);
           });
           return list;
         }, CACHE_TTL.PROFILE);
@@ -243,7 +248,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
       }
     } catch (err) {
       console.error('Error fetching user data:', err);
-      Alert.alert('Error', 'Failed to load profile data');
+      showToast({ message: 'Failed to load profile data', type: 'error' });
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -253,6 +258,13 @@ const ProfileScreen = ({ route, navigation }: any) => {
   useEffect(() => {
     fetchUserData();
   }, [fetchUserData]);
+
+  // 🚀 Refresh on focus to catch global changes (like follows or new submissions)
+  useFocusEffect(
+    useCallback(() => {
+      fetchUserData();
+    }, [fetchUserData])
+  );
 
   // Fetch announcements
   useEffect(() => {
@@ -278,17 +290,23 @@ const ProfileScreen = ({ route, navigation }: any) => {
     return () => unsubscribe();
   }, [profileUser?.uid]);
 
-  const onRefresh = useCallback(() => {
+  const onRefresh = useCallback(async () => {
     setRefreshing(true);
+    const targetUserId = userId || currentUser?.uid;
+    if (targetUserId) {
+      await invalidateCache(`profile_user_${targetUserId}`);
+      await invalidateCache(`profile_novels_${targetUserId}`);
+      await invalidateCache(`profile_poems_${targetUserId}`);
+    }
     fetchUserData();
-  }, [fetchUserData]);
+  }, [fetchUserData, userId, currentUser?.uid]);
 
   const handleImagePick = async () => {
     if (!currentUser) return;
 
     const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permissionResult.granted) {
-      Alert.alert('Permission Required', 'Permission to access camera roll is required!');
+      showToast({ message: 'Permission to access camera roll is required!', type: 'error' });
       return;
     }
 
@@ -314,19 +332,18 @@ const ProfileScreen = ({ route, navigation }: any) => {
             const base64data = reader.result as string;
             await updateUserPhoto(base64data);
             // Invalidate profile cache
-            await invalidateCache(`profile_user_${currentUser.uid}`);
-            Alert.alert('Success', 'Profile picture updated!');
+            showToast({ message: 'Profile picture updated!', type: 'success' });
             fetchUserData();
           } catch (uploadError) {
             console.error('Error updating user photo:', uploadError);
-            Alert.alert('Error', 'Failed to update profile picture');
+            showToast({ message: 'Failed to update profile picture', type: 'error' });
           } finally {
             setIsUploadingPhoto(false);
           }
         };
       } catch (error) {
         console.error('Error uploading photo:', error);
-        Alert.alert('Error', 'Failed to upload photo');
+        showToast({ message: 'Failed to upload photo', type: 'error' });
         setIsUploadingPhoto(false);
       }
     }
@@ -340,11 +357,11 @@ const ProfileScreen = ({ route, navigation }: any) => {
       await updateUserPhoto(null);
       // Invalidate profile cache
       await invalidateCache(`profile_user_${currentUser.uid}`);
-      Alert.alert('Success', 'Profile picture removed!');
+      showToast({ message: 'Profile picture removed!', type: 'success' });
       fetchUserData();
     } catch (error) {
       console.error('Error removing photo:', error);
-      Alert.alert('Error', 'Failed to remove profile picture');
+      showToast({ message: 'Failed to remove profile picture', type: 'error' });
     } finally {
       setIsUploadingPhoto(false);
     }
@@ -353,25 +370,27 @@ const ProfileScreen = ({ route, navigation }: any) => {
   const handleEditPhotoPress = () => {
     if (isUploadingPhoto) return;
 
-    const options: AlertButton[] = [
+    const buttons: any[] = [
       { text: 'Upload New Photo', onPress: handleImagePick },
     ];
 
     if (profileUser?.photoURL) {
-      options.push({
+      buttons.push({
         text: 'Remove Current Photo',
         onPress: handleRemovePhoto,
         style: 'destructive',
       });
     }
 
-    options.push({ text: 'Cancel', style: 'cancel' });
+    buttons.push({ text: 'Cancel', style: 'cancel' });
 
-    Alert.alert(
-      '',
-      '',
-      options
-    );
+    showAlert({
+      title: 'Profile Photo',
+      message: 'Would you like to update or remove your profile photo?',
+      type: 'info',
+      useNative: true,
+      buttons: buttons
+    });
   };
 
   const handleFollowToggle = async () => {
@@ -384,9 +403,12 @@ const ProfileScreen = ({ route, navigation }: any) => {
       await invalidateCache(`profile_user_${profileUser.uid}`);
       setIsFollowing(!isFollowing);
       setFollowersCount((prev) => (isFollowing ? prev - 1 : prev + 1));
-      Alert.alert('Success', isFollowing ? 'Unfollowed' : 'Following');
+      showToast({
+        message: isFollowing ? 'Unfollowed' : 'Following',
+        type: 'success'
+      });
     } catch (error) {
-      Alert.alert('Error', 'Failed to update follow status');
+      showToast({ message: 'Failed to update follow status', type: 'error' });
     } finally {
       setIsTogglingFollow(false);
     }
@@ -403,47 +425,43 @@ const ProfileScreen = ({ route, navigation }: any) => {
         createdAt: new Date().toISOString(),
       });
 
-      // Notify followers
-      if (profileUser?.followers?.length > 0) {
-        const notificationPromises = profileUser.followers.map((followerId: string) => {
-          // Create Firestore notification
-          const firestoreNotification = addDoc(collection(db, 'notifications'), {
-            toUserId: followerId,
-            fromUserId: currentUser.uid,
-            fromUserName: currentUser.displayName || 'Author',
-            type: 'followed_author_announcement',
-            announcementContent: newAnnouncementContent.trim(),
-            createdAt: new Date().toISOString(),
-            read: false,
-          });
+      // Notify followers via backend broadcast
+      await broadcastNotification(
+        { type: 'followers', id: currentUser.uid },
+        {
+          fromUserId: currentUser.uid,
+          fromUserName: currentUser.displayName || 'Author',
+          type: 'followed_author_announcement',
+          announcementContent: newAnnouncementContent.trim(),
+        },
+        {
+          title: `${currentUser.displayName || 'Author'} 📢`,
+          body: newAnnouncementContent.trim().substring(0, 100) + (newAnnouncementContent.trim().length > 100 ? '...' : ''),
+          data: { url: `novlnest://profile/${currentUser.uid}` }
+        }
+      );
 
-          // Send Push Notification
-          const pushNotification = sendPushNotification(
-            followerId,
-            `${currentUser.displayName || 'Author'} 📢`,
-            newAnnouncementContent.trim().substring(0, 100) + (newAnnouncementContent.trim().length > 100 ? '...' : ''),
-            { url: `novlnest://profile/${currentUser.uid}` }
-          );
-
-          return Promise.all([firestoreNotification, pushNotification]);
-        });
-        await Promise.all(notificationPromises);
+      // 🚀 Invalidate caches
+      if (profileUser?.uid) {
+        await invalidateAnnouncementCache(profileUser.uid);
       }
 
       setNewAnnouncementContent('');
-      Alert.alert('Success', 'Announcement posted!');
+      showToast({ message: 'Announcement posted!', type: 'success' });
     } catch (error) {
-      Alert.alert('Error', 'Failed to post announcement');
+      showToast({ message: 'Failed to post announcement', type: 'error' });
     } finally {
       setSubmittingAnnouncement(false);
     }
   };
 
   const handleDeleteAnnouncement = (announcementId: string) => {
-    Alert.alert(
-      'Delete Announcement',
-      'Are you sure you want to delete this announcement?',
-      [
+    showAlert({
+      title: 'Delete Announcement',
+      message: 'Are you sure you want to delete this announcement?',
+      type: 'warning',
+      useNative: true,
+      buttons: [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete',
@@ -451,14 +469,18 @@ const ProfileScreen = ({ route, navigation }: any) => {
           onPress: async () => {
             try {
               await deleteDoc(doc(db, 'announcements', announcementId));
-              Alert.alert('Success', 'Announcement deleted!');
+
+              if (profileUser?.uid) {
+                await invalidateAnnouncementCache(profileUser.uid);
+              }
+              showToast({ message: 'Announcement deleted!', type: 'success' });
             } catch (error) {
-              Alert.alert('Error', 'Failed to delete announcement');
+              showToast({ message: 'Failed to delete announcement', type: 'error' });
             }
           },
         },
       ]
-    );
+    });
   };
 
   const handleShare = async () => {
@@ -476,10 +498,17 @@ const ProfileScreen = ({ route, navigation }: any) => {
     try {
       const userRef = doc(db, 'users', currentUser.uid);
       await updateDoc(userRef, { emailVisible: !emailVisible });
+
+      // 🚀 Invalidate profile cache
+      await invalidateProfileCache(currentUser.uid);
+
       setEmailVisible(!emailVisible);
-      Alert.alert('Success', emailVisible ? 'Email is now private' : 'Email is now visible');
+      showToast({
+        message: emailVisible ? 'Email is now private' : 'Email is now visible',
+        type: 'success'
+      });
     } catch (error) {
-      Alert.alert('Error', 'Failed to update email visibility');
+      showToast({ message: 'Failed to update email visibility', type: 'error' });
     }
   };
 
@@ -523,12 +552,12 @@ const ProfileScreen = ({ route, navigation }: any) => {
       );
 
       setEditNovelPrologue('');
-      Alert.alert('Success', 'Novel updated!');
+      showToast({ message: 'Novel updated!', type: 'success' });
       setShowEditNovelModal(false);
       fetchUserData();
     } catch (error) {
       console.error('Error saving novel:', error);
-      Alert.alert('Error', 'Failed to update novel');
+      showToast({ message: 'Failed to update novel', type: 'error' });
     } finally {
       setIsSavingNovel(false);
     }
@@ -550,12 +579,12 @@ const ProfileScreen = ({ route, navigation }: any) => {
       await invalidateByPrefix("home_");
       await invalidateByPrefix("browse_");
 
-      Alert.alert('Success', 'Novel marked as completed!');
+      showToast({ message: 'Novel marked as completed!', type: 'success' });
       setShowCompletionModal(false);
       fetchUserData();
     } catch (err) {
       console.error('Error finishing novel:', err);
-      Alert.alert('Error', 'Failed to mark novel as completed');
+      showToast({ message: 'Failed to mark novel as completed', type: 'error' });
     } finally {
       setIsFinishingNovel(false);
     }
@@ -577,11 +606,18 @@ const ProfileScreen = ({ route, navigation }: any) => {
             epilogue: epilogueData,
             updatedAt: new Date().toISOString(),
           });
-          Alert.alert('Success', 'Epilogue added and novel marked as completed!');
+
+          // 🚀 Invalidate caches
+          await invalidateCache(`novel_${selectedNovel.id}`);
+          await invalidateByPrefix("profile_");
+          await invalidateByPrefix("home_");
+          await invalidateByPrefix("browse_");
+
+          showToast({ message: 'Epilogue added and novel marked as completed!', type: 'success' });
           fetchUserData();
         } catch (err) {
           console.error('Error adding epilogue:', err);
-          Alert.alert('Error', 'Failed to add epilogue');
+          showToast({ message: 'Failed to add epilogue', type: 'error' });
         }
       }
     });
@@ -593,19 +629,37 @@ const ProfileScreen = ({ route, navigation }: any) => {
         status: 'ongoing',
         updatedAt: new Date().toISOString(),
       });
-      Alert.alert('Success', 'Novel status set to ongoing!');
+
+      // Invalidate caches
+      await invalidateCache(`novel_${novel.id}`);
+      await invalidateByPrefix("profile_");
+      await invalidateByPrefix("home_");
+      await invalidateByPrefix("browse_");
+
+      // Update local state for immediate feedback
+      setUserNovels((prev) =>
+        prev.map((n) =>
+          n.id === novel.id
+            ? { ...n, status: 'ongoing' as const }
+            : n
+        )
+      );
+
+      showToast({ message: 'Novel status set to ongoing!', type: 'success' });
       fetchUserData();
     } catch (err) {
       console.error('Error marking novel as ongoing:', err);
-      Alert.alert('Error', 'Failed to update novel status');
+      showToast({ message: 'Failed to update novel status', type: 'error' });
     }
   };
 
   const handleDeleteNovel = (novel: Novel) => {
-    Alert.alert(
-      'Delete Novel',
-      `Are you sure you want to delete "${novel.title}"? This action cannot be undone.`,
-      [
+    showAlert({
+      title: 'Delete Novel',
+      message: `Are you sure you want to delete "${novel.title}"? This action cannot be undone.`,
+      type: 'warning',
+      useNative: true,
+      buttons: [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete',
@@ -619,14 +673,14 @@ const ProfileScreen = ({ route, navigation }: any) => {
               await invalidateByPrefix("home_");
               await invalidateByPrefix("browse_");
               setUserNovels((prev) => prev.filter((n) => n.id !== novel.id));
-              Alert.alert('Success', 'Novel deleted!');
+              showToast({ message: 'Novel deleted successfully!', type: 'success' });
             } catch (error) {
-              Alert.alert('Error', 'Failed to delete novel');
+              showToast({ message: 'Failed to delete novel', type: 'error' });
             }
           },
         },
       ]
-    );
+    });
   };
 
   const handleEditPoem = (poem: Poem) => {
@@ -664,22 +718,24 @@ const ProfileScreen = ({ route, navigation }: any) => {
         )
       );
 
-      Alert.alert('Success', 'Poem updated!');
+      showToast({ message: 'Poem updated successfully!', type: 'success' });
       setShowEditPoemModal(false);
       fetchUserData();
     } catch (error) {
       console.error('Error saving poem:', error);
-      Alert.alert('Error', 'Failed to update poem');
+      showToast({ message: 'Failed to update poem', type: 'error' });
     } finally {
       setIsSavingPoem(false);
     }
   };
 
   const handleDeletePoem = (poem: Poem) => {
-    Alert.alert(
-      'Delete Poem',
-      `Are you sure you want to delete "${poem.title}"? This action cannot be undone.`,
-      [
+    showAlert({
+      title: 'Delete Poem',
+      message: `Are you sure you want to delete "${poem.title}"? This action cannot be undone.`,
+      type: 'warning',
+      useNative: true,
+      buttons: [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete',
@@ -693,14 +749,14 @@ const ProfileScreen = ({ route, navigation }: any) => {
               await invalidateByPrefix("home_");
               await invalidateByPrefix("browse_");
               setUserPoems((prev) => prev.filter((p) => p.id !== poem.id));
-              Alert.alert('Success', 'Poem deleted!');
+              showToast({ message: 'Poem deleted successfully!', type: 'success' });
             } catch (error) {
-              Alert.alert('Error', 'Failed to delete poem');
+              showToast({ message: 'Failed to delete poem', type: 'error' });
             }
           },
         },
       ]
-    );
+    });
   };
 
   const handleEditCoverUpload = useCallback(async () => {
@@ -708,7 +764,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
 
     const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permissionResult.granted) {
-      Alert.alert('Permission Required', 'Permission to access camera roll is required!');
+      showToast({ message: 'Permission to access camera roll is required', type: 'error' });
       return;
     }
 
@@ -725,17 +781,20 @@ const ProfileScreen = ({ route, navigation }: any) => {
         setEditCoverError('');
 
         const uri = result.assets[0].uri;
-        const response = await fetch(uri);
-        const blob = await response.blob();
+
+        // Use the new intelligent compression utilities to generate separate blobs
+        const [{ blob: largeBlob }, { blob: smallBlob }] = await Promise.all([
+          compressForCover(uri),
+          generateSmallCover(uri)
+        ]);
 
         // Upload large cover
         const coverRef = ref(storage, `covers-large/${selectedNovel.id}.jpg`);
-        await uploadBytes(coverRef, blob, { contentType: 'image/jpeg' });
+        await uploadBytes(coverRef, largeBlob, { contentType: 'image/jpeg' });
 
-        // Create a small version by uploading the same blob with a different path
-        // (In production, you could use Cloud Functions to resize)
+        // Create a small version
         const coverSmallRef = ref(storage, `covers-small/${selectedNovel.id}.jpg`);
-        await uploadBytes(coverSmallRef, blob, { contentType: 'image/jpeg' });
+        await uploadBytes(coverSmallRef, smallBlob, { contentType: 'image/jpeg' });
 
         const coverUrl = `https://storage.googleapis.com/novelnest-50ab1.firebasestorage.app/covers-large/${selectedNovel.id}.jpg`;
         const coverSmallUrl = `https://storage.googleapis.com/novelnest-50ab1.firebasestorage.app/covers-small/${selectedNovel.id}.jpg`;
@@ -812,7 +871,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
 
     const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permissionResult.granted) {
-      Alert.alert('Permission Required', 'Permission to access camera roll is required!');
+      showToast({ message: 'Permission to access camera roll is required', type: 'error' });
       return;
     }
 
@@ -829,16 +888,20 @@ const ProfileScreen = ({ route, navigation }: any) => {
         setEditPoemCoverError('');
 
         const uri = result.assets[0].uri;
-        const response = await fetch(uri);
-        const blob = await response.blob();
+
+        // Use the new intelligent compression utilities to generate separate blobs
+        const [{ blob: largeBlob }, { blob: smallBlob }] = await Promise.all([
+          compressForCover(uri),
+          generateSmallCover(uri)
+        ]);
 
         // Upload large cover
         const coverRef = ref(storage, `poem-covers-large/${selectedPoem.id}.jpg`);
-        await uploadBytes(coverRef, blob, { contentType: 'image/jpeg' });
+        await uploadBytes(coverRef, largeBlob, { contentType: 'image/jpeg' });
 
-        // Create a small version by uploading the same blob with a different path
+        // Create a small version
         const coverSmallRef = ref(storage, `poem-covers-small/${selectedPoem.id}.jpg`);
-        await uploadBytes(coverSmallRef, blob, { contentType: 'image/jpeg' });
+        await uploadBytes(coverSmallRef, smallBlob, { contentType: 'image/jpeg' });
 
         const coverUrl = `https://storage.googleapis.com/novelnest-50ab1.firebasestorage.app/poem-covers-large/${selectedPoem.id}.jpg`;
         const coverSmallUrl = `https://storage.googleapis.com/novelnest-50ab1.firebasestorage.app/poem-covers-small/${selectedPoem.id}.jpg`;
@@ -953,7 +1016,14 @@ const ProfileScreen = ({ route, navigation }: any) => {
     <View style={styles.container}>
       {/* Custom Header with SafeAreaView */}
       <SafeAreaView style={[styles.customHeader, { backgroundColor: colors.primary }]} edges={['top', 'left', 'right']}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerBackButton}>
+        <TouchableOpacity onPress={() => {
+          if (navigation.canGoBack()) {
+            navigation.goBack();
+          } else {
+            navigation.replace('MainTabs');
+          }
+        }}
+          style={styles.headerBackButton}>
           <Ionicons name="chevron-back" size={28} color="#fff" />
         </TouchableOpacity>
         <View style={styles.headerActions}>
@@ -971,6 +1041,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
       <ScrollView
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
         showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 20) }}
       >
         {/* Hero Header with Gradient Background */}
         <View style={[styles.heroHeader, { backgroundColor: colors.primary + '15' }]}>
@@ -986,9 +1057,9 @@ const ProfileScreen = ({ route, navigation }: any) => {
                 style={styles.avatarContainer}
               >
                 {profileUser?.photoURL ? (
-                  <CachedImage 
-                    uri={getFirebaseDownloadUrl(profileUser.photoURL)} 
-                    style={styles.heroAvatar} 
+                  <CachedImage
+                    uri={getFirebaseDownloadUrl(profileUser.photoURL)}
+                    style={styles.heroAvatar}
                     placeholderColor={colors.backgroundSecondary}
                   />
                 ) : (
@@ -1105,6 +1176,19 @@ const ProfileScreen = ({ route, navigation }: any) => {
               <Ionicons name="chevron-forward" size={20} color="#fff" />
             </TouchableOpacity>
           </View>
+        )}
+
+        {isOwnProfile && (
+          <TouchableOpacity
+            style={[styles.actionCard, { marginTop: 12 }]}
+            onPress={() => navigation.navigate('ReadingInsights' as any)}
+          >
+            <View style={styles.actionCardContent}>
+              <Ionicons name="stats-chart" size={20} color={colors.primary} />
+              <Text style={[styles.actionCardText, { color: colors.text, marginLeft: 12 }]}>Reading Insights</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+          </TouchableOpacity>
         )}
 
         {/* Social Links Section */}
@@ -1338,7 +1422,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
                         <CachedImage
                           uri={getFirebaseDownloadUrl(novel.coverSmallImage || novel.coverImage || '')}
                           style={styles.cardCover}
-                          resizeMode="cover"
+                          contentFit="cover"
                           placeholderColor={colors.backgroundSecondary}
                         />
                       ) : (
@@ -1380,7 +1464,21 @@ const ProfileScreen = ({ route, navigation }: any) => {
                         {novel.description || 'No description provided.'}
                       </Text>
                     </View>
-                    <Ionicons name="chevron-forward" size={20} color={colors.cardBorder} style={styles.cardArrow} />
+                    {isOwnProfile ? (
+                      <TouchableOpacity
+                        style={styles.manageButton}
+                        onPress={() => {
+                          setActionSheetNovel(novel);
+                          setActionSheetPoem(null);
+                          setShowActionSheet(true);
+                        }}
+                      >
+                        <Ionicons name="settings-outline" size={16} color={colors.primary} />
+                        <Text style={styles.manageButtonText}>Manage</Text>
+                      </TouchableOpacity>
+                    ) : (
+                      <Ionicons name="chevron-forward" size={20} color={colors.cardBorder} style={styles.cardArrow} />
+                    )}
                   </TouchableOpacity>
                 ))}
               </View>
@@ -1412,7 +1510,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
                         <CachedImage
                           uri={getFirebaseDownloadUrl(poem.coverSmallImage || poem.coverImage || '')}
                           style={styles.cardCover}
-                          resizeMode="cover"
+                          contentFit="cover"
                           placeholderColor={colors.backgroundSecondary}
                         />
                       ) : (
@@ -1443,7 +1541,21 @@ const ProfileScreen = ({ route, navigation }: any) => {
                         {poem.description || 'A beautiful piece of poetry.'}
                       </Text>
                     </View>
-                    <Ionicons name="chevron-forward" size={20} color={colors.cardBorder} style={styles.cardArrow} />
+                    {isOwnProfile ? (
+                      <TouchableOpacity
+                        style={styles.manageButton}
+                        onPress={() => {
+                          setActionSheetPoem(poem);
+                          setActionSheetNovel(null);
+                          setShowActionSheet(true);
+                        }}
+                      >
+                        <Ionicons name="settings-outline" size={16} color={colors.primary} />
+                        <Text style={styles.manageButtonText}>Manage</Text>
+                      </TouchableOpacity>
+                    ) : (
+                      <Ionicons name="chevron-forward" size={20} color={colors.cardBorder} style={styles.cardArrow} />
+                    )}
                   </TouchableOpacity>
                 ))}
               </View>
@@ -1458,7 +1570,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
           <TouchableOpacity style={styles.modalClose} onPress={() => setShowPhotoModal(false)}>
             <Ionicons name="close" size={32} color="#fff" />
           </TouchableOpacity>
-          <CachedImage uri={profileUser?.photoURL} style={styles.fullPhoto} resizeMode="contain" />
+          <CachedImage uri={profileUser?.photoURL} style={styles.fullPhoto} contentFit="contain" />
         </View>
       </Modal>
 
@@ -1832,6 +1944,19 @@ const ProfileScreen = ({ route, navigation }: any) => {
                 style={styles.actionSheetItem}
                 onPress={() => {
                   setShowActionSheet(false);
+                  navigation.navigate('ChaptersList', { novel: actionSheetNovel });
+                }}
+              >
+                <Ionicons name="list-outline" size={24} color={colors.primary} />
+                <Text style={[styles.actionSheetItemText, { color: colors.text }]}>Chapter List</Text>
+              </TouchableOpacity>
+            )}
+
+            {actionSheetNovel && actionSheetNovel.status !== 'completed' && (
+              <TouchableOpacity
+                style={styles.actionSheetItem}
+                onPress={() => {
+                  setShowActionSheet(false);
                   navigation.navigate('AddChapters', { novelId: actionSheetNovel.id });
                 }}
               >
@@ -1974,10 +2099,11 @@ const ProfileScreen = ({ route, navigation }: any) => {
   );
 };
 
-const getStyles = (themeColors: any) => ({
+const getStyles = (themeColors: any, insets: any) => ({
   container: {
     flex: 1,
     backgroundColor: themeColors.background,
+    paddingBottom: insets.bottom,
   },
   loadingContainer: {
     flex: 1,
@@ -2085,7 +2211,7 @@ const getStyles = (themeColors: any) => ({
     fontWeight: '700' as const,
     marginBottom: 6,
     textAlign: 'center' as const,
-    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    fontFamily: Platform.OS === 'ios' ? 'Gill Sans' : 'sans-serif',
   },
   bio: {
     fontSize: 14,
@@ -2437,6 +2563,21 @@ const getStyles = (themeColors: any) => ({
   },
   cardArrow: {
     marginLeft: 8,
+  },
+  manageButton: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    backgroundColor: themeColors.primary + '15',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    gap: 4,
+    marginLeft: 8,
+  },
+  manageButtonText: {
+    fontSize: 12,
+    fontWeight: '700' as const,
+    color: themeColors.primary,
   },
   draftBadge: {
     position: 'absolute' as const,

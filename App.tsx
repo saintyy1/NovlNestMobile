@@ -1,17 +1,20 @@
 // App.tsx
+import 'react-native-gesture-handler';
 import React, { useEffect } from 'react';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { NavigationContainer, NavigationState, LinkingOptions } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { RootStackParamList } from './src/types/navigation';
 import { NotificationsScreen } from './src/screens/main/NotificationsScreen';
 import { StatusBar } from 'expo-status-bar';
-import { View, ActivityIndicator, StyleSheet, TouchableOpacity, Platform, Alert, Linking, AppState, Text } from 'react-native';
+import { View, ActivityIndicator, StyleSheet, TouchableOpacity, Platform, Linking, AppState, Text } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AuthProvider, useAuth } from './src/contexts/AuthContext';
 import { ChatProvider } from "./src/contexts/ChatContext"
 import { NotificationProvider } from './src/contexts/NotificationContext';
 import { ThemeProvider, useTheme } from './src/contexts/ThemeContext';
+import { ReaderSettingsProvider } from './src/contexts/ReaderSettingsContext';
 import { MainTabNavigator } from './src/components/navigation/MainTabNavigator';
 import { AuthNavigator } from './src/components/navigation/AuthNavigator';
 import ProfileScreen from './src/screens/main/ProfileScreen';
@@ -32,14 +35,24 @@ import { PromoteScreen } from './src/screens/main/PromoteScreen';
 import PaymentCallbackScreen from './src/screens/main/PaymentCallbackScreen';
 import EmailActionScreen from './src/screens/main/EmailActionScreen';
 import ChapterEditorScreen from './src/screens/main/ChapterEditorScreen';
+import { ReadingInsightsScreen } from './src/screens/main/ReadingInsightsScreen';
 import { initializeAnalytics, trackScreenView, setUserId, cleanupAnalytics } from './src/utils/Analytics-utils';
 import { checkAppVersion, AppConfig } from './src/utils/VersionCheck-utils';
 import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
 import { navigationRef } from './src/utils/navigation';
-import { ensureInitialized } from './src/utils/cache';
+import { ensureInitialized, checkVersionAndClearCache } from './src/utils/cache';
+import { recoverCrashedSession } from './src/services/readingAnalyticsService';
 import * as Notifications from 'expo-notifications';
 import { usePushNotifications } from './src/hooks/usePushNotifications';
+import { getUserReadingStats } from './src/services/readingAnalyticsService';
+import { scheduleStreakReminder } from './src/services/localNotificationService';
+
+import { AlertProvider, useAlert } from './src/contexts/AlertContext';
+import CustomAlert from './src/components/common/CustomAlert';
+import CustomToast from './src/components/common/CustomToast';
+
+import CharacterManagerScreen from './src/screens/main/CharacterManagerScreen';
 
 const Stack = createStackNavigator<RootStackParamList>();
 
@@ -57,6 +70,7 @@ const getActiveRouteName = (state: NavigationState | undefined): string => {
 function AppContent() {
   const { currentUser, loading } = useAuth();
   const { colors } = useTheme();
+  const { showAlert, showToast } = useAlert();
   const routeNameRef = React.useRef<string>('');
   const [forceUpdateConfig, setForceUpdateConfig] = React.useState<AppConfig | null>(null);
   const [isCheckingUpdate, setIsCheckingUpdate] = React.useState(false);
@@ -65,10 +79,15 @@ function AppContent() {
   // Initialize push notifications
   usePushNotifications();
 
-  // Initialize analytics and cache when app loads
+  // Initialize analytics, cache, and recover crashed reading sessions when app loads
   useEffect(() => {
     initializeAnalytics(currentUser?.uid);
-    ensureInitialized().then(() => setIsCacheReady(true));
+    recoverCrashedSession();
+    
+    // Clear cache if version changed, then ensure initialization
+    checkVersionAndClearCache().then(() => {
+      ensureInitialized().then(() => setIsCacheReady(true));
+    });
 
     return () => {
       cleanupAnalytics();
@@ -109,23 +128,23 @@ function AppContent() {
         const message = `A new version of NovlNest is available!`;
         const updateUrl = Platform.OS === 'ios' ? config.iosUpdateUrl : config.androidUpdateUrl;
 
-        Alert.alert(title, message, [
-          {
-            text: 'Later',
-            style: 'cancel',
-            onPress: async () => {
-              await AsyncStorage.setItem(lastPromptKey, Date.now().toString());
+        showAlert({
+          title: title,
+          message: message,
+          type: 'info',
+          buttons: [
+            {
+              text: 'Later',
+              style: 'cancel',
+              onPress: async () => {
+                await AsyncStorage.setItem(lastPromptKey, Date.now().toString());
+              }
+            },
+            {
+              text: 'Update Now',
+              onPress: () => Linking.openURL(updateUrl),
             }
-          },
-          {
-            text: 'Update Now',
-            onPress: () => Linking.openURL(updateUrl),
-          }
-        ], {
-          cancelable: true,
-          onDismiss: async () => {
-            await AsyncStorage.setItem(lastPromptKey, Date.now().toString());
-          }
+          ]
         });
       }
     } catch (error) {
@@ -141,18 +160,34 @@ function AppContent() {
     return () => clearTimeout(timer);
   }, []);
 
-  // Re-check when app returns to foreground
+  // Check and schedule streak reminder when user is active
   useEffect(() => {
-    const subscription = AppState.addEventListener('change', nextAppState => {
-      if (nextAppState === 'active') {
-        performVersionCheck(true);
-      }
-    });
+    if (currentUser?.uid && isCacheReady) {
+      const checkStreakReminder = async () => {
+        try {
+          const stats = await getUserReadingStats(currentUser.uid);
+          if (stats && stats.streak > 0 && stats.todayMinutes === 0) {
+            await scheduleStreakReminder();
+          }
+        } catch (error) {
+          console.error('[StreakReminder] Error checking streak status:', error);
+        }
+      };
 
-    return () => {
-      subscription.remove();
-    };
-  }, []);
+      // Check reminder on initialization
+      checkStreakReminder();
+
+      // Also check on return to foreground
+      const subscription = AppState.addEventListener('change', nextAppState => {
+        if (nextAppState === 'active') {
+          performVersionCheck(true);
+          checkStreakReminder();
+        }
+      });
+
+      return () => subscription.remove();
+    }
+  }, [currentUser?.uid, isCacheReady]);
 
   // Update user ID when auth state changes
   useEffect(() => {
@@ -276,6 +311,13 @@ function AppContent() {
             }}
           />
           <Stack.Screen
+            name="ReadingInsights"
+            component={ReadingInsightsScreen}
+            options={{
+              headerShown: false,
+            }}
+          />
+          <Stack.Screen
             name="PrivacyPolicy"
             component={PrivacyPolicyScreen}
             options={{
@@ -318,13 +360,7 @@ function AppContent() {
             name="MyTickets"
             component={MyTicketsScreen}
             options={{
-              headerShown: true,
-              headerStyle: {
-                backgroundColor: colors.primary,
-              },
-              headerTintColor: '#fff',
-              headerTitle: 'My Tickets',
-              headerBackTitle: 'Back',
+              headerShown: false,
             }}
           />
           <Stack.Screen
@@ -424,6 +460,13 @@ function AppContent() {
               headerBackTitle: '',
             }}
           />
+          <Stack.Screen
+            name="CharacterManager"
+            component={CharacterManagerScreen}
+            options={{
+              headerShown: false,
+            }}
+          />
         </Stack.Navigator>
       ) : (
         <AuthNavigator />
@@ -433,6 +476,8 @@ function AppContent() {
         backgroundColor={colors.primary}
         translucent={Platform.OS === 'android'}
       />
+      <CustomAlert />
+      <CustomToast />
     </>
   );
 }
@@ -440,9 +485,9 @@ function AppContent() {
 export default function App() {
   const linking: LinkingOptions<RootStackParamList> = {
     prefixes: [
-      'novlnest://', 
-      'https://novlnest.com', 
-      'https://www.novlnest.com', 
+      'novlnest://',
+      'https://novlnest.com',
+      'https://www.novlnest.com',
       'https://auth.expo.io'
     ],
     async getInitialURL() {
@@ -501,28 +546,34 @@ export default function App() {
   };
 
   return (
-    <SafeAreaProvider>
-      <ThemeProvider>
-        <AuthProvider>
-          <ChatProvider>
-            <NotificationProvider>
-              <NavigationContainer<RootStackParamList>
-                ref={navigationRef}
-                linking={linking}
-                onStateChange={(state) => {
-                  const currentRouteName = getActiveRouteName(state);
-                  if (currentRouteName) {
-                    trackScreenView(currentRouteName, currentRouteName);
-                  }
-                }}
-              >
-                <AppContent />
-              </NavigationContainer>
-            </NotificationProvider>
-          </ChatProvider>
-        </AuthProvider>
-      </ThemeProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <ThemeProvider>
+          <ReaderSettingsProvider>
+            <AlertProvider>
+              <AuthProvider>
+                <ChatProvider>
+                  <NotificationProvider>
+                    <NavigationContainer<RootStackParamList>
+                      ref={navigationRef}
+                      linking={linking}
+                      onStateChange={(state) => {
+                        const currentRouteName = getActiveRouteName(state);
+                        if (currentRouteName) {
+                          trackScreenView(currentRouteName, currentRouteName);
+                        }
+                      }}
+                    >
+                      <AppContent />
+                    </NavigationContainer>
+                  </NotificationProvider>
+                </ChatProvider>
+              </AuthProvider>
+            </AlertProvider>
+          </ReaderSettingsProvider>
+        </ThemeProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 

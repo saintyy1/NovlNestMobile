@@ -41,6 +41,7 @@ import { db } from '../../firebase/config';
 import type { Novel } from '../../types/novel';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useAlert } from '../../contexts/AlertContext';
 import {
   trackNovelRead,
   trackChapterStart,
@@ -51,9 +52,12 @@ import {
   getCurrentReadingTime,
 } from '../../utils/Analytics-utils';
 import { updateReadingProgress } from '../../services/readingProgressService';
-import { colors } from '../../theme';
 import { withCache, invalidateCache, CACHE_TTL } from '../../utils/cache';
 import { sendPushNotification } from '../../services/PushNotificationService';
+import { hydrateComments } from '../../utils/commentUtils';
+import { useReaderSettings } from '../../contexts/ReaderSettingsContext';
+import ReaderSettingsModal from '../../components/ReaderSettingsModal';
+import { useReadingSession } from '../../hooks/useReadingSession';
 
 interface Comment {
   id: string;
@@ -69,10 +73,35 @@ interface Comment {
   likedBy?: string[];
 }
 
+const InlineImageBlock = ({ uri, maxHeight }: { uri: string; maxHeight: number }) => {
+  const [aspectRatio, setAspectRatio] = useState<number>(16 / 9);
+
+  return (
+    <View style={{ width: '100%', marginVertical: 32, alignItems: 'center' }}>
+      <CachedImage
+        uri={uri}
+        style={{
+          width: '100%',
+          aspectRatio,
+          maxHeight,
+          borderRadius: 8,
+        }}
+        contentFit="contain"
+        onLoad={(e) => {
+          if (e.source?.width && e.source?.height) {
+            setAspectRatio(e.source.width / e.source.height);
+          }
+        }}
+      />
+    </View>
+  );
+};
+
 const NovelReaderScreen = ({ route, navigation }: any) => {
   const { novelId, id, chapterNumber, chapterIndex, chapter } = route.params || {};
   const { currentUser, toggleFollow } = useAuth();
   const { colors } = useTheme();
+  const { showAlert, showToast } = useAlert();
   const insets = useSafeAreaInsets()
 
   const [novel, setNovel] = useState<Novel | null>(null);
@@ -88,9 +117,9 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     return 0;
   };
 
-  const initialChapter = chapterIndex !== undefined ? parseChapter(chapterIndex) : 
-                        (chapterNumber !== undefined ? parseChapter(chapterNumber) : 
-                        (chapter !== undefined ? parseChapter(chapter) : 0));
+  const initialChapter = chapterIndex !== undefined ? parseChapter(chapterIndex) :
+    (chapterNumber !== undefined ? parseChapter(chapterNumber) :
+      (chapter !== undefined ? parseChapter(chapter) : 0));
   const [currentChapter, setCurrentChapter] = useState<number>(initialChapter);
   const [showComments, setShowComments] = useState(false);
   const [chapterLiked, setChapterLiked] = useState(false);
@@ -107,15 +136,35 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
   const [editContent, setEditContent] = useState('');
   const [showOptionsModal, setShowOptionsModal] = useState(false);
   const [selectedCommentForOptions, setSelectedCommentForOptions] = useState<Comment | null>(null);
+  const [showReaderSettings, setShowReaderSettings] = useState(false);
+  const [showChapterList, setShowChapterList] = useState(false);
+  const [isUIHidden, setIsUIHidden] = useState(false);
+  const [contentHeight, setContentHeight] = useState(0);
+
+  const uiOpacity = useRef(new Animated.Value(1)).current;
+  const headerTranslateY = useRef(new Animated.Value(0)).current;
+  const floatingTranslateY = useRef(new Animated.Value(0)).current;
+
+  const { fontSize, fontFamily, readerColors, isPagingEnabled } = useReaderSettings();
 
   const showCommentOptions = (comment: Comment) => {
     setSelectedCommentForOptions(comment);
     setShowOptionsModal(true);
   };
   const [isAtEnd, setIsAtEnd] = useState(false);
+  const flatListRef = useRef<FlatList>(null);
+  const [requestedPage, setRequestedPage] = useState(0);
 
-  const styles = getStyles(colors);
+  const styles = getStyles(colors, insets, fontSize);
   const [showNextChapterHint, setShowNextChapterHint] = useState(false);
+
+  // Precision Cache for paged content
+  const pagedCache = useRef<Record<string, any[][]>>({});
+  
+  // Clear cache on layout changes
+  useEffect(() => {
+    pagedCache.current = {};
+  }, [fontSize, insets, isPagingEnabled]);
 
   // Follow states
   const [isFollowing, setIsFollowing] = useState(false);
@@ -124,6 +173,16 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
   const scrollViewRef = useRef<ScrollView>(null);
   const slideAnim = useRef(new Animated.Value(0)).current;
   const replyInputRef = useRef<TextInput>(null);
+  const lastChapterRef = useRef<number>(currentChapter);
+
+  // Initialize reading session tracking
+  const { onUserActivity, markAsCompleted } = useReadingSession(
+    currentUser?.uid,
+    resolvedNovelId,
+    novel?.title || 'Unknown Novel',
+    currentChapter.toString(),
+    'novel'
+  );
 
   // Keep follow state in sync with AuthContext
   useEffect(() => {
@@ -147,6 +206,13 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     if (novel.prologue) {
       if (readingOrderIndex === currentIndex) {
         return { type: 'prologue', chapterIndex: -1, content: novel.prologue, title: 'Prologue' };
+      }
+      currentIndex++;
+    }
+
+    if (novel.characters && novel.characters.length > 0) {
+      if (readingOrderIndex === currentIndex) {
+        return { type: 'characters', chapterIndex: -1, content: '', title: 'Cast of Characters' };
       }
       currentIndex++;
     }
@@ -179,11 +245,185 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
   const currentContentInfo = getContentInfo(currentChapter);
 
+  // Extract content blocks (paragraphs, chats, images) from content
+  const extractChatBlocks = (content: string): Array<{ type: 'paragraph' | 'chat' | 'image', data: any }> => {
+    if (!content) return [];
+    const result: Array<{ type: 'paragraph' | 'chat' | 'image', data: any }> = [];
+    const combinedRegex = /(\[CHAT_START\].*?\[CHAT_END\]|\[IMAGE:.*?\])/gs;
+    let lastIndex = 0;
+    let match;
+
+    while ((match = combinedRegex.exec(content)) !== null) {
+      // Add paragraphs before this block
+      if (match.index > lastIndex) {
+        const textBefore = content.substring(lastIndex, match.index);
+        splitIntoSmartParagraphs(textBefore).forEach(p => {
+          result.push({ type: 'paragraph', data: p });
+        });
+      }
+
+      const matchText = match[0];
+      if (matchText.startsWith('[CHAT_START]')) {
+        // Chat block
+        try {
+          const chatJson = matchText.replace(/\[CHAT_START\]|\[CHAT_END\]/g, '');
+          const messages = JSON.parse(chatJson);
+          result.push({ type: 'chat', data: messages });
+        } catch (e) {
+          result.push({ type: 'paragraph', data: matchText });
+        }
+      } else if (matchText.startsWith('[IMAGE:')) {
+        // Image block
+        const imageUrl = matchText.replace(/\[IMAGE:|\]/g, '');
+        result.push({ type: 'image', data: imageUrl });
+      }
+
+      lastIndex = combinedRegex.lastIndex;
+    }
+
+    // Add remaining paragraphs
+    if (lastIndex < content.length) {
+      const remainingText = content.substring(lastIndex);
+      splitIntoSmartParagraphs(remainingText).forEach(p => {
+        result.push({ type: 'paragraph', data: p });
+      });
+    }
+
+    return result;
+  };
+
+  // Smart paragraph splitting function
+  const splitIntoSmartParagraphs = (content: string): string[] => {
+    const explicitParagraphs = content.split(/\n\n+/).filter(p => p.trim().length > 0);
+    const smartParagraphs: string[] = [];
+
+    for (const para of explicitParagraphs) {
+      let cleanPara = para.trim();
+      if (cleanPara.startsWith('.') || cleanPara.startsWith(':')) {
+        cleanPara = cleanPara.substring(1).trim();
+      }
+      if (!cleanPara) continue;
+
+      const lines = para.split('\n').filter(l => l.trim().length > 0);
+      if (lines.length > 1 && lines[0].length < 60 && /^[A-Z0-9\W]+$/.test(lines[0].trim())) {
+        smartParagraphs.push(lines[0].trim());
+        const rest = lines.slice(1).join(' ');
+        if (rest.trim()) {
+          smartParagraphs.push(rest.trim());
+        }
+        continue;
+      }
+
+      cleanPara = cleanPara.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+      if (cleanPara.length < 400) {
+        smartParagraphs.push(cleanPara);
+        continue;
+      }
+
+      const sentences = cleanPara.match(/[^.!?]*[.!?]+(?:\s+|$)|[^.!?]+$/g) || [cleanPara];
+      let currentParagraph = '';
+      const targetLength = 350;
+
+      for (let i = 0; i < sentences.length; i++) {
+        currentParagraph += (currentParagraph ? ' ' : '') + sentences[i].trim();
+        if (currentParagraph.length >= targetLength || i === sentences.length - 1) {
+          smartParagraphs.push(currentParagraph);
+          currentParagraph = '';
+        }
+      }
+    }
+    return smartParagraphs;
+  };
+
+  const getPagedContent = (chapterIdx: number) => {
+    if (!novel) return [];
+    
+    const cacheKey = `${novel.id}_${chapterIdx}_${fontSize}_${insets.top}_${insets.bottom}`;
+    if (pagedCache.current[cacheKey]) return pagedCache.current[cacheKey];
+
+    const contentInfo = getContentInfo(chapterIdx);
+    
+    // Explicit handle for Cast of Characters
+    if (contentInfo.type === 'characters') {
+      const charPages = [[{ type: 'characters_list' }]];
+      pagedCache.current[cacheKey] = charPages;
+      return charPages;
+    }
+
+    if (!contentInfo.content) return [];
+    const pages: any[][] = [];
+    let currentPage: any[] = [];
+    
+    const availableWidth = Dimensions.get('window').width - 48;
+    const approxLineHeight = Math.round(fontSize * 1.6);
+    const availableHeight = Dimensions.get('window').height - (insets.top + insets.bottom + 160);
+    const maxLinesPerPage = Math.floor(availableHeight / approxLineHeight);
+    
+    const charsPerLine = Math.floor(availableWidth / (fontSize * 0.45));
+    let currentLinesOnPage = 0;
+
+    const allBlocks = extractChatBlocks(contentInfo.content);
+
+    allBlocks.forEach((block: any) => {
+      if (block.type === 'paragraph') {
+        let text = block.data;
+        while (text.length > 0) {
+          const lines = Math.ceil(text.length / charsPerLine);
+          const remainingLines = maxLinesPerPage - currentLinesOnPage;
+          
+          if (lines <= remainingLines) {
+            currentPage.push({ type: 'paragraph', data: text });
+            currentLinesOnPage += lines + 1;
+            text = "";
+          } else if (remainingLines > 3) {
+            const splitPoint = Math.floor(remainingLines * charsPerLine * 0.9);
+            let breakIdx = text.lastIndexOf(' ', splitPoint);
+            if (breakIdx === -1) breakIdx = splitPoint;
+            
+            currentPage.push({ type: 'paragraph', data: text.substring(0, breakIdx).trim() });
+            pages.push(currentPage);
+            currentPage = [];
+            currentLinesOnPage = 0;
+            text = text.substring(breakIdx).trim();
+          } else {
+            if (currentPage.length > 0) pages.push(currentPage);
+            currentPage = [];
+            currentLinesOnPage = 0;
+          }
+        }
+      } else {
+        const blockWeight = block.type === 'chat' ? (block.data.length * 2) : 10;
+        if (currentLinesOnPage + blockWeight > maxLinesPerPage) {
+          if (currentPage.length > 0) pages.push(currentPage);
+          currentPage = [block];
+          currentLinesOnPage = blockWeight;
+        } else {
+          currentPage.push(block);
+          currentLinesOnPage += blockWeight;
+        }
+      }
+    });
+
+    if (currentPage.length > 0) pages.push(currentPage);
+    pagedCache.current[cacheKey] = pages;
+    return pages;
+  };
+
+  const availableHeight_ = Dimensions.get('window').height - insets.top - insets.bottom;
+  const approxLineHeight_ = Math.round(fontSize * 1.6);
+  const targetContentHeight = availableHeight_ * 0.65;
+  const pageHeight = Math.floor(targetContentHeight / approxLineHeight_) * approxLineHeight_;
+  const topPadding = (availableHeight_ - pageHeight) * 0.35;
+
+  const pagedContent = getPagedContent(currentChapter);
+  const totalPages = pagedContent.length;
+
   const getTotalReadingOrderItems = useCallback(() => {
     if (!novel) return 0;
     let count = 0;
     if (novel.authorsNote) count++;
     if (novel.prologue) count++;
+    if (novel.characters && novel.characters.length > 0) count++;
     count += novel.chapters.length;
     if (novel.epilogue) count++;
     return count;
@@ -204,6 +444,8 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         }, CACHE_TTL.CONTENT);
 
         setNovel(novelData);
+        // Clear paging cache because the content might have changed
+        pagedCache.current = {};
 
         if (currentUser) {
           await updateDoc(doc(db, 'novels', resolvedNovelId), {
@@ -242,15 +484,49 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
           if (chapterDoc.exists()) {
             return chapterDoc.data();
           }
-          throw new Error('Chapter not found');
+          return { _notFound: true };
         }, CACHE_TTL.CONTENT);
+
+        if (!chapterData || chapterData._notFound) {
+          throw new Error('Chapter not found');
+        }
 
         setChapterLiked(currentUser ? chapterData.chapterLikedBy?.includes(currentUser.uid) || false : false);
         setChapterLikes(chapterData.chapterLikes || 0);
 
-        const allComments = chapterData.comments || [];
-        const organizedComments = organizeComments(allComments);
+        const allComments = (chapterData.comments || []) as Comment[];
+        const hydratedComments = await hydrateComments<Comment>(allComments);
+        const organizedComments = organizeComments(hydratedComments);
         setComments(organizedComments);
+
+        // Predictive Prefetching: Pre-calculate paging and pre-load metadata for neighbors
+        const prefetch = async (idx: number) => {
+          if (!novel || idx < 0 || idx >= getTotalReadingOrderItems()) return;
+          
+          // 1. Pre-calculate paging (CPU bound)
+          getPagedContent(idx);
+
+          // 2. Pre-load chapter metadata (Network bound)
+          const info = getContentInfo(idx);
+          const id = info.type === 'epilogue' ? 'epilogue' : idx.toString();
+          const key = `chapter_${novel.id}_${id}`;
+          try {
+            await withCache(key, async () => {
+              const ref = doc(db, 'novels', novel.id, 'chapters', id);
+              const d = await getDoc(ref);
+              return d.exists() ? d.data() : { _notFound: true };
+            }, CACHE_TTL.CONTENT);
+          } catch (e) {
+            // Ignore prefetch errors
+          }
+        };
+
+        // Run in background
+        setTimeout(() => {
+          prefetch(currentChapter + 1);
+          prefetch(currentChapter - 1);
+        }, 500);
+
       } catch (error: any) {
         if (error.message === 'Chapter not found') {
           setChapterLiked(false);
@@ -271,6 +547,18 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     setShowNextChapterHint(false);
     scrollViewRef.current?.scrollTo({ y: 0, animated: false });
 
+    const chapterChanged = lastChapterRef.current !== currentChapter;
+    lastChapterRef.current = currentChapter;
+
+    // Reset scroll position ONLY on chapter transition if no specific page is requested
+    if (chapterChanged && requestedPage === 0) {
+      flatListRef.current?.scrollToIndex({ index: 0, animated: false });
+    } 
+    // Just reset the requested page state if it was consumed by initialScrollIndex
+    else if (requestedPage !== 0 && pagedContent.length > 0) {
+      setRequestedPage(0);
+    }
+
     // Track chapter start for analytics
     if (novel && currentContentInfo.type === 'chapter') {
       trackChapterStart({
@@ -289,7 +577,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         isAnonymous: !currentUser,
       });
     }
-  }, [currentChapter]);
+  }, [currentChapter, pagedContent.length, requestedPage]);
 
   // Save reading progress to database
   useEffect(() => {
@@ -319,6 +607,9 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
   // Handle scroll to detect end of chapter
   const handleScroll = (event: any) => {
+    // Notify session tracker of activity
+    onUserActivity();
+
     const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
     const paddingToBottom = 50;
     const isCloseToBottom = layoutMeasurement.height + contentOffset.y >= contentSize.height - paddingToBottom;
@@ -347,6 +638,9 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         setShowNextChapterHint(true);
       }
 
+      // Mark session as completed
+      markAsCompleted();
+
       // Track chapter complete when reaching end
       if (novel && currentContentInfo.type === 'chapter') {
         trackChapterComplete({
@@ -374,20 +668,19 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     }
   };
 
-  const goToNextChapter = () => {
+  const goToNextChapter = (startAtPage: number = 0) => {
     if (currentChapter >= getTotalReadingOrderItems() - 1) return;
 
     const screenHeight = Dimensions.get('window').height;
-
-    // Animate slide up (out of view)
+    
     Animated.timing(slideAnim, {
       toValue: -screenHeight,
       duration: 300,
       useNativeDriver: true,
     }).start(() => {
+      setRequestedPage(startAtPage);
       setCurrentChapter(currentChapter + 1);
-      slideAnim.setValue(screenHeight); // Position new content below
-      // Animate slide in from bottom
+      slideAnim.setValue(screenHeight);
       Animated.timing(slideAnim, {
         toValue: 0,
         duration: 300,
@@ -410,20 +703,19 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     }
   };
 
-  const goToPreviousChapter = () => {
+  const goToPreviousChapter = (startAtPage: number = 0) => {
     if (currentChapter <= 0) return;
 
     const screenHeight = Dimensions.get('window').height;
 
-    // Animate slide down (out of view)
     Animated.timing(slideAnim, {
       toValue: screenHeight,
       duration: 300,
       useNativeDriver: true,
     }).start(() => {
+      setRequestedPage(startAtPage);
       setCurrentChapter(currentChapter - 1);
-      slideAnim.setValue(-screenHeight); // Position new content above
-      // Animate slide in from top
+      slideAnim.setValue(-screenHeight);
       Animated.timing(slideAnim, {
         toValue: 0,
         duration: 300,
@@ -459,7 +751,11 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
   const handleChapterLike = async () => {
     if (!novel?.id || !currentUser) {
-      Alert.alert('Login Required', 'Please login to like chapters');
+      showAlert({
+        title: 'Login Required',
+        message: 'Please login to like chapters',
+        type: 'info'
+      });
       return;
     }
 
@@ -508,7 +804,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         // Send Push Notification
         await sendPushNotification(
           novel.authorId,
-          `${currentUser.displayName || "Someone"} ❤️`,
+          `${currentUser.displayName || "Someone"}`,
           `Liked your chapter "${currentContentInfo.title}" in "${novel.title}"`,
           { url: `novlnest://novel/${novel.id}/read?chapter=${currentChapter}` }
         );
@@ -516,12 +812,17 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     } catch (error) {
       console.error('Error updating chapter like:', error);
       setChapterLiked(!chapterLiked);
+      showToast({ message: 'Failed to update like status', type: 'error' });
     }
   };
 
   const handleFollowToggle = async () => {
     if (!currentUser) {
-      Alert.alert('Login Required', 'Please login to follow authors');
+      showAlert({
+        title: 'Login Required',
+        message: 'Please login to follow authors',
+        type: 'info'
+      });
       return;
     }
     if (!novel?.authorId) return;
@@ -538,7 +839,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
     } catch (error) {
       console.error('Error toggling follow:', error);
-      Alert.alert('Error', 'Failed to update follow status');
+      showToast({ message: 'Failed to update follow status', type: 'error' });
       // Revert on error
       setIsFollowing(isFollowing);
     } finally {
@@ -607,7 +908,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         // Send Push Notification
         await sendPushNotification(
           novel.authorId,
-          `${currentUser.displayName || "Someone"} 💬`,
+          `${currentUser.displayName || "Someone"}`,
           `Commented on your novel "${novel.title}: ${currentContentInfo.title}"`,
           { url: `novlnest://novel/${novel.id}/read?chapter=${currentChapter}` }
         );
@@ -616,10 +917,10 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
       const organizedComments = organizeComments(updatedComments);
       setComments(organizedComments);
       setNewComment('');
-      // Alert.alert('Success', 'Comment posted!');
+      showToast({ message: 'Comment posted successfully!', type: 'success' });
     } catch (error) {
       console.error('Error adding comment:', error);
-      Alert.alert('Error', 'Failed to post comment');
+      showToast({ message: 'Failed to post comment', type: 'error' });
     } finally {
       setSubmittingComment(false);
     }
@@ -679,7 +980,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         // Send Push Notification
         await sendPushNotification(
           novel.authorId,
-          `${currentUser.displayName || "Someone"} 💬`,
+          `${currentUser.displayName || "Someone"}`,
           `Replied to a comment in "${novel.title}: ${currentContentInfo.title}"`,
           { url: `novlnest://novel/${novel.id}/read?chapter=${currentChapter}` }
         );
@@ -704,7 +1005,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         // Send Push Notification
         await sendPushNotification(
           parentComment.userId,
-          `${currentUser.displayName || "Someone"} 💬`,
+          `${currentUser.displayName || "Someone"}`,
           `Replied to your comment in "${novel.title}: ${currentContentInfo.title}"`,
           { url: `novlnest://novel/${novel.id}/read?chapter=${currentChapter}` }
         );
@@ -715,10 +1016,10 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
       setReplyContent('');
       setReplyingTo(null);
       setReplyingToUser('');
-      // Alert.alert('Success', 'Reply posted!');
+      showToast({ message: 'Reply posted successfully!', type: 'success' });
     } catch (error) {
       console.error('Error adding reply:', error);
-      Alert.alert('Error', 'Failed to post reply');
+      showToast({ message: 'Failed to post reply', type: 'error' });
     } finally {
       setSubmittingReply(null);
     }
@@ -726,7 +1027,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
   const handleCopyComment = async (text: string) => {
     await Clipboard.setStringAsync(text);
-    Alert.alert('Copied', 'Comment copied to clipboard');
+    showToast({ message: 'Comment copied to clipboard', type: 'success' });
   };
 
   const handleEditSubmit = async () => {
@@ -763,10 +1064,10 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
       setComments(organizedComments);
       setEditingCommentId(null);
       setEditContent('');
-      Alert.alert('Success', 'Comment updated!');
+      showToast({ message: 'Comment updated successfully!', type: 'success' });
     } catch (error) {
       console.error('Error updating comment:', error);
-      Alert.alert('Error', 'Failed to update comment');
+      showToast({ message: 'Failed to update comment', type: 'error' });
     } finally {
       setSubmittingComment(false);
     }
@@ -775,55 +1076,93 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
   const handleDeleteComment = async (commentId: string) => {
     if (!novel?.id || !currentUser) return;
 
-    Alert.alert('Delete Comment', 'Are you sure you want to delete this comment?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            setDeletingComment(commentId);
-            const chapterRef = doc(db, 'novels', novel.id, 'chapters', currentChapter.toString());
-            const chapterDoc = await getDoc(chapterRef);
+    showAlert({
+      title: 'Delete Comment',
+      message: 'Are you sure you want to delete this comment?',
+      type: 'warning',
+      buttons: [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setDeletingComment(commentId);
+              const chapterRef = doc(db, 'novels', novel.id, 'chapters', currentChapter.toString());
+              const chapterDoc = await getDoc(chapterRef);
 
-            if (!chapterDoc.exists()) return;
+              if (!chapterDoc.exists()) return;
 
-            const existingComments = chapterDoc.data().comments || [];
-            const updatedComments = existingComments.filter(
-              (c: Comment) => c.id !== commentId && c.parentId !== commentId
-            );
+              const existingComments = chapterDoc.data().comments || [];
+              const updatedComments = existingComments.filter(
+                (c: Comment) => c.id !== commentId && c.parentId !== commentId
+              );
 
-            await updateDoc(chapterRef, {
-              comments: updatedComments,
-            });
+              await updateDoc(chapterRef, {
+                comments: updatedComments,
+              });
 
-            // Invalidate chapter cache
-            const chapterId = currentContentInfo.type === 'epilogue' ? 'epilogue' : currentChapter.toString();
-            const chapterCacheKey = `chapter_${novel.id}_${chapterId}`;
-            await invalidateCache(chapterCacheKey);
+              // Invalidate chapter cache
+              const chapterId = currentContentInfo.type === 'epilogue' ? 'epilogue' : currentChapter.toString();
+              const chapterCacheKey = `chapter_${novel.id}_${chapterId}`;
+              await invalidateCache(chapterCacheKey);
 
-            const organizedComments = organizeComments(updatedComments);
-            setComments(organizedComments);
-            Alert.alert('Success', 'Comment deleted!');
-          } catch (error) {
-            console.error('Error deleting comment:', error);
-            Alert.alert('Error', 'Failed to delete comment');
-          } finally {
-            setDeletingComment(null);
-          }
+              const organizedComments = organizeComments(updatedComments);
+              setComments(organizedComments);
+              showToast({ message: 'Comment deleted successfully!', type: 'success' });
+            } catch (error) {
+              console.error('Error deleting comment:', error);
+              showToast({ message: 'Failed to delete comment', type: 'error' });
+            } finally {
+              setDeletingComment(null);
+            }
+          },
         },
-      },
-    ]);
+      ],
+    });
   };
 
   const handleCommentLike = async (commentId: string, isLiked: boolean) => {
     if (!novel?.id || !currentUser) return;
 
+    // Store previous organized state for reversal
+    const previousComments = [...comments];
+
+    // Define recursive function to update the comment in the organized tree
+    const updateCommentInTree = (list: Comment[]): Comment[] => {
+      return list.map((c) => {
+        if (c.id === commentId) {
+          const likedBy = c.likedBy || [];
+          const newLikedBy = isLiked
+            ? likedBy.filter((uid: string) => uid !== currentUser.uid)
+            : [...likedBy, currentUser.uid];
+
+          return {
+            ...c,
+            likes: newLikedBy.length,
+            likedBy: newLikedBy,
+          };
+        }
+        if (c.replies && c.replies.length > 0) {
+          return {
+            ...c,
+            replies: updateCommentInTree(c.replies),
+          };
+        }
+        return c;
+      });
+    };
+
+    // Apply optimistic update to UI state immediately
+    setComments((prev) => updateCommentInTree(prev));
+
     try {
       const chapterRef = doc(db, 'novels', novel.id, 'chapters', currentChapter.toString());
       const chapterDoc = await getDoc(chapterRef);
 
-      if (!chapterDoc.exists()) return;
+      if (!chapterDoc.exists()) {
+        throw new Error('Chapter document not found');
+      }
 
       const existingComments = chapterDoc.data().comments || [];
       let commentToNotify: Comment | null = null;
@@ -835,7 +1174,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
           if (isLiked) {
             return {
               ...comment,
-              likes: (comment.likes || 0) - 1,
+              likes: Math.max(0, (comment.likes || 1) - 1),
               likedBy: likedBy.filter((uid: string) => uid !== currentUser.uid),
             };
           } else {
@@ -848,21 +1187,20 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         }
         return comment;
       });
+
       await updateDoc(chapterRef, {
         comments: updatedComments,
       });
 
-      // Invalidate chapter cache
+      // Background tasks
       const chapterId = currentContentInfo.type === 'epilogue' ? 'epilogue' : currentChapter.toString();
       const chapterCacheKey = `chapter_${novel.id}_${chapterId}`;
-      await invalidateCache(chapterCacheKey);
-      // Invalidate novel cache for overall comment likes if displayed
-      await invalidateCache(`novel_${novel.id}`);
+      invalidateCache(chapterCacheKey).catch(err => console.error("Error invalidating cache:", err));
+      invalidateCache(`novel_${novel.id}`).catch(err => console.error("Error invalidating cache:", err));
 
-      // Send notification for like
       if (!isLiked && commentToNotify && (commentToNotify as Comment).userId !== currentUser.uid) {
         const c = commentToNotify as Comment;
-        await addDoc(collection(db, 'notifications'), {
+        addDoc(collection(db, 'notifications'), {
           toUserId: c.userId,
           fromUserId: currentUser.uid,
           fromUserName: currentUser.displayName || 'Anonymous',
@@ -875,21 +1213,20 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
           chapterTitle: currentContentInfo.title,
           createdAt: new Date().toISOString(),
           read: false,
-        });
+        }).catch(err => console.error("Error creating notification:", err));
 
-        // Send Push Notification
-        await sendPushNotification(
+        sendPushNotification(
           c.userId,
-          `${currentUser.displayName || "Someone"} ❤️`,
+          `${currentUser.displayName || "Someone"}`,
           `Liked your comment in "${novel.title}: ${currentContentInfo.title}"`,
           { url: `novlnest://novel/${novel.id}/read?chapter=${currentChapter}` }
-        );
+        ).catch(err => console.error("Error sending push notification:", err));
       }
-
-      const organizedComments = organizeComments(updatedComments);
-      setComments(organizedComments);
     } catch (error) {
       console.error('Error updating comment like:', error);
+      // Revert organized state if backend fails
+      setComments(previousComments);
+      showToast({ message: 'Failed to update like status', type: 'error' });
     }
   };
 
@@ -991,128 +1328,6 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
     return <>{elements}</>;
   };
-
-  // Extract chat blocks from content
-  const extractChatBlocks = (content: string): Array<{ type: 'paragraph', data: string } | { type: 'chat', data: any }> => {
-    const result: Array<{ type: 'paragraph', data: string } | { type: 'chat', data: any }> = [];
-    const chatRegex = /\[CHAT_START\](.*?)\[CHAT_END\]/gs;
-    let lastIndex = 0;
-    let match;
-    while ((match = chatRegex.exec(content)) !== null) {
-      // Add paragraphs before chat block
-      if (match.index > lastIndex) {
-        const before = content.substring(lastIndex, match.index);
-        splitIntoSmartParagraphs(before).forEach(p => {
-          result.push({ type: 'paragraph', data: p });
-        });
-      }
-      // Add chat block
-      try {
-        const chatJson = match[1];
-        const messages = JSON.parse(chatJson);
-        result.push({ type: 'chat', data: messages });
-      } catch (e) {
-        result.push({ type: 'paragraph', data: match[0] });
-      }
-      lastIndex = match.index + match[0].length;
-    }
-    // Add remaining paragraphs after last chat block
-    if (lastIndex < content.length) {
-      const after = content.substring(lastIndex);
-      splitIntoSmartParagraphs(after).forEach(p => {
-        result.push({ type: 'paragraph', data: p });
-      });
-    }
-    return result;
-  };
-
-  // Smart paragraph splitting function
-  const splitIntoSmartParagraphs = (content: string): string[] => {
-    // First, split by explicit paragraph breaks (double newlines)
-    const explicitParagraphs = content.split(/\n\n+/).filter(p => p.trim().length > 0);
-
-    const smartParagraphs: string[] = [];
-
-    for (const para of explicitParagraphs) {
-      // Clean up the paragraph
-      // If it starts with a dot and then text, it's likely an artifact of splitting
-      let cleanPara = para.trim();
-      if (cleanPara.startsWith('.') || cleanPara.startsWith(':')) {
-        cleanPara = cleanPara.substring(1).trim();
-      }
-
-      if (!cleanPara) continue;
-
-      // Special handling for the very first part of a chapter content
-      // If it's a short line that might be a subtitle, don't merge it
-      const lines = para.split('\n').filter(l => l.trim().length > 0);
-      if (lines.length > 1 && lines[0].length < 60 && /^[A-Z0-9\W]+$/.test(lines[0].trim())) {
-        // First line looks like a title (short and mostly caps)
-        smartParagraphs.push(lines[0].trim());
-        // Process the rest as a separate paragraph
-        const rest = lines.slice(1).join(' ');
-        if (rest.trim()) {
-          smartParagraphs.push(rest.trim());
-        }
-        continue;
-      }
-
-      // Replace single newlines with spaces for regular paragraphs
-      cleanPara = cleanPara.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
-
-      // If paragraph is short enough, keep as is
-      if (cleanPara.length < 400) {
-        smartParagraphs.push(cleanPara);
-        continue;
-      }
-
-      // Split long paragraphs by sentences
-      // Match sentence endings: . ! ? followed by space and capital letter, or end of string
-      const sentences = cleanPara.match(/[^.!?]*[.!?]+(?:\s+|$)|[^.!?]+$/g) || [cleanPara];
-
-      let currentParagraph = '';
-      const targetLength = 350; // Target paragraph length in characters
-      const minLength = 150; // Minimum paragraph length
-
-      for (let i = 0; i < sentences.length; i++) {
-        const sentence = sentences[i].trim();
-
-        if (!sentence) continue;
-
-        // If adding this sentence would make paragraph too long
-        if (currentParagraph.length > 0 && currentParagraph.length + sentence.length > targetLength) {
-          // Only split if current paragraph is long enough
-          if (currentParagraph.length >= minLength) {
-            smartParagraphs.push(currentParagraph.trim());
-            currentParagraph = sentence;
-          } else {
-            currentParagraph += ' ' + sentence;
-          }
-        } else {
-          currentParagraph += (currentParagraph ? ' ' : '') + sentence;
-        }
-
-        // Check for natural break points (dialogue, scene changes)
-        const hasDialogueEnd = sentence.endsWith('"') || sentence.endsWith('"');
-        const nextIsDialogue = i < sentences.length - 1 &&
-          (sentences[i + 1].trim().startsWith('"') || sentences[i + 1].trim().startsWith('"'));
-
-        // Create paragraph break after dialogue or at natural scene breaks
-        if (currentParagraph.length >= minLength && (hasDialogueEnd && nextIsDialogue)) {
-          smartParagraphs.push(currentParagraph.trim());
-          currentParagraph = '';
-        }
-      }
-
-      // Add any remaining content
-      if (currentParagraph.trim()) {
-        smartParagraphs.push(currentParagraph.trim());
-      }
-    }
-
-    return smartParagraphs;
-  };
-
   const handleProfileNavigation = (userId: string) => {
     setShowComments(false);
     navigation.navigate('Profile', { userId });
@@ -1224,7 +1439,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
               >
                 <Ionicons
                   name={comment.likedBy?.includes(currentUser?.uid || '') ? 'heart' : 'heart-outline'}
-                  size={16}
+                  size={24}
                   color={comment.likedBy?.includes(currentUser?.uid || '') ? '#EF4444' : '#9CA3AF'}
                 />
                 <Text style={[styles.commentLikeCount, { color: colors.textSecondary }]}>{comment.likes || 0}</Text>
@@ -1259,7 +1474,16 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         <View style={styles.errorContainer}>
           <Ionicons name="alert-circle" size={60} color={colors.error} />
           <Text style={[styles.errorText, { color: colors.text }]}>{error || 'Novel not found'}</Text>
-          <TouchableOpacity style={[styles.backButton, { backgroundColor: colors.primary }]} onPress={() => navigation.goBack()}>
+          <TouchableOpacity
+            style={[styles.backButton, { backgroundColor: colors.primary }]}
+            onPress={() => {
+              if (navigation.canGoBack()) {
+                navigation.goBack();
+              } else {
+                navigation.replace('MainTabs');
+              }
+            }}
+          >
             <Text style={styles.backButtonText}>Go Back</Text>
           </TouchableOpacity>
         </View>
@@ -1267,160 +1491,400 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     );
   }
 
+  const toggleUI = () => {
+    const nextHidden = !isUIHidden;
+    setIsUIHidden(nextHidden);
+
+    Animated.parallel([
+      Animated.timing(uiOpacity, {
+        toValue: nextHidden ? 0 : 1,
+        duration: 300,
+        useNativeDriver: true,
+      }),
+      Animated.timing(headerTranslateY, {
+        toValue: nextHidden ? -100 : 0,
+        duration: 300,
+        useNativeDriver: true,
+      }),
+      Animated.timing(floatingTranslateY, {
+        toValue: nextHidden ? 100 : 0,
+        duration: 300,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  };
+
+  const renderBlocks = (blocks: any[]) => {
+    return blocks.map((block, idx) => {
+      const fontStyle = {
+        fontFamily: Platform.OS === 'ios' ? fontFamily : (
+          fontFamily === 'Courier' ? 'monospace' : 
+          ['Georgia', 'Times New Roman', 'Baskerville', 'Charter', 'Palatino', 'Iowan Old Style'].includes(fontFamily) ? 'serif' : 
+          'sans-serif'
+        )
+      };
+
+      const approxLineHeight = Math.round(fontSize * 1.6);
+
+      if (block.type === 'paragraph') {
+        return (
+          <Text
+            key={idx}
+            style={[
+              styles.paragraph,
+              {
+                color: readerColors.text,
+                fontSize: fontSize,
+                lineHeight: approxLineHeight,
+                marginBottom: approxLineHeight,
+                ...fontStyle
+              }
+            ]}
+          >
+            {parseFormattedText(block.data)}
+          </Text>
+        );
+      } else if (block.type === 'chat') {
+        return (
+          <View key={idx} style={{ marginVertical: approxLineHeight }}>
+            {block.data.map((msg: any, mIdx: number) => (
+              <View
+                key={mIdx}
+                style={{
+                  alignSelf: msg.sender === novel?.authorName ? 'flex-end' : 'flex-start',
+                  backgroundColor: msg.sender === novel?.authorName ? '#8B5CF6' : readerColors.border,
+                  borderRadius: 16,
+                  padding: 12,
+                  marginBottom: approxLineHeight / 2, // Half grid for messages
+                  maxWidth: '80%',
+                }}
+              >
+                <Text style={{
+                  color: msg.sender === novel?.authorName ? '#fff' : readerColors.text,
+                  fontWeight: '700',
+                  marginBottom: 2,
+                  fontSize: fontSize - 4,
+                  ...fontStyle
+                }}>{msg.sender}</Text>
+                <Text style={{
+                  color: msg.sender === novel?.authorName ? '#fff' : readerColors.text,
+                  fontSize: fontSize,
+                  ...fontStyle
+                }}>{msg.text}</Text>
+              </View>
+            ))}
+          </View>
+        );
+      } else if (block.type === 'image') {
+        return (
+          <InlineImageBlock 
+            key={idx} 
+            uri={block.data} 
+            maxHeight={Dimensions.get('window').height * 0.55} 
+          />
+        );
+      } else if (block.type === 'characters_list') {
+        return (
+          <View key={idx} style={styles.charactersContainer}>
+            {novel?.characters?.map((char) => (
+              <View key={char.id} style={styles.characterListItem}>
+                {char.imageUrl ? (
+                  <CachedImage uri={char.imageUrl} style={styles.characterListAvatar} />
+                ) : (
+                  <View style={[styles.characterListAvatar, { backgroundColor: colors.primary + '20', justifyContent: 'center', alignItems: 'center' }]}>
+                    <Text style={{ color: colors.primary, fontWeight: 'bold', fontSize: 24 }}>{char.name.charAt(0)}</Text>
+                  </View>
+                )}
+                <View style={styles.characterListInfo}>
+                  <Text style={[styles.characterListName, { color: readerColors.text }]}>{char.name}</Text>
+                  <Text style={[styles.characterListDesc, { color: readerColors.textSecondary }]}>{char.description}</Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        );
+      }
+      return null;
+    });
+  };
+
+
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
-      <StatusBar barStyle={colors.text === '#FFFFFF' ? 'light-content' : 'dark-content'} backgroundColor={colors.background} />
+    <SafeAreaView
+      style={[styles.container, { backgroundColor: readerColors.background }]}
+      onStartShouldSetResponderCapture={() => {
+        onUserActivity();
+        return false;
+      }}
+    >
+      <StatusBar barStyle={readerColors.text === '#FFFFFF' ? 'light-content' : 'dark-content'} backgroundColor={readerColors.background} />
+
+      {/* Hidden Measure View to get accurate content height */}
+      <View style={{ position: 'absolute', opacity: 0, width: Dimensions.get('window').width - 48, zIndex: -1000 }} pointerEvents="none">
+        <View onLayout={(e) => setContentHeight(e.nativeEvent.layout.height)}>
+          {renderBlocks(extractChatBlocks(currentContentInfo.content))}
+        </View>
+      </View>
 
       {/* Header */}
-      <View style={[styles.header, { backgroundColor: colors.background, borderBottomColor: colors.border }]}>
+      <Animated.View
+        style={[
+          styles.header,
+          {
+            backgroundColor: readerColors.background,
+            borderBottomColor: readerColors.border,
+            opacity: uiOpacity,
+            transform: [{ translateY: headerTranslateY }]
+          }
+        ]}
+        pointerEvents={isUIHidden ? 'none' : 'auto'}
+      >
         <TouchableOpacity
-          onPress={() => navigation.goBack()}
+          onPress={() => {
+            if (navigation.canGoBack()) {
+              navigation.goBack();
+            } else {
+              navigation.replace('MainTabs');
+            }
+          }}
           style={styles.topBarButton}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
-          <Icon name="chevron-back" size={28} color="#8B5CF6" />
+          <Ionicons name="chevron-back" size={28} color="#8B5CF6" />
         </TouchableOpacity>
         <View style={styles.headerCenter}>
-          <Text style={[styles.headerTitle, { color: colors.text }]}>{currentContentInfo.title}</Text>
-          <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>
+          <TouchableOpacity onPress={() => setShowChapterList(true)} style={styles.headerTitleContainer}>
+            <Text style={[styles.headerTitle, { color: readerColors.text }]} numberOfLines={1}>
+              {currentContentInfo.title}
+            </Text>
+            <Ionicons name="chevron-down" size={14} color="#8B5CF6" style={{ marginLeft: 4 }} />
+          </TouchableOpacity>
+          <Text style={[styles.headerSubtitle, { color: readerColors.textSecondary }]}>
             {currentChapter + 1} / {getTotalReadingOrderItems()}
           </Text>
         </View>
 
         <TouchableOpacity
-          onPress={handleShare}
+          onPress={() => setShowReaderSettings(true)}
           style={styles.topBarButton}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
-          <Icon name="share-outline" size={24} color="#8B5CF6" />
+          <Ionicons name="settings-outline" size={24} color="#8B5CF6" />
         </TouchableOpacity>
-      </View>
+
+        <TouchableOpacity
+          onPress={handleShare}
+          style={[styles.topBarButton, { marginLeft: 8 }]}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Ionicons name="share-outline" size={24} color="#8B5CF6" />
+        </TouchableOpacity>
+      </Animated.View>
 
       {/* Scrollable Content */}
       <Animated.View style={[styles.readerContainer, { transform: [{ translateY: slideAnim }] }]}>
-        <ScrollView
-          ref={scrollViewRef}
-          style={styles.contentScroll}
-          contentContainerStyle={styles.contentContainer}
-          showsVerticalScrollIndicator={true}
-          onScroll={handleScroll}
-          onScrollEndDrag={handleScrollEndDrag}
-          scrollEventThrottle={16}
-        >
-          {extractChatBlocks(currentContentInfo.content).map((block, idx) => {
-            if (block.type === 'paragraph') {
-              return (
-                <Text
-                  key={idx}
-                  style={[styles.paragraph, { color: colors.text }]}
-                >
-                  {parseFormattedText(block.data)}
-                </Text>
-              );
-            } else if (block.type === 'chat') {
-              return (
-                <View key={idx} style={{ marginVertical: 16 }}>
-                  {block.data.map((msg: any, mIdx: number) => (
-                    <View
-                      key={mIdx}
-                      style={{
-                        alignSelf: msg.sender === novel?.authorName ? 'flex-end' : 'flex-start',
-                        backgroundColor: msg.sender === novel?.authorName ? colors.primary : colors.surface,
-                        borderRadius: 16,
-                        padding: 12,
-                        marginBottom: 8,
-                        maxWidth: '80%',
-                      }}
-                    >
-                      <Text style={{
-                        color: msg.sender === novel?.authorName ? '#fff' : colors.text,
-                        fontWeight: '600',
-                        marginBottom: 2,
-                      }}>{msg.sender}</Text>
-                      <Text style={{ color: msg.sender === novel?.authorName ? '#fff' : colors.text }}>{msg.text}</Text>
+        {!isPagingEnabled ? (
+          <ScrollView
+            ref={scrollViewRef}
+            style={styles.contentScroll}
+            contentContainerStyle={styles.contentContainer}
+            showsVerticalScrollIndicator={true}
+            onScroll={handleScroll}
+            onScrollEndDrag={handleScrollEndDrag}
+            scrollEventThrottle={16}
+          >
+            <Pressable onPress={toggleUI}>
+              {renderBlocks(extractChatBlocks(currentContentInfo.content))}
+
+              {currentContentInfo.type === 'characters' && (
+                <View style={styles.charactersContainer}>
+                  {novel.characters?.map((char) => (
+                    <View key={char.id} style={styles.characterListItem}>
+                      {char.imageUrl ? (
+                        <CachedImage uri={char.imageUrl} style={styles.characterListAvatar} />
+                      ) : (
+                        <View style={[styles.characterListAvatar, { backgroundColor: colors.primary + '20', justifyContent: 'center', alignItems: 'center' }]}>
+                          <Text style={{ color: colors.primary, fontWeight: 'bold', fontSize: 24 }}>{char.name.charAt(0)}</Text>
+                        </View>
+                      )}
+                      <View style={styles.characterListInfo}>
+                        <Text style={[styles.characterListName, { color: readerColors.text }]}>{char.name}</Text>
+                        <Text style={[styles.characterListDesc, { color: readerColors.textSecondary }]}>{char.description}</Text>
+                      </View>
                     </View>
                   ))}
                 </View>
-              );
-            }
-            return null;
-          })}
+              )}
 
-          {/* End of chapter indicator */}
-          <View style={styles.chapterEndContainer}>
-            <View style={[styles.chapterEndLine, { backgroundColor: colors.border }]} />
-            <Text style={[styles.chapterEndText, { color: colors.textSecondary }]}>
-              End of {currentContentInfo.title}
-            </Text>
-
-            {/* Follow Prompt */}
-            {currentUser && novel?.authorId !== currentUser.uid && !isFollowing && !novel.publicDomain && (
-              <View style={[styles.followPromptContainer, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                <Text style={[styles.followPromptText, { color: colors.textSecondary }]}>
-                  Enjoying the story? Follow <Text style={[styles.followPromptAuthor, { color: colors.text }]}>{novel?.authorName}</Text>
+              {/* End of chapter indicator */}
+              <View style={styles.chapterEndContainer}>
+                <View style={[styles.chapterEndLine, { backgroundColor: colors.border }]} />
+                <Text style={[styles.chapterEndText, { color: colors.textSecondary }]}>
+                  End of {currentContentInfo.title}
                 </Text>
-                <TouchableOpacity
-                  style={[styles.followPromptButton, { backgroundColor: colors.primary }]}
-                  onPress={handleFollowToggle}
-                  disabled={isTogglingFollow}
-                >
-                  {isTogglingFollow ? (
-                    <ActivityIndicator size="small" color="#fff" />
-                  ) : (
-                    <>
-                      <Ionicons name="person-add" size={16} color="#fff" />
-                      <Text style={styles.followPromptButtonText}>Follow</Text>
-                    </>
+
+                {/* Follow Prompt */}
+                {currentUser && novel?.authorId !== currentUser.uid && !isFollowing && !novel.publicDomain && (
+                  <View style={[styles.followPromptContainer, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                    <Text style={[styles.followPromptText, { color: colors.textSecondary }]}>
+                      Enjoying the story? Follow <Text style={[styles.followPromptAuthor, { color: colors.text }]}>{novel?.authorName}</Text>
+                    </Text>
+                    <TouchableOpacity
+                      style={[styles.followPromptButton, { backgroundColor: colors.primary }]}
+                      onPress={handleFollowToggle}
+                      disabled={isTogglingFollow}
+                    >
+                      {isTogglingFollow ? (
+                        <ActivityIndicator size="small" color="#fff" />
+                      ) : (
+                        <>
+                          <Ionicons name="person-add" size={16} color="#fff" />
+                          <Text style={styles.followPromptButtonText}>Follow</Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                )}
+
+                {/* End of Story Message */}
+                {currentChapter === getTotalReadingOrderItems() - 1 && novel.status === 'completed' && (
+                  <View style={styles.completedContainer}>
+                    <Ionicons name="checkmark-done-circle" size={60} color="#10B981" />
+                    <Text style={[styles.completedTitle, { color: colors.text }]}>THE END</Text>
+                    <Text style={[styles.completedSubtitle, { color: colors.textSecondary }]}>
+                      You've reached the end of this journey. Thank you for reading!
+                    </Text>
+                  </View>
+                )}
+
+                {/* Navigation Buttons */}
+                {currentChapter < getTotalReadingOrderItems() - 1 ? (
+                  <TouchableOpacity
+                    style={[styles.nextChapterButton, { backgroundColor: colors.primary }]}
+                    onPress={() => goToNextChapter(0)}
+                  >
+                    <Text style={styles.nextChapterButtonText}>
+                      Next: {getContentInfo(currentChapter + 1).title}
+                    </Text>
+                    <Ionicons name="chevron-forward" size={20} color="#fff" />
+                  </TouchableOpacity>
+                ) : (
+                  <Text style={[styles.noMoreChaptersText, { color: colors.textSecondary }]}>
+                    You've reached the end of the story
+                  </Text>
+                )}
+
+                {currentChapter > 0 && (
+                  <TouchableOpacity
+                    style={[styles.prevChapterButton, { borderColor: colors.border }]}
+                    onPress={() => goToPreviousChapter(0)}
+                  >
+                    <Ionicons name="chevron-back" size={20} color={colors.text} />
+                    <Text style={[styles.prevChapterButtonText, { color: colors.text }]}>
+                      Previous: {getContentInfo(currentChapter - 1).title}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </Pressable>
+          </ScrollView>
+        ) : (
+          <FlatList
+            key={`chapter-${currentChapter}-${fontSize}`}
+            ref={flatListRef}
+            data={Array.from({ length: totalPages })}
+            initialScrollIndex={requestedPage === -1 ? Math.max(0, totalPages - 1) : requestedPage}
+            keyExtractor={(_, index) => `page-${index}`}
+            horizontal
+            pagingEnabled
+            showsHorizontalScrollIndicator={false}
+            onScrollEndDrag={(e) => {
+              const { contentOffset, layoutMeasurement, contentSize } = e.nativeEvent;
+              const threshold = 40;
+              
+              // Forward past end
+              if (contentOffset.x + layoutMeasurement.width > contentSize.width + threshold) {
+                goToNextChapter(0);
+              }
+              // Backward past start
+              else if (contentOffset.x < -threshold) {
+                goToPreviousChapter(-1); // -1 means go to the LAST page of prev chapter
+              }
+            }}
+            getItemLayout={(_, index) => ({
+              length: Dimensions.get('window').width,
+              offset: Dimensions.get('window').width * index,
+              index,
+            })}
+            renderItem={({ index }: any) => (
+              <View 
+                style={{ 
+                  width: Dimensions.get('window').width,
+                  height: '100%',
+                  backgroundColor: readerColors.background
+                }}
+              >
+                <Pressable onPress={toggleUI} style={{ flex: 1 }}>
+                  <View style={{ 
+                    height: pageHeight,
+                    marginTop: topPadding + insets.top,
+                    marginHorizontal: 24,
+                  }}>
+                    {renderBlocks(pagedContent[index])}
+                  </View>
+                  
+                  {/* Page Indicator */}
+                  <View style={{ 
+                    position: 'absolute', 
+                    bottom: insets.bottom + 10, 
+                    width: '100%', 
+                    alignItems: 'center' 
+                  }}>
+                    <Text style={{ color: readerColors.textSecondary, fontSize: 10, opacity: 0.5 }}>
+                      {index + 1} / {totalPages}
+                    </Text>
+                  </View>
+
+                  {index === totalPages - 1 && (
+                    <View style={{ position: 'absolute', bottom: insets.bottom + 40, width: '100%', paddingHorizontal: 24 }}>
+                      <View style={{ gap: 12, width: '100%', alignItems: 'center' }}>
+                        {currentChapter < getTotalReadingOrderItems() - 1 ? (
+                          <TouchableOpacity
+                            style={[styles.nextChapterButton, { backgroundColor: colors.primary, width: '100%' }]}
+                            onPress={() => goToNextChapter(0)}
+                          >
+                            <Text style={styles.nextChapterButtonText}>Next Chapter</Text>
+                            <Ionicons name="chevron-forward" size={20} color="#fff" />
+                          </TouchableOpacity>
+                        ) : (
+                          <Text style={[styles.noMoreChaptersText, { color: colors.textSecondary }]}>End of story</Text>
+                        )}
+                      </View>
+                    </View>
                   )}
-                </TouchableOpacity>
+                </Pressable>
               </View>
             )}
-
-            {/* End of Story Message */}
-            {currentChapter === getTotalReadingOrderItems() - 1 && novel.status === 'completed' && (
-              <View style={styles.completedContainer}>
-                <Ionicons name="checkmark-done-circle" size={60} color="#10B981" />
-                <Text style={[styles.completedTitle, { color: colors.text }]}>THE END</Text>
-                <Text style={[styles.completedSubtitle, { color: colors.textSecondary }]}>
-                  You've reached the end of this journey. Thank you for reading!
-                </Text>
-              </View>
-            )}
-
-            {/* Navigation Buttons */}
-            {currentChapter < getTotalReadingOrderItems() - 1 ? (
-              <TouchableOpacity
-                style={[styles.nextChapterButton, { backgroundColor: colors.primary }]}
-                onPress={goToNextChapter}
-              >
-                <Text style={styles.nextChapterButtonText}>
-                  Next: {getContentInfo(currentChapter + 1).title}
-                </Text>
-                <Ionicons name="chevron-forward" size={20} color="#fff" />
-              </TouchableOpacity>
-            ) : (
-              <Text style={[styles.noMoreChaptersText, { color: colors.textSecondary }]}>
-                You've reached the end of the story
-              </Text>
-            )}
-
-            {currentChapter > 0 && (
-              <TouchableOpacity
-                style={[styles.prevChapterButton, { borderColor: colors.border }]}
-                onPress={goToPreviousChapter}
-              >
-                <Ionicons name="chevron-back" size={20} color={colors.text} />
-                <Text style={[styles.prevChapterButtonText, { color: colors.text }]}>
-                  Previous: {getContentInfo(currentChapter - 1).title}
-                </Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        </ScrollView>
+          />
+        )}
       </Animated.View>
 
+      <ReaderSettingsModal
+        isVisible={showReaderSettings}
+        onClose={() => setShowReaderSettings(false)}
+      />
+
       {/* Floating Actions */}
-      <View style={styles.floatingActions}>
+      <Animated.View
+        style={[
+          styles.floatingActions,
+          {
+            opacity: uiOpacity,
+            transform: [{ translateY: floatingTranslateY }]
+          }
+        ]}
+        pointerEvents={isUIHidden ? 'none' : 'auto'}
+      >
         <TouchableOpacity style={[styles.actionButton, { backgroundColor: colors.surface, borderColor: colors.border }]} onPress={handleChapterLike}>
           <Ionicons name={chapterLiked ? 'heart' : 'heart-outline'} size={24} color={chapterLiked ? colors.error : colors.text} />
           <Text style={[styles.actionButtonText, { color: colors.text }]}>{chapterLikes}</Text>
@@ -1432,7 +1896,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
             {getTotalCommentsCount(comments)}
           </Text>
         </TouchableOpacity>
-      </View>
+      </Animated.View>
 
       <Modal
         visible={showComments}
@@ -1531,7 +1995,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
                     placeholderTextColor="#9CA3AF"
                     style={[styles.commentInput, { color: colors.text }]}
                     multiline
-                    maxLength={500}
+                    maxLength={1000}
                   />
                   <TouchableOpacity
                     onPress={() => {
@@ -1645,12 +2109,141 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         </Modal>
       </Modal>
 
+      <Modal
+        visible={showChapterList}
+        animationType="fade"
+        transparent={false}
+        onRequestClose={() => setShowChapterList(false)}
+      >
+        <View style={[styles.tocModalContainer, { backgroundColor: '#000' }]}>
+          <StatusBar barStyle="light-content" />
+
+          {/* Header Actions */}
+          <View style={styles.tocModalHeader}>
+            <TouchableOpacity
+              onPress={() => setShowChapterList(false)}
+              style={styles.tocCloseButton}
+            >
+              <Ionicons name="close" size={32} color="#fff" />
+            </TouchableOpacity>
+          </View>
+
+          {/* Novel Info Section */}
+          <View style={styles.tocNovelInfo}>
+            <View style={styles.tocCoverContainer}>
+              {novel?.coverSmallImage || novel?.coverImage ? (
+                <CachedImage
+                  uri={novel.coverSmallImage || novel.coverImage!}
+                  style={styles.tocCoverImage}
+                />
+              ) : (
+                <View style={[styles.tocCoverImage, { backgroundColor: colors.primary + '20', justifyContent: 'center', alignItems: 'center' }]}>
+                  <Ionicons name="book" size={40} color={colors.primary} />
+                </View>
+              )}
+            </View>
+            <View style={styles.tocTextInfo}>
+              <Text style={styles.tocNovelTitle}>{novel?.title.toUpperCase()}</Text>
+              <Text style={styles.tocAuthorName}>By {novel?.authorName}</Text>
+            </View>
+          </View>
+
+          <ScrollView
+            style={styles.tocListScroll}
+            contentContainerStyle={styles.tocListContent}
+          >
+            {(() => {
+              const items = [];
+              let currentIndex = 0;
+              const formatDate = (dateStr: string | undefined) => {
+                if (!dateStr) return '';
+                return new Date(dateStr).toLocaleDateString('en-US', {
+                  weekday: 'short',
+                  month: 'short',
+                  day: 'numeric',
+                  year: 'numeric'
+                });
+              };
+
+              if (novel?.authorsNote) {
+                items.push({
+                  id: 'authors-note',
+                  type: 'authors-note',
+                  title: "Author's Note",
+                  index: currentIndex,
+                  date: formatDate(novel.createdAt)
+                });
+                currentIndex++;
+              }
+              if (novel?.prologue) {
+                items.push({
+                  id: 'prologue',
+                  type: 'prologue',
+                  title: 'Prologue',
+                  index: currentIndex,
+                  date: formatDate(novel.createdAt)
+                });
+                currentIndex++;
+              }
+              if (novel?.characters && novel.characters.length > 0) {
+                items.push({
+                  id: 'characters',
+                  type: 'characters',
+                  title: 'Cast of Characters',
+                  index: currentIndex,
+                  date: formatDate(novel.createdAt)
+                });
+                currentIndex++;
+              }
+              novel?.chapters.forEach((ch, idx) => {
+                items.push({
+                  id: `chapter-${idx}`,
+                  type: 'chapter',
+                  title: ch.title || `Chapter ${idx + 1}`,
+                  index: currentIndex,
+                  date: formatDate(ch.createdAt || novel.updatedAt)
+                });
+                currentIndex++;
+              });
+              if (novel?.epilogue) {
+                items.push({
+                  id: 'epilogue',
+                  type: 'epilogue',
+                  title: novel.epilogue.title || 'Epilogue',
+                  index: currentIndex,
+                  date: formatDate(novel.updatedAt)
+                });
+              }
+
+              return items.map((item) => (
+                <TouchableOpacity
+                  key={item.id}
+                  style={styles.tocItemRow}
+                  onPress={() => {
+                    setCurrentChapter(item.index);
+                    setShowChapterList(false);
+                  }}
+                >
+                  <Text style={[
+                    styles.tocItemTitle,
+                    { color: currentChapter === item.index ? colors.primary : '#fff' }
+                  ]}>
+                    {item.title}
+                  </Text>
+                  <Text style={styles.tocItemDate}>{item.date}</Text>
+                </TouchableOpacity>
+              ));
+            })()}
+            <View style={{ height: 40 + (insets?.bottom || 0) }} />
+          </ScrollView>
+        </View>
+      </Modal>
 
     </SafeAreaView>
   );
 };
 
-const getStyles = (themeColors: any) => StyleSheet.create({
+const getStyles = (themeColors: any, insets: any, fontSize: number) => StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -1658,11 +2251,17 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     flex: 1,
   },
   header: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 10,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingTop: Platform.OS === 'ios' ? insets.top + 8 : insets.top + 12,
+    paddingBottom: 12,
     borderBottomWidth: 1,
     borderBottomColor: themeColors.border,
     backgroundColor: themeColors.background,
@@ -1674,6 +2273,12 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     alignItems: 'center',
     borderRadius: 18,
   },
+  headerTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    maxWidth: '70%',
+  },
   headerCenter: {
     flex: 1,
     alignItems: 'center',
@@ -1683,6 +2288,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
     fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    flexShrink: 1,
   },
   headerSubtitle: {
     fontSize: 14,
@@ -1697,12 +2303,13 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   },
   contentContainer: {
     padding: 24,
+    paddingTop: 40 + insets.top,
     paddingBottom: 100,
   },
   chapterEndContainer: {
-    marginTop: 40,
+    marginTop: Math.round(fontSize * 1.6) * 2,
     alignItems: 'center',
-    paddingBottom: 40,
+    paddingBottom: Math.round(fontSize * 1.6) * 2,
   },
   chapterEndLine: {
     width: 100,
@@ -1784,7 +2391,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   },
   swipeHint: {
     position: 'absolute',
-    bottom: 20,
+    bottom: 20 + insets.bottom,
     left: 20,
     right: 20,
     flexDirection: 'row',
@@ -1883,7 +2490,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   },
   floatingActions: {
     position: 'absolute',
-    bottom: 40,
+    bottom: 40 + insets.bottom,
     right: 20,
     gap: 12,
     zIndex: 5,
@@ -2192,6 +2799,121 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   commentTextPressed: {
     backgroundColor: themeColors.border,
     opacity: 0.8,
+  },
+  inlineImageContainer: {
+    marginVertical: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+  },
+  inlineImage: {
+    width: '100%',
+    height: Dimensions.get('window').height * 0.55,
+  },
+  charactersContainer: {
+    paddingVertical: 16,
+  },
+  characterListItem: {
+    flexDirection: 'row',
+    marginBottom: 24,
+    alignItems: 'flex-start',
+    gap: 16,
+  },
+  characterListAvatar: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+  },
+  characterListInfo: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  characterListName: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 4,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  characterListDesc: {
+    fontSize: 16,
+    lineHeight: 22,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  tocModalContainer: {
+    flex: 1,
+  },
+  tocModalHeader: {
+    paddingHorizontal: 16,
+    paddingTop: insets.top + 12,
+    paddingBottom: 12,
+  },
+  tocCloseButton: {
+    padding: 8,
+    marginLeft: -8,
+  },
+  tocNovelInfo: {
+    flexDirection: 'row',
+    paddingHorizontal: 24,
+    paddingVertical: 20,
+    alignItems: 'center',
+    gap: 16,
+  },
+  tocCoverContainer: {
+    width: 100,
+    height: 150,
+    borderRadius: 8,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.5,
+    shadowRadius: 15,
+    elevation: 10,
+  },
+  tocCoverImage: {
+    width: '100%',
+    height: '100%',
+  },
+  tocTextInfo: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  tocNovelTitle: {
+    fontSize: 22,
+    fontWeight: '900',
+    color: '#fff',
+    letterSpacing: 1,
+    marginBottom: 6,
+  },
+  tocAuthorName: {
+    fontSize: 16,
+    color: '#9CA3AF',
+    fontWeight: '500',
+  },
+  tocListScroll: {
+    flex: 1,
+    marginTop: 20,
+  },
+  tocListContent: {
+    paddingHorizontal: 24,
+  },
+  tocItemRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 20,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.05)',
+  },
+  tocItemTitle: {
+    fontSize: 17,
+    fontWeight: '500',
+    flex: 1,
+    marginRight: 16,
+  },
+  tocItemDate: {
+    fontSize: 13,
+    color: '#6B7280',
+    fontWeight: '500',
   },
 });
 

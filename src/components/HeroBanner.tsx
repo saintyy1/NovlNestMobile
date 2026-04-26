@@ -162,10 +162,10 @@ const HeroBanner = ({ slides, autoSlideInterval = 4000 }: HeroBannerProps) => {
   /* ---------------- Render ---------------- */
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.backgroundSecondary }]}>
+    <View style={[styles.container]}>
       {/* -------- Desktop -------- */}
       {isDesktop && (
-        <View style={[styles.desktopContainer, { backgroundColor: colors.backgroundSecondary }]}>
+        <View style={[styles.desktopContainer]}>
           <ScrollView
             ref={desktopScrollRef}
             horizontal
@@ -187,7 +187,7 @@ const HeroBanner = ({ slides, autoSlideInterval = 4000 }: HeroBannerProps) => {
                   <CachedImage
                     uri={slide.imageUrl}
                     style={styles.image}
-                    resizeMode="cover"
+                    contentFit="cover"
                   />
                   <View style={styles.overlay} />
                 </TouchableOpacity>
@@ -237,7 +237,7 @@ const HeroBanner = ({ slides, autoSlideInterval = 4000 }: HeroBannerProps) => {
                   <CachedImage
                     uri={slide.imageUrl}
                     style={styles.image}
-                    resizeMode="cover"
+                    contentFit="cover"
                   />
                   <View style={styles.overlay} />
                 </View>

@@ -10,8 +10,8 @@ import {
   Alert,
   Modal,
   Linking,
-  SafeAreaView,
 } from 'react-native';
+import { useSafeAreaInsets, SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import { Ionicons } from '@expo/vector-icons';
 import CachedImage from '../../components/CachedImage';
@@ -20,6 +20,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { db } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useAlert } from '../../contexts/AlertContext';
 import { spacing, typography } from '../../theme';
 import { Novel } from '../../types/novel';
 import {
@@ -28,6 +29,7 @@ import {
   formatCurrency,
   getAvailableCurrencies,
   getCurrencyByCode,
+  fetchLatestRates,
 } from '../../utils/currencyUtils';
 
 type Step = 'select-book' | 'choose-plan';
@@ -60,7 +62,9 @@ const getFirebaseDownloadUrl = (url: string) => {
 
 export const PromoteScreen = ({ navigation }: any) => {
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const { currentUser, loading: authLoading } = useAuth();
+  const { showAlert, showToast } = useAlert();
   const [selectedPlan, setSelectedPlan] = useState<string | null>(null);
   const [selectedBook, setSelectedBook] = useState<Novel | null>(null);
   const [currentStep, setCurrentStep] = useState<Step>('select-book');
@@ -71,6 +75,7 @@ export const PromoteScreen = ({ navigation }: any) => {
   const [showCurrencySelector, setShowCurrencySelector] = useState(false);
   const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [ratesLoaded, setRatesLoaded] = useState(false);
 
   const styles = getStyles(colors);
 
@@ -134,6 +139,19 @@ export const PromoteScreen = ({ navigation }: any) => {
       fetchUserBooks();
     }
   }, [currentUser]);
+
+  useEffect(() => {
+    // Detect and set user's preferred currency on mount
+    const detected = detectUserCurrency();
+    setSelectedCurrency(detected);
+
+    // Fetch and update with live exchange rates
+    fetchLatestRates().then(success => {
+      if (success) {
+        setRatesLoaded(true);
+      }
+    });
+  }, []);
 
   const handleBookSelect = (book: Novel) => {
     setSelectedBook(book);
@@ -204,16 +222,16 @@ export const PromoteScreen = ({ navigation }: any) => {
         if (data.reference) {
           await AsyncStorage.setItem('currentPaymentReference', data.reference);
         }
-        
+
         // Open Paystack payment page in WebView modal
         setPaymentUrl(data.authorization_url);
         setShowPaymentModal(true);
       } else {
-        Alert.alert('Error', 'Failed to initialize payment. Please try again.');
+        showToast({ message: 'Failed to initialize payment. Please try again.', type: 'error' });
       }
     } catch (error) {
       console.error('Payment error:', error);
-      Alert.alert('Error', 'An error occurred. Please try again.');
+      showToast({ message: 'An error occurred. Please try again.', type: 'error' });
     } finally {
       setProcessingPayment(false);
     }
@@ -225,15 +243,15 @@ export const PromoteScreen = ({ navigation }: any) => {
 
     // Check if Paystack redirected to close page or success page
     if (
-      url.includes('checkout.paystack.com/close') || 
-      url.includes('trxref=') || 
+      url.includes('checkout.paystack.com/close') ||
+      url.includes('trxref=') ||
       url.includes('reference=') ||
       title?.toLowerCase().includes('successful')
     ) {
       try {
         // Extract the reference from the URL or AsyncStorage
         let reference = null;
-        
+
         // Try parsing reference from URL
         if (url.includes('trxref=')) {
           const urlParts = url.split('trxref=');
@@ -246,18 +264,18 @@ export const PromoteScreen = ({ navigation }: any) => {
             reference = urlParts[1].split('&')[0];
           }
         }
-        
+
         // If no reference in URL, get from AsyncStorage
         if (!reference) {
           reference = await AsyncStorage.getItem('currentPaymentReference');
         }
-        
+
         console.log('Payment completed, reference:', reference);
-        
+
         // Close the modal
         setShowPaymentModal(false);
         setPaymentUrl(null);
-        
+
         // Navigate to PaymentCallbackScreen
         navigation.navigate('PaymentCallback', { reference: reference || undefined });
       } catch (error) {
@@ -267,10 +285,10 @@ export const PromoteScreen = ({ navigation }: any) => {
         setPaymentUrl(null);
         navigation.navigate('PaymentCallback', {});
       }
-      
+
       return false; // Prevent WebView from navigating
     }
-    
+
     return true; // Allow navigation
   };
 
@@ -300,14 +318,13 @@ export const PromoteScreen = ({ navigation }: any) => {
   }
 
   return (
-    <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+    <ScrollView
+      style={styles.container}
+      showsVerticalScrollIndicator={false}
+      contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 20) }}
+    >
       {/* Header Section */}
       <View style={styles.header}>
-        <View style={styles.badge}>
-          <Text style={styles.badgeIcon}>📚</Text>
-          <Text style={styles.badgeText}>New Feature Launch</Text>
-        </View>
-
         <Text style={styles.title}>
           {currentStep === 'select-book' ? 'Choose Your Novel to ' : 'Promote Your Novel to '}
           <Text style={styles.titleHighlight}>
@@ -398,7 +415,7 @@ export const PromoteScreen = ({ navigation }: any) => {
                   <CachedImage
                     uri={getFirebaseDownloadUrl(book.coverSmallImage || book.coverImage || '')}
                     style={styles.bookCover}
-                    resizeMode="cover"
+                    contentFit="cover"
                   />
 
                   <View style={styles.bookStats}>
@@ -444,7 +461,7 @@ export const PromoteScreen = ({ navigation }: any) => {
               <CachedImage
                 uri={getFirebaseDownloadUrl(selectedBook.coverSmallImage || selectedBook.coverImage || '')}
                 style={styles.selectedBookCover}
-                resizeMode="cover"
+                contentFit="cover"
               />
               <View style={styles.selectedBookInfo}>
                 <Text style={styles.selectedBookTitle} numberOfLines={2}>
@@ -690,10 +707,11 @@ export const PromoteScreen = ({ navigation }: any) => {
             <Text style={styles.paymentModalTitle}>Complete Payment</Text>
             <TouchableOpacity
               onPress={() => {
-                Alert.alert(
-                  'Cancel Payment',
-                  'Are you sure you want to cancel this payment?',
-                  [
+                showAlert({
+                  title: 'Cancel Payment',
+                  message: 'Are you sure you want to cancel this payment?',
+                  type: 'warning',
+                  buttons: [
                     { text: 'No', style: 'cancel' },
                     {
                       text: 'Yes',
@@ -703,7 +721,7 @@ export const PromoteScreen = ({ navigation }: any) => {
                       },
                     },
                   ]
-                );
+                });
               }}
             >
               <Ionicons name="close" size={28} color={colors.text} />

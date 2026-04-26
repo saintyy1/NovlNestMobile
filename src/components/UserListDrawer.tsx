@@ -162,7 +162,11 @@ const UserListDrawer: React.FC<UserListDrawerProps> = ({
 
   const handleUserPress = (userId: string) => {
     onClose();
-    navigation.navigate('Profile', { userId });
+    if (navigation.push) {
+      navigation.push('Profile', { userId });
+    } else {
+      navigation.navigate('Profile', { userId });
+    }
   };
 
   const renderUserItem = ({ item }: { item: UserDisplayInfo }) => (

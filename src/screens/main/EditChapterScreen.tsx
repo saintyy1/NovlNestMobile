@@ -6,19 +6,19 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Image,
   ActivityIndicator,
-  Alert,
   Platform,
+  DeviceEventEmitter,
 } from 'react-native';
 import CachedImage from '../../components/CachedImage';
-import { withCache, CACHE_TTL, invalidateCache } from '../../utils/cache';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { withCache, CACHE_TTL, invalidateCache, invalidateByPrefix } from '../../utils/cache';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, setDoc, getDocFromServer } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useAlert } from '../../contexts/AlertContext';
 import { spacing } from '../../theme';
 
 interface Novel {
@@ -33,12 +33,15 @@ interface Novel {
 interface Chapter {
   title: string;
   content: string;
+  updatedAt?: string;
 }
 
 const EditChapterScreen = ({ route, navigation }: any) => {
   const { novelId, chapterIndex } = route.params;
   const { currentUser } = useAuth();
   const { colors } = useTheme();
+  const { showAlert, showToast } = useAlert();
+  const insets = useSafeAreaInsets();
 
   const [novel, setNovel] = useState<Novel | null>(null);
   const [chapter, setChapter] = useState<Chapter | null>(null);
@@ -57,13 +60,19 @@ const EditChapterScreen = ({ route, navigation }: any) => {
   // Check for changes
   useEffect(() => {
     if (chapter && originalChapter) {
-      const titleChanged = chapter.title !== originalChapter.title;
-      const contentChanged = chapter.content !== originalChapter.content;
-      setHasChanges(titleChanged || contentChanged);
+      const titleChanged = chapter.title.trim() !== originalChapter.title.trim();
+      const contentChanged = chapter.content.trim() !== originalChapter.content.trim();
+      // If we already forced it to true, keep it true
+      setHasChanges(prev => prev || titleChanged || contentChanged);
     }
   }, [chapter, originalChapter]);
 
-  const fetchNovelAndChapter = async () => {
+  const fetchNovelAndChapter = async (force = false) => {
+    // Only fetch if we don't have data, or if we are forcing a refresh (e.g. after save)
+    if (!force && novel && chapter) {
+      return;
+    }
+
     if (!novelId || chapterIndex === undefined) {
       setError('Novel ID and chapter index are required');
       setLoading(false);
@@ -77,7 +86,8 @@ const EditChapterScreen = ({ route, navigation }: any) => {
     }
 
     try {
-      const novelDoc = await getDoc(doc(db, 'novels', novelId));
+      setLoading(true);
+      const novelDoc = await getDocFromServer(doc(db, 'novels', novelId));
       if (novelDoc.exists()) {
         const novelData = { id: novelDoc.id, ...novelDoc.data() } as Novel;
 
@@ -115,19 +125,16 @@ const EditChapterScreen = ({ route, navigation }: any) => {
 
     // Validate input
     if (!chapter.title.trim()) {
-      Alert.alert('Error', 'Chapter title is required.');
+      showToast({ message: 'Chapter title is required.', type: 'error' });
       return;
     }
 
     if (!chapter.content.trim()) {
-      Alert.alert('Error', 'Chapter content is required.');
+      showToast({ message: 'Chapter content is required.', type: 'error' });
       return;
     }
 
-    if (!hasChanges) {
-      Alert.alert('Info', 'No changes to save.');
-      return;
-    }
+    // Check removed to allow forced saves if user feels something changed
 
     try {
       setSaving(true);
@@ -135,34 +142,39 @@ const EditChapterScreen = ({ route, navigation }: any) => {
 
       // Create updated chapters array
       const updatedChapters = [...novel.chapters];
+      const existingChapter = updatedChapters[chapterIdx];
       updatedChapters[chapterIdx] = {
+        ...existingChapter,
         title: chapter.title.trim(),
         content: chapter.content.trim(),
+        updatedAt: new Date().toISOString(),
       };
 
-      // Update the novel with modified chapter
+      // Update the novel with modified chapter array
       await updateDoc(doc(db, 'novels', novelId), {
         chapters: updatedChapters,
         updatedAt: new Date().toISOString(),
       });
 
-      // Invalidate novel and specific chapter cache
+      // Invalidate relevant caches
       await invalidateCache(`novel_${novelId}`);
-      await invalidateCache(`chapter_${novelId}_${chapterIdx}`);
-
-      // Update local state
-      setOriginalChapter({ ...chapter });
+      await invalidateByPrefix("home_");
+      await invalidateByPrefix("browse_");
+      await invalidateByPrefix("profile_");
+      
+      // Force a re-fetch from server to ensure local state is 100% synced with reality
+      await fetchNovelAndChapter(true);
+      
       setHasChanges(false);
 
-      Alert.alert('Success', 'Chapter updated successfully!', [
-        {
-          text: 'OK',
-          onPress: () => navigation.goBack(),
-        },
-      ]);
+      showAlert({
+        title: 'Success',
+        message: 'Novel updated successfully!',
+        type: 'success',
+      });
     } catch (err) {
       console.error('Error updating chapter:', err);
-      Alert.alert('Error', 'Failed to update chapter. Please try again.');
+      showToast({ message: 'Failed to update chapter. Please try again.', type: 'error' });
     } finally {
       setSaving(false);
     }
@@ -170,10 +182,11 @@ const EditChapterScreen = ({ route, navigation }: any) => {
 
   const handleCancel = () => {
     if (hasChanges) {
-      Alert.alert(
-        'Unsaved Changes',
-        'You have unsaved changes. Are you sure you want to leave without saving?',
-        [
+      showAlert({
+        title: 'Unsaved Changes',
+        message: 'You have unsaved changes. Are you sure you want to leave without saving?',
+        type: 'warning',
+        buttons: [
           { text: 'Stay', style: 'cancel' },
           {
             text: 'Leave',
@@ -181,7 +194,7 @@ const EditChapterScreen = ({ route, navigation }: any) => {
             onPress: () => navigation.goBack(),
           },
         ]
-      );
+      });
     } else {
       navigation.goBack();
     }
@@ -207,7 +220,7 @@ const EditChapterScreen = ({ route, navigation }: any) => {
     }
   };
 
-  const styles = getStyles(colors);
+  const styles = getStyles(colors, insets);
 
   if (loading) {
     return (
@@ -265,12 +278,12 @@ const EditChapterScreen = ({ route, navigation }: any) => {
         {/* Novel Info Card */}
         <View style={styles.novelCard}>
           <View style={styles.novelInfo}>
-                {novel?.coverImage && (
-                  <CachedImage
-                    uri={getFirebaseDownloadUrl(novel.coverImage)}
-                    style={styles.coverImage}
-                  />
-                )}
+            {novel?.coverImage && (
+              <CachedImage
+                uri={getFirebaseDownloadUrl(novel.coverImage)}
+                style={styles.coverImage}
+              />
+            )}
             <View style={styles.novelDetails}>
               <Text style={styles.novelTitle} numberOfLines={2}>
                 {novel?.title}
@@ -305,12 +318,14 @@ const EditChapterScreen = ({ route, navigation }: any) => {
                   chapterNumber: chapterIdx + 1,
                   initialTitle: chapter.title,
                   initialContent: chapter.content,
-                  onSave: (updatedChapter: { title: string; content: string }) => {
-                    setChapter({
-                      title: updatedChapter.title,
-                      content: updatedChapter.content,
-                    });
-                  }
+                  novelId: novelId,
+                  chapterIdx: chapterIdx,
+                  novel: novel,
+                  onSave: async () => {
+                    // When the editor returns, it has already saved to DB.
+                    // We just need to refresh our local state.
+                    await fetchNovelAndChapter(true);
+                  },
                 });
               }}
               activeOpacity={0.7}
@@ -321,11 +336,11 @@ const EditChapterScreen = ({ route, navigation }: any) => {
                   <Ionicons name="create-outline" size={16} color={colors.primary} />
                 </View>
               </View>
-              
+
               <Text style={styles.chapterTitleText} numberOfLines={2}>
                 {chapter.title || `Chapter ${chapterIdx + 1} (Untitled)`}
               </Text>
-              
+
               <Text style={styles.chapterPreview} numberOfLines={5}>
                 {chapter.content || 'No content yet. Tap to edit.'}
               </Text>
@@ -364,15 +379,12 @@ const EditChapterScreen = ({ route, navigation }: any) => {
           >
             <Text style={styles.cancelButtonText}>Cancel</Text>
           </TouchableOpacity>
-          
+
           <TouchableOpacity
-            style={[
-              styles.saveButton,
-              (saving || !hasChanges) && styles.saveButtonDisabled,
-            ]}
+            style={styles.saveButton}
             onPress={handleSave}
             activeOpacity={0.8}
-            disabled={saving || !hasChanges}
+            disabled={saving}
           >
             {saving ? (
               <>
@@ -392,7 +404,7 @@ const EditChapterScreen = ({ route, navigation }: any) => {
   );
 };
 
-const getStyles = (colors: any) => StyleSheet.create({
+const getStyles = (colors: any, insets: any) => StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: colors.background,
@@ -484,7 +496,7 @@ const getStyles = (colors: any) => StyleSheet.create({
     backgroundColor: colors.background,
   },
   scrollContent: {
-    paddingBottom: 120,
+    paddingBottom: 120 + insets.bottom,
   },
   novelCard: {
     backgroundColor: colors.card,
@@ -638,6 +650,7 @@ const getStyles = (colors: any) => StyleSheet.create({
     left: 0,
     right: 0,
     padding: spacing.lg,
+    paddingBottom: Math.max(insets.bottom, spacing.lg),
     backgroundColor: colors.background,
     borderTopWidth: 1,
     borderTopColor: colors.border,

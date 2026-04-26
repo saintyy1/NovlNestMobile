@@ -9,10 +9,10 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
-  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../contexts/ThemeContext';
+import { useAlert } from '../contexts/AlertContext';
 
 export interface ChatMessage {
   id: string;
@@ -26,6 +26,7 @@ interface InlineChatEditorProps {
 
 export const InlineChatEditor: React.FC<InlineChatEditorProps> = ({ onAddChat }) => {
   const { colors } = useTheme();
+  const { showToast } = useAlert();
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [newSender, setNewSender] = useState('');
@@ -35,7 +36,7 @@ export const InlineChatEditor: React.FC<InlineChatEditorProps> = ({ onAddChat })
 
   const addMessage = () => {
     if (!newSender.trim() || !newContent.trim()) {
-      Alert.alert('Error', 'Please fill in both sender name and message content');
+      showToast({ message: 'Please fill in both sender name and message content', type: 'error' });
       return;
     }
 
@@ -55,7 +56,7 @@ export const InlineChatEditor: React.FC<InlineChatEditorProps> = ({ onAddChat })
 
   const insertChat = () => {
     if (messages.length === 0) {
-      Alert.alert('Error', 'Please add at least one message');
+      showToast({ message: 'Please add at least one message', type: 'error' });
       return;
     }
     onAddChat(messages);

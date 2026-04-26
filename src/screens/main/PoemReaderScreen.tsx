@@ -16,11 +16,15 @@ import { doc, getDoc, updateDoc, increment } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useAlert } from '../../contexts/AlertContext';
 import type { Poem } from '../../types/poem';
 import { withCache, CACHE_TTL, invalidateCache } from '../../utils/cache';
 import Icon from '@expo/vector-icons/Ionicons';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useReaderSettings } from '../../contexts/ReaderSettingsContext';
+import ReaderSettingsModal from '../../components/ReaderSettingsModal';
+import { useReadingSession } from '../../hooks/useReadingSession';
 
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../../types/navigation';
@@ -31,15 +35,27 @@ const PoemReaderScreen = ({ route, navigation }: Props) => {
     const { id } = route.params;
     const [poem, setPoem] = useState<Poem | null>(null)
     const [loading, setLoading] = useState(true);
-    const [fontSize, setFontSize] = useState(18);
+    const [showReaderSettings, setShowReaderSettings] = useState(false);
+    const { fontSize, fontFamily, readerColors } = useReaderSettings();
     const { currentUser, isAdmin, toggleFollow } = useAuth();
     const { colors } = useTheme();
+    const { showAlert, showToast } = useAlert();
+    const insets = useSafeAreaInsets();
 
-    const styles = getStyles(colors);
+    const styles = getStyles(colors, insets);
 
     const scrollY = useRef(new Animated.Value(0)).current;
     const controlsOpacity = useRef(new Animated.Value(1)).current;
     const scrollViewRef = useRef(null);
+
+    // Initialize reading session tracking
+    const { onUserActivity, markAsCompleted } = useReadingSession(
+        currentUser?.uid,
+        id,
+        poem?.title || 'Unknown Poem',
+        id, // For poems, chapterId is same as poemId
+        'poem'
+    );
 
     // Determine permission to copy/paste
     const canCopyContent = !!(
@@ -119,10 +135,14 @@ const PoemReaderScreen = ({ route, navigation }: Props) => {
             }
         } catch (error: any) {
             if (error.message === 'Poem not found') {
-                Alert.alert('Not Found', 'This poem could not be found.');
+                showAlert({
+                    title: 'Not Found',
+                    message: 'This poem could not be found.',
+                    type: 'info'
+                });
             } else {
                 console.error('Error fetching poem:', error);
-                Alert.alert('Error', 'Failed to load poem. Please try again.');
+                showToast({ message: 'Failed to load poem. Please try again.', type: 'error' });
             }
             setLoading(false);
         } finally {
@@ -130,51 +150,54 @@ const PoemReaderScreen = ({ route, navigation }: Props) => {
         }
     };
 
-    const handleScroll = Animated.event(
-        [{ nativeEvent: { contentOffset: { y: scrollY } } }],
-        {
-            useNativeDriver: false,
+    const handleScroll = (event: any) => {
+        onUserActivity();
+
+        const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
+        const paddingToBottom = 50;
+        const isCloseToBottom = layoutMeasurement.height + contentOffset.y >= contentSize.height - paddingToBottom;
+
+        if (isCloseToBottom) {
+            markAsCompleted();
         }
-    );
 
-    const increaseFontSize = () => {
-        setFontSize((prev) => Math.min(prev + 2, 32));
-    };
-
-    const decreaseFontSize = () => {
-        setFontSize((prev) => Math.max(prev - 2, 14));
+        scrollY.setValue(contentOffset.y);
     };
 
     const handleShare = async () => {
         try {
-          await RNShare.share({
-            message: `Check out "${poem?.title}" by ${poem?.poetName} on NovlNest! https://novlnest.com/poem/${poem?.id}`,
-          });
+            await RNShare.share({
+                message: `Check out "${poem?.title}" by ${poem?.poetName} on NovlNest! https://novlnest.com/poem/${poem?.id}`,
+            });
         } catch (error) {
-          console.error('Error sharing:', error);
+            console.error('Error sharing:', error);
         }
     };
 
     const handleFollowToggle = async () => {
         if (!currentUser) {
-            Alert.alert('Login Required', 'Please login to follow authors');
+            showAlert({
+                title: 'Login Required',
+                message: 'Please login to follow poets',
+                type: 'info'
+            });
             return;
         }
         if (!poem?.poetId) return;
 
         try {
             setIsTogglingFollow(true);
-            
+
             // Optimistic update to UI
             setIsFollowing(!isFollowing);
-            
+
             await toggleFollow(poem.poetId, isFollowing);
             // Invalidate profile cache
             await invalidateCache(`profile_user_${poem.poetId}`);
-            
+
         } catch (error) {
             console.error('Error toggling follow:', error);
-            Alert.alert('Error', 'Failed to update follow status');
+            showToast({ message: 'Failed to update follow status', type: 'error' });
             // Revert on error
             setIsFollowing(isFollowing);
         } finally {
@@ -208,7 +231,14 @@ const PoemReaderScreen = ({ route, navigation }: Props) => {
                     This poem may have been removed or is unavailable.
                 </Text>
                 <TouchableOpacity
-                    onPress={() => navigation.goBack()}
+                    onPress={() => {
+                        if (navigation.canGoBack()) {
+                            navigation.goBack();
+                        } else {
+                            // @ts-ignore
+                            navigation.replace('MainTabs');
+                        }
+                    }}
                     style={styles.errorButton}
                 >
                     <Text style={styles.errorButtonText}>Go Back</Text>
@@ -218,31 +248,53 @@ const PoemReaderScreen = ({ route, navigation }: Props) => {
     }
 
     return (
-        <SafeAreaView style={styles.container}>
+        <SafeAreaView
+            style={[styles.container, { backgroundColor: readerColors.background }]}
+            onStartShouldSetResponderCapture={() => {
+                onUserActivity();
+                return false;
+            }}
+        >
+            <StatusBar barStyle={readerColors.text === '#FFFFFF' ? 'light-content' : 'dark-content'} backgroundColor={readerColors.background} />
             {/* Header */}
-        <View style={[styles.header, { backgroundColor: colors.background, borderBottomColor: colors.border }]}>
-            <TouchableOpacity
-                onPress={() => navigation.goBack()}
-                style={styles.topBarButton}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            >
-                <Icon name="chevron-back" size={28} color="#8B5CF6" />
-            </TouchableOpacity>
-            <View style={styles.headerCenter}>
-            <Text style={[styles.headerTitle, { color: colors.text }]}>{poem.title}</Text>
-            <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>
-                by {poem.poetName}
-            </Text>
-            </View>
+            <View style={[styles.header, { backgroundColor: readerColors.background, borderBottomColor: readerColors.border }]}>
+                <TouchableOpacity
+                    onPress={() => {
+                        if (navigation.canGoBack()) {
+                            navigation.goBack();
+                        } else {
+                            // @ts-ignore
+                            navigation.replace('MainTabs');
+                        }
+                    }}
+                    style={styles.topBarButton}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                    <Icon name="chevron-back" size={28} color="#8B5CF6" />
+                </TouchableOpacity>
+                <View style={styles.headerCenter}>
+                    <Text style={[styles.headerTitle, { color: readerColors.text }]}>{poem.title}</Text>
+                    <Text style={[styles.headerSubtitle, { color: readerColors.textSecondary }]}>
+                        by {poem.poetName}
+                    </Text>
+                </View>
 
-        <TouchableOpacity
-          onPress={handleShare}
-          style={styles.topBarButton}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-      >
-          <Icon name="share-outline" size={24} color="#8B5CF6" />
-      </TouchableOpacity>
-      </View>
+                <TouchableOpacity
+                    onPress={() => setShowReaderSettings(true)}
+                    style={styles.topBarButton}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                    <Icon name="settings-outline" size={24} color="#8B5CF6" />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                    onPress={handleShare}
+                    style={[styles.topBarButton, { marginLeft: 8 }]}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                    <Icon name="share-outline" size={24} color="#8B5CF6" />
+                </TouchableOpacity>
+            </View>
 
             {/* Poem Content */}
             <ScrollView
@@ -267,7 +319,16 @@ const PoemReaderScreen = ({ route, navigation }: Props) => {
                         <Text
                             style={[
                                 styles.contentText,
-                                { fontSize, lineHeight: fontSize * 1.8 },
+                                {
+                                    fontSize,
+                                    lineHeight: fontSize * 1.8,
+                                    color: readerColors.text,
+                                    fontFamily: Platform.OS === 'ios' ? fontFamily : (
+                                        fontFamily === 'Courier' ? 'monospace' : 
+                                        ['Georgia', 'Times New Roman', 'Baskerville', 'Charter', 'Palatino', 'Iowan Old Style'].includes(fontFamily) ? 'serif' : 
+                                        'sans-serif'
+                                    )
+                                },
                             ]}
                             selectable={canCopyContent}
                         >
@@ -294,70 +355,15 @@ const PoemReaderScreen = ({ route, navigation }: Props) => {
                     )}
 
                     {/* Bottom Spacing for Controls */}
-                    <View style= {{height : 140}}/>
+                    <View style={{ height: 140 }} />
                 </TouchableOpacity>
             </ScrollView>
 
-            {/* Bottom Control Bar */}
-            <Animated.View
-                style={[
-                    styles.bottomBar,
-                    {
-                        opacity: controlsOpacity,
-                        transform: [
-                            {
-                                translateY: controlsOpacity.interpolate({
-                                    inputRange: [0, 1],
-                                    outputRange: [100, 0],
-                                }),
-                            },
-                        ],
-                    },
-                ]}
-            >
-                <View style={styles.bottomBarContent}>
-                    <View style={styles.fontControlsSection}>
-                        <Text style={styles.bottomBarLabel}>Text Size</Text>
-                        <View style={styles.fontControls}>
-                            <TouchableOpacity
-                                onPress={decreaseFontSize}
-                                style={[
-                                    styles.fontButton,
-                                    fontSize <= 14 && styles.fontButtonDisabled,
-                                ]}
-                                disabled={fontSize <= 14}
-                            >
-                                <Text style={[
-                                    styles.fontButtonText,
-                                    fontSize <= 14 && styles.fontButtonTextDisabled
-                                ]}>
-                                    A-
-                                </Text>
-                            </TouchableOpacity>
-
-                            <View style={styles.fontSizeIndicator}>
-                                <Text style={styles.fontSizeText}>{fontSize}</Text>
-                            </View>
-
-                            <TouchableOpacity
-                                onPress={increaseFontSize}
-                                style={[
-                                    styles.fontButton,
-                                    fontSize >= 32 && styles.fontButtonDisabled,
-                                ]}
-                                disabled={fontSize >= 32}
-                            >
-                                <Text style={[
-                                    styles.fontButtonText,
-                                    fontSize >= 32 && styles.fontButtonTextDisabled
-                                ]}>
-                                    A+
-                                </Text>
-                            </TouchableOpacity>
-                        </View>
-                    </View>
-                </View>
-            </Animated.View>
+            <ReaderSettingsModal
+                isVisible={showReaderSettings}
+                onClose={() => setShowReaderSettings(false)}
+                hideReadingMode={true}
+            />
 
             {/* Copyright Protection Overlay (invisible but prevents screenshots on some devices) */}
             {!canCopyContent && (
@@ -367,34 +373,34 @@ const PoemReaderScreen = ({ route, navigation }: Props) => {
     );
 };
 
-const getStyles = (themeColors: any) => StyleSheet.create({
+const getStyles = (themeColors: any, insets: any) => StyleSheet.create({
     container: {
         flex: 1,
         backgroundColor: themeColors.background,
     },
-      headerCenter: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    textAlign: 'center',
-    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
-  },
-  headerSubtitle: {
-    fontSize: 14,
-    marginTop: 2,
-    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
-  },
+    headerCenter: {
+        flex: 1,
+        alignItems: 'center',
+    },
+    header: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        borderBottomWidth: 1,
+    },
+    headerTitle: {
+        fontSize: 18,
+        fontWeight: '600',
+        textAlign: 'center',
+        fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    },
+    headerSubtitle: {
+        fontSize: 14,
+        marginTop: 2,
+        fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    },
     loadingContainer: {
         flex: 1,
         backgroundColor: themeColors.background,
@@ -597,7 +603,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
         left: 0,
         right: 0,
         backgroundColor: themeColors.background,
-        paddingBottom: Platform.OS === 'ios' ? 34 : 34,
+        paddingBottom: Math.max(insets.bottom, 20),
         paddingTop: 20,
         paddingHorizontal: 20,
         borderTopWidth: StyleSheet.hairlineWidth,

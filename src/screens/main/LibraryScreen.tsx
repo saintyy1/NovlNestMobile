@@ -8,7 +8,6 @@ import {
   TouchableOpacity,
   Image,
   ActivityIndicator,
-  Alert,
   Platform,
 } from 'react-native';
 import CachedImage from '../../components/CachedImage';
@@ -21,6 +20,7 @@ import { colors, spacing, typography } from '../../theme';
 import { Novel } from '../../types/novel';
 import { Poem } from '../../types/poem';
 import { useFocusEffect } from '@react-navigation/native';
+import { useAlert } from '../../contexts/AlertContext';
 
 const getFirebaseDownloadUrl = (url: string) => {
   if (!url || !url.includes('firebasestorage')) {
@@ -72,6 +72,7 @@ const getGenreColor = (genres: string[]) => {
 export const LibraryScreen = ({ navigation }: any) => {
   const { colors } = useTheme();
   const { currentUser, loading: authLoading, markNovelAsFinished } = useAuth();
+  const { showAlert, showToast } = useAlert();
   const [likedNovels, setLikedNovels] = useState<Novel[]>([]);
   const [finishedNovels, setFinishedNovels] = useState<Novel[]>([]);
   const [likedPoems, setLikedPoems] = useState<Poem[]>([]);
@@ -156,18 +157,19 @@ export const LibraryScreen = ({ navigation }: any) => {
   const handleMarkAsFinished = async (novel: Novel) => {
     try {
       await markNovelAsFinished(novel.id, novel.title, novel.authorId);
-      Alert.alert('Success', `"${novel.title}" marked as finished`);
+      showToast({ message: `"${novel.title}" marked as finished`, type: 'success' });
     } catch (error) {
       console.error('Error marking novel as finished:', error);
-      Alert.alert('Error', 'Failed to mark novel as finished');
+      showToast({ message: 'Failed to mark novel as finished', type: 'error' });
     }
   };
 
   const showNovelOptions = (novel: Novel) => {
-    Alert.alert(
-      'Choose an action',
-      `What would you like to do with "${novel.title}"?`,
-      [
+    showAlert({
+      title: 'Choose an action',
+      message: `What would you like to do with "${novel.title}"?`,
+      type: 'info',
+      buttons: [
         {
           text: 'Mark as Finished',
           onPress: () => handleMarkAsFinished(novel),
@@ -177,8 +179,8 @@ export const LibraryScreen = ({ navigation }: any) => {
           style: 'cancel',
         },
       ],
-      { cancelable: true }
-    );
+      cancelable: true
+    });
   };
 
   const renderFavouriteNovelCard = (novel: Novel) => {
@@ -198,7 +200,7 @@ export const LibraryScreen = ({ navigation }: any) => {
               uri={getFirebaseDownloadUrl(novel.coverSmallImage || novel.coverImage || '')}
               style={styles.cardImage}
               onError={() => handleImageError(novel.id)}
-              resizeMode="cover"
+              contentFit="cover"
             />
           ) : (
             <View style={[styles.cardImageFallback, { backgroundColor: getGenreColor(novel.genres) }]}>
@@ -252,7 +254,7 @@ export const LibraryScreen = ({ navigation }: any) => {
               uri={getFirebaseDownloadUrl(novel.coverSmallImage || novel.coverImage || '')}
               style={styles.cardImage}
               onError={() => handleImageError(novel.id)}
-              resizeMode="cover"
+              contentFit="cover"
             />
           ) : (
             <View style={[styles.cardImageFallback, { backgroundColor: getGenreColor(novel.genres) }]}>
@@ -306,7 +308,7 @@ export const LibraryScreen = ({ navigation }: any) => {
               uri={getFirebaseDownloadUrl(poem.coverSmallImage || poem.coverImage || '')}
               style={styles.cardImage}
               onError={() => handleImageError(poem.id)}
-              resizeMode="cover"
+              contentFit="cover"
             />
           ) : (
             <View style={[styles.cardImageFallback, { backgroundColor: getGenreColor(poem.genres) }]}>

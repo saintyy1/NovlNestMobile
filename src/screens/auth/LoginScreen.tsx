@@ -8,7 +8,6 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
-  Alert,
   ActivityIndicator,
   Image,
 } from 'react-native';
@@ -18,6 +17,7 @@ import * as AppleAuthentication from 'expo-apple-authentication';
 import { GoogleAuthProvider, OAuthProvider, signInWithCredential } from 'firebase/auth';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useAlert } from '../../contexts/AlertContext';
 import { spacing, typography } from '../../theme';
 import { auth } from '../../firebase/config';
 import { trackLogin } from '../../utils/Analytics-utils';
@@ -26,12 +26,30 @@ export const LoginScreen = ({ navigation }: any) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const { login, loading } = useAuth();
+  const { login, loading, signInWithSocialCredential, sendEmailVerificationLink, refreshUser } = useAuth();
   const { colors } = useTheme();
+  const { showAlert, showToast } = useAlert();
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isGoogleSignInAvailable, setIsGoogleSignInAvailable] = useState(false);
 
   const styles = getStyles(colors);
+
+  const handleResendVerification = async () => {
+    if (!email || !password) {
+      showToast({ message: 'Please enter your email and password to resend the verification link.', type: 'error' });
+      return;
+    }
+    
+    setIsLoggingIn(true);
+    try {
+      await sendEmailVerificationLink(email, password);
+      showToast({ message: 'Verification email resent successfully! Check your inbox.', type: 'success' });
+    } catch (error: any) {
+      showToast({ message: error.message || 'Failed to resend verification email.', type: 'error' });
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
 
   // Configure Google Sign-In (only works in native builds, not Expo Go)
   React.useEffect(() => {
@@ -72,7 +90,7 @@ export const LoginScreen = ({ navigation }: any) => {
       await GoogleSignin.signOut();
 
       // Check if your device supports Google Play
-      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+      await GoogleSignin.hasPlayServices();
 
       // Get the users ID token
       const signInResult = await GoogleSignin.signIn();
@@ -86,11 +104,13 @@ export const LoginScreen = ({ navigation }: any) => {
       // Create a Google credential with the token
       const googleCredential = GoogleAuthProvider.credential(idToken);
 
-      // Sign-in the user with the credential
-      const userCredential = await signInWithCredential(auth, googleCredential);
+      // Sign-in the user with the centralized social credential handler
+      await signInWithSocialCredential(googleCredential);
 
       // Track Google login for analytics
-      trackLogin('google', userCredential.user.uid);
+      if (auth.currentUser) {
+        trackLogin('google', auth.currentUser.uid);
+      }
 
       // Navigation will happen automatically via auth state change
     } catch (error: any) {
@@ -98,8 +118,41 @@ export const LoginScreen = ({ navigation }: any) => {
       if (error.code === 'SIGN_IN_CANCELLED' || error.message?.includes('Sign in cancelled')) {
         return;
       }
+      
+      if (error.message === 'ACCOUNT_DISABLED') {
+        showToast({ message: 'Your account has been disabled. Please contact support.', type: 'error' });
+        return;
+      }
+
+      if (error.message === 'ACCOUNT_UNVERIFIED') {
+        showAlert({
+          title: 'Email Not Verified',
+          message: 'Your email is not verified yet. Google usually verifies emails automatically, but your account status requires manual verification or status check.',
+          type: 'warning',
+          buttons: [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Check Status', onPress: async () => {
+                if (auth.currentUser) {
+                  try {
+                    await auth.currentUser.reload();
+                    if (auth.currentUser.emailVerified) {
+                      await refreshUser();
+                    } else {
+                      showToast({ message: 'Please check your email for the verification link.', type: 'info' });
+                    }
+                  } catch (err) {
+                    console.error('Error checking status:', err);
+                  }
+                }
+              } 
+            }
+          ]
+        });
+        return;
+      }
+
       console.error('Google Sign-In Error:', error);
-      Alert.alert('Error', error.message || 'Failed to sign in with Google');
+      showToast({ message: error.message || 'Failed to sign in with Google', type: 'error' });
     }
   };
 
@@ -125,12 +178,10 @@ export const LoginScreen = ({ navigation }: any) => {
         idToken: credential.identityToken,
       });
 
-      const userCredential = await signInWithCredential(
-        auth,
-        firebaseCredential
-      );
+      // Sign-in the user with the centralized social credential handler
+      await signInWithSocialCredential(firebaseCredential);
 
-      trackLogin('apple', userCredential.user.uid);
+      trackLogin('apple', auth.currentUser?.uid || 'unknown');
 
     } catch (error: any) {
       setIsLoggingIn(false);
@@ -139,17 +190,24 @@ export const LoginScreen = ({ navigation }: any) => {
         return;
       }
 
+      if (error.message === 'ACCOUNT_DISABLED') {
+        showToast({ message: 'Your account has been disabled. Please contact support.', type: 'error' });
+        return;
+      }
+
+      if (error.message === 'ACCOUNT_UNVERIFIED') {
+        showToast({ message: 'Your account requires email verification.', type: 'warning' });
+        return;
+      }
+
       console.error('Apple Sign-In Error:', error);
-      Alert.alert(
-        'Sign in failed',
-        error.message || 'Unable to sign in with Apple'
-      );
+      showToast({ message: error.message || 'Unable to sign in with Apple', type: 'error' });
     }
   };
 
   const handleLogin = async () => {
     if (!email || !password) {
-      Alert.alert('Error', 'Please fill in all fields');
+      showToast({ message: 'Please fill in all fields', type: 'error' });
       return;
     }
 
@@ -168,6 +226,29 @@ export const LoginScreen = ({ navigation }: any) => {
       setIsLoggingIn(false);
       let errorMessage = 'Failed to login';
 
+      if (error.message === "ACCOUNT_DISABLED") {
+        showAlert({
+          title: 'Account Disabled',
+          message: 'Your account has been disabled by an administrator. Please contact support for more information.',
+          type: 'error',
+          buttons: [{ text: 'OK' }]
+        });
+        return;
+      }
+
+      if (error.message === "ACCOUNT_UNVERIFIED") {
+        showAlert({
+          title: 'Email Not Verified',
+          message: 'You need to verify your email address before you can log in.',
+          type: 'warning',
+          buttons: [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Resend Email', onPress: handleResendVerification }
+          ]
+        });
+        return;
+      }
+
       if (error.code === 'auth/user-not-found') {
         errorMessage = 'No account found with this email';
       } else if (error.code === 'auth/wrong-password') {
@@ -176,11 +257,15 @@ export const LoginScreen = ({ navigation }: any) => {
         errorMessage = 'Invalid email address';
       } else if (error.code === 'auth/too-many-requests') {
         errorMessage = 'Too many attempts. Please try again later';
+      } else if (error.code === 'auth/network-request-failed') {
+        errorMessage = 'Network error. Please check your connection.';
+      } else if (error.message) {
+        errorMessage = error.message;
       } else if (error.code === 'auth/invalid-credential') {
         errorMessage = 'Invalid email or password';
       }
 
-      Alert.alert('Login Failed', errorMessage);
+      showToast({ message: errorMessage, type: 'error' });
     }
   };
 

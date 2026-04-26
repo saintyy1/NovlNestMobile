@@ -8,13 +8,13 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
-  Alert,
   ActivityIndicator,
   ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useAlert } from '../../contexts/AlertContext';
 import { spacing, typography } from '../../theme';
 
 export const ForgotPasswordScreen = ({ navigation, route }: any) => {
@@ -23,18 +23,19 @@ export const ForgotPasswordScreen = ({ navigation, route }: any) => {
 
   const { resetPassword } = useAuth();
   const { colors } = useTheme();
+  const { showAlert, showToast } = useAlert();
 
   const styles = getStyles(colors);
 
   const handleSendResetEmail = async () => {
     if (!email) {
-      Alert.alert('Error', 'Please enter your email address');
+      showToast({ message: 'Please enter your email address', type: 'error' });
       return;
     }
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
-      Alert.alert('Error', 'Please enter a valid email address');
+      showToast({ message: 'Please enter a valid email address', type: 'error' });
       return;
     }
 
@@ -43,16 +44,17 @@ export const ForgotPasswordScreen = ({ navigation, route }: any) => {
       console.log('Attempting to send password reset email to:', email);
       await resetPassword(email);
       console.log('Password reset email sent successfully');
-      Alert.alert(
-        'Email Sent',
-        'A password reset link has been sent to your email. Please check your inbox and spam folder.',
-        [
+      showAlert({
+        title: 'Email Sent',
+        message: 'A password reset link has been sent to your email. Please check your inbox and spam folder.',
+        type: 'success',
+        buttons: [
           {
             text: 'OK',
             onPress: () => navigation.goBack(),
           },
         ]
-      );
+      });
     } catch (error: any) {
       console.error('Password reset error:', error);
       console.error('Error code:', error.code);
@@ -73,7 +75,7 @@ export const ForgotPasswordScreen = ({ navigation, route }: any) => {
         errorMessage = `Error: ${error.message || 'Unknown error occurred'}`;
       }
       
-      Alert.alert('Error', errorMessage);
+      showToast({ message: errorMessage, type: 'error' });
     } finally {
       setIsLoading(false);
     }

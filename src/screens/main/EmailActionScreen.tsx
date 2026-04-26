@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, Platform } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -21,6 +22,7 @@ type ActionMode = 'resetPassword' | 'verifyEmail' | 'recoverEmail';
 const EmailActionScreen: React.FC<EmailActionScreenProps> = ({ navigation, route }) => {
   const { colors } = useTheme();
   const { refreshUser } = useAuth();
+  const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -162,8 +164,8 @@ const EmailActionScreen: React.FC<EmailActionScreenProps> = ({ navigation, route
   };
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <View style={styles.content}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+      <View style={[styles.content, { paddingBottom: Math.max(insets.bottom, 20) }]}>
         {loading ? (
           <>
             <ActivityIndicator size="large" color={colors.primary} />
@@ -202,7 +204,7 @@ const EmailActionScreen: React.FC<EmailActionScreenProps> = ({ navigation, route
           </>
         )}
       </View>
-    </View>
+    </SafeAreaView>
   );
 };
 

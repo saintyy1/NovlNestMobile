@@ -6,12 +6,13 @@ import {
   StyleSheet,
   Platform,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../contexts/ThemeContext';
 
 const TermsOfServiceScreen = () => {
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const styles = getStyles(colors);
 
   const Section = ({ icon, title, children }: { icon: string; title: string; children: React.ReactNode }) => (
@@ -161,7 +162,7 @@ const TermsOfServiceScreen = () => {
           </View>
         </Section>
 
-        <View style={{ height: 40 }} />
+        <View style={{ height: 40 + insets.bottom }} />
       </ScrollView>
     </SafeAreaView>
   );

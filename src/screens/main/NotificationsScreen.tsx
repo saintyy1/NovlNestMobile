@@ -5,9 +5,7 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Image,
   ActivityIndicator,
-  Alert,
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -17,8 +15,10 @@ import { db } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotifications } from '../../contexts/NotificationContext';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useAlert } from '../../contexts/AlertContext';
 import { spacing, typography } from '../../theme';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { withCache, CACHE_TTL } from '../../utils/cache';
 
 interface Notification {
   id: string;
@@ -68,7 +68,9 @@ interface Notification {
 export const NotificationsScreen = ({ navigation }: any) => {
   const { currentUser, loading: authLoading , clearAllNotifications } = useAuth();
   const { colors } = useTheme();
+  const { showAlert, showToast } = useAlert();
   const { markAsRead: contextMarkAsRead, markAllAsRead: contextMarkAllAsRead } = useNotifications();
+  const insets = useSafeAreaInsets();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
   const [fromUsersData, setFromUsersData] = useState<Record<string, { displayName: string; photoURL?: string }>>({});
@@ -114,16 +116,20 @@ export const NotificationsScreen = ({ navigation }: any) => {
         uniqueFromUserIds.forEach((userId) => {
           if (!newFromUsersData[userId]) {
             fetchPromises.push(
-              getDoc(doc(db, 'users', userId))
-                .then((userDoc) => {
-                  if (userDoc.exists()) {
-                    const userData = userDoc.data();
-                    newFromUsersData[userId] = {
-                      displayName: userData.displayName || 'Unknown User',
-                      photoURL: userData.photoURL,
-                    };
-                  } else {
-                    newFromUsersData[userId] = { displayName: 'Deleted User' };
+              withCache(`user_preview_${userId}`, async () => {
+                const userDoc = await getDoc(doc(db, 'users', userId));
+                if (userDoc.exists()) {
+                  const userData = userDoc.data();
+                  return {
+                    displayName: userData.displayName || 'Unknown User',
+                    photoURL: userData.photoURL,
+                  };
+                }
+                return { displayName: 'Deleted User' };
+              }, CACHE_TTL.USER_PREVIEW)
+                .then((userData) => {
+                  if (userData) {
+                    newFromUsersData[userId] = userData;
                   }
                 })
                 .catch((err) => {
@@ -362,17 +368,18 @@ export const NotificationsScreen = ({ navigation }: any) => {
       await contextMarkAllAsRead();
     } catch (error) {
       console.error('Error marking all as read:', error);
-      Alert.alert('Error', 'Failed to mark all notifications as read.');
+      showToast({ message: 'Failed to mark all notifications as read.', type: 'error' });
     } finally {
       setMarkingAllAsRead(false);
     }
   };
 
   const handleClearAll = async () => {
-    Alert.alert(
-      'Clear All Notifications',
-      'Are you sure you want to delete all notifications? This action cannot be undone.',
-      [
+    showAlert({
+      title: 'Clear All Notifications',
+      message: 'Are you sure you want to delete all notifications? This action cannot be undone.',
+      type: 'warning',
+      buttons: [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete All',
@@ -381,16 +388,17 @@ export const NotificationsScreen = ({ navigation }: any) => {
             try {
               setClearingAll(true);
               await clearAllNotifications();
+              showToast({ message: 'All notifications cleared', type: 'success' });
             } catch (error) {
               console.error('Error clearing all notifications:', error);
-              Alert.alert('Error', 'Failed to clear all notifications.');
+              showToast({ message: 'Failed to clear all notifications.', type: 'error' });
             } finally {
               setClearingAll(false);
             }
           },
         },
       ]
-    );
+    });
   };
 
   if (authLoading || loading) {
@@ -465,7 +473,10 @@ export const NotificationsScreen = ({ navigation }: any) => {
       )}
 
       {/* Notifications List */}
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+      <ScrollView 
+        showsVerticalScrollIndicator={false} 
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: Math.max(insets.bottom, 20) }]}
+      >
         {notifications.length === 0 ? (
           <View style={styles.emptyStateContainer}>
             <Ionicons name="checkmark-circle" size={64} color={colors.success} />

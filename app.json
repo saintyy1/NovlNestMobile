@@ -2,7 +2,7 @@
   "expo": {
     "name": "NovlNest",
     "slug": "NovlNest",
-    "version": "1.5.0",
+    "version": "2.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/app-icon.png",
     "userInterfaceStyle": "automatic",
@@ -48,6 +48,7 @@
       }
     },
     "android": {
+      "googleServicesFile": "./google-services.json",
       "package": "com.novlnest",
       "splash": {
         "image": "./assets/images/app-icon.png",
@@ -194,6 +195,7 @@
       "favicon": "./assets/images/app-icon.png"
     },
     "plugins": [
+      "expo-notifications",
       "expo-web-browser",
       "@react-native-google-signin/google-signin",
       "expo-apple-authentication",

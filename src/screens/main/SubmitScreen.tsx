@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -12,17 +12,22 @@ import {
   Platform,
   Modal,
   KeyboardAvoidingView,
+  Animated,
+  Easing,
+  DeviceEventEmitter,
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import CachedImage from '../../components/CachedImage';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
+import { db, storage } from '../../firebase/config';
 import { collection, doc, setDoc } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { db, storage } from '../../firebase/config';
+import { compressForCover, generateSmallCover } from '../../utils/imageUtils';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useAlert } from '../../contexts/AlertContext';
 import { spacing } from '../../theme';
 import { invalidateByPrefix } from '../../utils/cache';
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -51,11 +56,23 @@ interface Chapter {
   chatMessages?: ChatMessage[];
 }
 
+interface Character {
+  id: string;
+  name: string;
+  description: string;
+  imageUrl?: string;
+}
+
 export const SubmitScreen = () => {
   // Draft state
   const [draftId, setDraftId] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<DraftData[]>([]);
   const insets = useSafeAreaInsets();
+  const scrollRef = useRef<ScrollView>(null);
+
+  const novelDraftsCount = drafts.filter(d => d.type === 'novel').length;
+  const poemDraftsCount = drafts.filter(d => d.type === 'poem').length;
+  const MAX_DRAFTS = 5;
 
   // Save is handled automatically
   const [showDraftsModal, setShowDraftsModal] = useState(false);
@@ -63,6 +80,7 @@ export const SubmitScreen = () => {
   const route = useRoute();
   const { currentUser } = useAuth();
   const { colors } = useTheme();
+  const { showAlert, showToast } = useAlert();
 
   // Load drafts when current user changes
   useEffect(() => {
@@ -76,6 +94,7 @@ export const SubmitScreen = () => {
   const [description, setDescription] = useState('');
   const [genres, setGenres] = useState<string[]>([]);
   const [coverImage, setCoverImage] = useState<string | null>(null);
+  const [coverAspectRatio, setCoverAspectRatio] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -85,6 +104,7 @@ export const SubmitScreen = () => {
   const [prologue, setPrologue] = useState('');
   const [hasGraphicContent, setHasGraphicContent] = useState(false);
   const [chapters, setChapters] = useState<Chapter[]>([]);
+  const [characters, setCharacters] = useState<Character[]>([]);
   const [chapterSelections, setChapterSelections] = useState<{ [key: number]: { start: number, end: number } }>({});
   const [isParsing, setIsParsing] = useState(false);
   const [parseError, setParseError] = useState('');
@@ -96,8 +116,141 @@ export const SubmitScreen = () => {
   const [content, setContent] = useState('');
   const [showPreview, setShowPreview] = useState(false);
 
+  // Wizard state for Novel
+  const [currentStep, setCurrentStep] = useState(1);
+  const totalSteps = 5;
+
+  // Animation states for step transitions
+  const stepAnim = useRef(new Animated.Value(0)).current;
+  const stepSlideVal = useRef(new Animated.Value(20)).current;
+
+  useEffect(() => {
+    // Reset and trigger animation whenever step changes
+    stepAnim.setValue(0);
+    stepSlideVal.setValue(20);
+
+    Animated.parallel([
+      Animated.timing(stepAnim, {
+        toValue: 1,
+        duration: 1000,
+        useNativeDriver: true,
+        easing: Easing.out(Easing.cubic),
+      }),
+      Animated.timing(stepSlideVal, {
+        toValue: 0,
+        duration: 1000,
+        useNativeDriver: true,
+        easing: Easing.out(Easing.cubic),
+      })
+    ]).start();
+  }, [currentStep]);
+
+  const novelSteps = [
+    { id: 1, title: 'Identity', icon: 'finger-print-outline' },
+    { id: 2, title: 'Hook', icon: 'sparkles-outline' },
+    { id: 3, title: 'Cast', icon: 'people-outline' },
+    { id: 4, title: 'Manuscript', icon: 'book-outline' },
+    { id: 5, title: 'Finalize', icon: 'checkmark-done-outline' },
+  ];
+
+  const canGoNext = () => {
+    if (submitType === 'novel') {
+      if (currentStep === 1) {
+        return title.trim() !== '' && description.trim() !== '' && genres.length > 0;
+      }
+      if (currentStep === 2) {
+        return summary.trim() !== '';
+      }
+      if (currentStep === 4) {
+        // Allow moving past manuscript even if empty (validation is handled on submit)
+        return true;
+      }
+    }
+    return true;
+  };
+
+  const goToNextStep = () => {
+    if (canGoNext()) {
+      if (currentStep < totalSteps) {
+        setCurrentStep(currentStep + 1);
+        scrollRef.current?.scrollTo({ y: 0, animated: true });
+      }
+    } else {
+      showAlert({
+        title: 'Incomplete',
+        message: 'Please fill in all required fields to continue.',
+        type: 'warning'
+      });
+    }
+  };
+
+  const goToPrevStep = () => {
+    if (currentStep > 1) {
+      setCurrentStep(currentStep - 1);
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+    } else {
+      setSubmitType(null);
+    }
+  };
+
+
+  const renderStepIndicator = () => {
+    if (submitType !== 'novel') return null;
+
+    return (
+      <View style={styles.stepIndicatorContainer}>
+        {novelSteps.map((step, index) => (
+          <React.Fragment key={step.id}>
+            <TouchableOpacity
+              style={styles.stepItem}
+              onPress={() => {
+                setCurrentStep(step.id);
+                scrollRef.current?.scrollTo({ y: 0, animated: true });
+              }}
+              activeOpacity={0.7}
+            >
+              <View
+                style={[
+                  styles.stepDot,
+                  currentStep >= step.id && styles.stepDotActive,
+                  currentStep > step.id && styles.stepDotCompleted,
+                ]}
+              >
+                {currentStep > step.id ? (
+                  <Ionicons name="checkmark" size={14} color="#fff" />
+                ) : (
+                  <Ionicons
+                    name={step.icon as any}
+                    size={14}
+                    color={currentStep >= step.id ? '#fff' : colors.textSecondary}
+                  />
+                )}
+              </View>
+              <Text
+                style={[
+                  styles.stepLabel,
+                  currentStep >= step.id && styles.stepLabelActive,
+                ]}
+              >
+                {step.title}
+              </Text>
+            </TouchableOpacity>
+            {index < novelSteps.length - 1 && (
+              <View
+                style={[
+                  styles.stepLine,
+                  currentStep > step.id && styles.stepLineActive,
+                ]}
+              />
+            )}
+          </React.Fragment>
+        ))}
+      </View>
+    );
+  };
+
   const draftData = submitType === 'novel' ? {
-    title, description, summary, authorsNote, prologue, genres, coverImage, hasGraphicContent, chapters
+    title, description, summary, authorsNote, prologue, genres, coverImage, hasGraphicContent, chapters, characters
   } : {
     title, description, content, genres, coverImage
   };
@@ -118,22 +271,23 @@ export const SubmitScreen = () => {
 
       e.preventDefault();
 
-      Alert.alert(
-        'Saving in Progress',
-        'You have unsaved changes. Leave anyway?',
-        [
-          { text: "Don't leave", style: 'cancel', onPress: () => { } },
+      showAlert({
+        title: 'Saving in Progress',
+        message: 'You have unsaved changes. Leave anyway?',
+        type: 'warning',
+        buttons: [
+          { text: "Don't leave", style: 'cancel' },
           {
             text: 'Leave',
             style: 'destructive',
             onPress: () => navigation.dispatch(e.data.action),
           },
         ]
-      );
+      });
     });
 
     return unsubscribe;
-  }, [navigation, saveStatus]);
+  }, [navigation, saveStatus, currentStep]);
 
   const styles = getStyles(colors);
 
@@ -207,7 +361,11 @@ export const SubmitScreen = () => {
     const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
 
     if (permissionResult.granted === false) {
-      Alert.alert('Permission Required', 'Permission to access camera roll is required!');
+      showAlert({
+        title: 'Permission Required',
+        message: 'Permission to access camera roll is required!',
+        type: 'warning'
+      });
       return;
     }
 
@@ -218,7 +376,9 @@ export const SubmitScreen = () => {
     });
 
     if (!result.canceled) {
-      setCoverImage(result.assets[0].uri);
+      const { uri, width, height } = result.assets[0];
+      setCoverImage(uri);
+      setCoverAspectRatio(width / height);
     }
   };
 
@@ -268,6 +428,9 @@ export const SubmitScreen = () => {
 
       const response = await fetch(`${BACKEND_URL}/api/process-pdf`, {
         method: 'POST',
+        headers: {
+          'X-API-KEY': process.env.EXPO_PUBLIC_CRON_SECRET || '',
+        },
         body: formData,
         // Don't set Content-Type - let the browser/RN set it automatically with boundary
       });
@@ -305,11 +468,10 @@ export const SubmitScreen = () => {
         setChapters(importedChapters);
         setPdfProcessing(false);
         setPdfFileName(file.name);
-        Alert.alert(
-          'Success',
-          `Imported ${importedChapters.length} chapter(s) from PDF`,
-          [{ text: 'OK' }]
-        );
+        showToast({
+          message: `Imported ${importedChapters.length} chapter(s) from PDF`,
+          type: 'success'
+        });
       } else {
         throw new Error(data.error || 'Failed to process PDF');
       }
@@ -329,7 +491,11 @@ export const SubmitScreen = () => {
       }
 
       setParseError(errorMessage);
-      Alert.alert('Import Failed', errorMessage);
+      showAlert({
+        title: 'Import Failed',
+        message: errorMessage,
+        type: 'error'
+      });
     }
   };
 
@@ -345,9 +511,11 @@ export const SubmitScreen = () => {
     setPrologue('');
     setHasGraphicContent(false);
     setChapters([]);
+    setCharacters([]);
     setContent('');
     setShowDraftsModal(false);
     setSubmitType(type);
+    setCurrentStep(1);
   };
 
   const handleSubmit = async () => {
@@ -390,17 +558,20 @@ export const SubmitScreen = () => {
       // Handle image upload if exists
       if (coverImage) {
         try {
-          const response = await fetch(coverImage);
-          const blob = await response.blob();
-
           const storageFolder = submitType === 'novel' ? 'covers-large' : 'poem-covers-large';
           const storageSmallFolder = submitType === 'novel' ? 'covers-small' : 'poem-covers-small';
 
           const coverRef = ref(storage, `${storageFolder}/${docRef.id}.jpg`);
           const coverSmallRef = ref(storage, `${storageSmallFolder}/${docRef.id}.jpg`);
 
-          await uploadBytes(coverRef, blob);
-          await uploadBytes(coverSmallRef, blob);
+          // Use the new intelligent compression utilities to generate separate blobs
+          const [{ blob: largeBlob }, { blob: smallBlob }] = await Promise.all([
+            compressForCover(coverImage),
+            generateSmallCover(coverImage)
+          ]);
+
+          await uploadBytes(coverRef, largeBlob);
+          await uploadBytes(coverSmallRef, smallBlob);
 
           coverUrl = `https://storage.googleapis.com/novelnest-50ab1.firebasestorage.app/${storageFolder}/${docRef.id}.jpg`;
           coverSmallUrl = `https://storage.googleapis.com/novelnest-50ab1.firebasestorage.app/${storageSmallFolder}/${docRef.id}.jpg`;
@@ -409,6 +580,31 @@ export const SubmitScreen = () => {
           setError('Failed to upload image');
           setLoading(false);
           return;
+        }
+      }
+      let finalCharacters = characters;
+      if (submitType === 'novel' && characters.length > 0) {
+        try {
+          finalCharacters = await Promise.all(
+            characters.map(async (char) => {
+              // If the image is already a network URL or doesn't exist, skip upload
+              if (!char.imageUrl || char.imageUrl.startsWith('http')) {
+                return char;
+              }
+
+              // Upload local image
+              const response = await fetch(char.imageUrl);
+              const blob = await response.blob();
+              const charImageRef = ref(storage, `characters/${docRef.id}/${char.id}.jpg`);
+              await uploadBytes(charImageRef, blob);
+              const downloadUrl = await getDownloadURL(charImageRef);
+
+              return { ...char, imageUrl: downloadUrl };
+            })
+          );
+        } catch (charErr) {
+          console.error('Error uploading character images:', charErr);
+          // We continue with local URIs if upload fails, though they won't show for others
         }
       }
 
@@ -422,6 +618,7 @@ export const SubmitScreen = () => {
           genres,
           hasGraphicContent,
           chapters,
+          characters: finalCharacters,
           authorId: currentUser?.uid,
           authorName: currentUser?.displayName,
           isPromoted: false,
@@ -430,6 +627,7 @@ export const SubmitScreen = () => {
           updatedAt: new Date().toISOString(),
           coverImage: coverUrl || null,
           coverSmallImage: coverSmallUrl || null,
+          status: "ongoing",
           likes: 0,
           views: 0,
           publicDomain: false,
@@ -479,12 +677,20 @@ export const SubmitScreen = () => {
       await invalidateByPrefix("home_");
       await invalidateByPrefix("browse_");
 
-      Alert.alert(
-        'Success',
-        `Your ${submitType} has been submitted for review!`,
-        [{
-          text: 'OK', onPress: () => {
+      showAlert({
+        title: 'Success',
+        message: `Your ${submitType} has been submitted for review!`,
+        type: 'success',
+        buttons: [{
+          text: 'OK',
+          onPress: async () => {
+            if (draftId) {
+              await deleteDraft(draftId, currentUser?.uid);
+              const updatedDrafts = await getDrafts(currentUser?.uid);
+              setDrafts(updatedDrafts);
+            }
             setSubmitType(null);
+            setDraftId(null);
             // Reset form
             setTitle('');
             setDescription('');
@@ -495,10 +701,11 @@ export const SubmitScreen = () => {
             setPrologue('');
             setHasGraphicContent(false);
             setChapters([]);
+            setCharacters([]);
             setContent('');
           }
         }]
-      );
+      });
 
     } catch (error) {
       console.error('Error submitting:', error);
@@ -540,10 +747,22 @@ export const SubmitScreen = () => {
                 style={styles.selectionDraftCard}
                 onPress={() => setShowDraftsModal(true)}
                 onLongPress={async () => {
-                  Alert.alert('Delete Draft', 'Delete this draft?', [
-                    { text: 'Cancel', style: 'cancel' },
-                    { text: 'Delete', style: 'destructive', onPress: async () => { await deleteDraft(latest.id, currentUser?.uid); setDrafts(await getDrafts(currentUser?.uid)); } }
-                  ]);
+                  showAlert({
+                    title: 'Delete Draft',
+                    message: 'Delete this draft?',
+                    type: 'warning',
+                    buttons: [
+                      { text: 'Cancel', style: 'cancel' },
+                      {
+                        text: 'Delete',
+                        style: 'destructive',
+                        onPress: async () => {
+                          await deleteDraft(latest.id, currentUser?.uid);
+                          setDrafts(await getDrafts(currentUser?.uid));
+                        }
+                      }
+                    ]
+                  });
                 }}
               >
                 <View style={styles.selectionDraftThumb}>
@@ -606,6 +825,7 @@ export const SubmitScreen = () => {
                             setCoverImage(d.data.coverImage || null);
                             setHasGraphicContent(!!d.data.hasGraphicContent);
                             setChapters(d.data.chapters || []);
+                            setCharacters(d.data.characters || []);
                           } else {
                             setTitle(d.data.title || '');
                             setDescription(d.data.description || '');
@@ -613,6 +833,8 @@ export const SubmitScreen = () => {
                             setGenres(d.data.genres || []);
                             setCoverImage(d.data.coverImage || null);
                           }
+                          setCurrentStep(1); // Reset to first step on draft load
+                          scrollRef.current?.scrollTo({ y: 0, animated: false });
                           setShowDraftsModal(false);
                         }}>
                           <Text style={[styles.draftActionText, { color: colors.primary }]}>Continue</Text>
@@ -642,7 +864,10 @@ export const SubmitScreen = () => {
           <View style={styles.cardsContainer}>
             {/* Novel Card */}
             <TouchableOpacity
-              style={styles.selectionCard}
+              style={[
+                styles.selectionCard,
+                novelDraftsCount >= MAX_DRAFTS && styles.selectionCardLimit
+              ]}
               onPress={() => startNewWork('novel')}
               activeOpacity={0.7}
             >
@@ -654,7 +879,15 @@ export const SubmitScreen = () => {
                 </View>
 
                 <View style={styles.cardContent}>
-                  <Text style={styles.cardTitle}>Novel</Text>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={styles.cardTitle}>Novel</Text>
+                    <Text style={[
+                      styles.draftCounter,
+                      novelDraftsCount >= MAX_DRAFTS && styles.draftCounterLimit
+                    ]}>
+                      Drafts {novelDraftsCount}/{MAX_DRAFTS}
+                    </Text>
+                  </View>
                   <Text style={styles.cardDescription}>
                     Share your full-length story with chapters, characters, and plot twists
                   </Text>
@@ -680,7 +913,10 @@ export const SubmitScreen = () => {
 
             {/* Poem Card */}
             <TouchableOpacity
-              style={styles.selectionCard}
+              style={[
+                styles.selectionCard,
+                poemDraftsCount >= MAX_DRAFTS && styles.selectionCardLimit
+              ]}
               onPress={() => startNewWork('poem')}
               activeOpacity={0.7}
             >
@@ -692,7 +928,15 @@ export const SubmitScreen = () => {
                 </View>
 
                 <View style={styles.cardContent}>
-                  <Text style={styles.cardTitle}>Poem</Text>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={styles.cardTitle}>Poem</Text>
+                    <Text style={[
+                      styles.draftCounter,
+                      poemDraftsCount >= MAX_DRAFTS && styles.draftCounterLimit
+                    ]}>
+                      Drafts {poemDraftsCount}/{MAX_DRAFTS}
+                    </Text>
+                  </View>
                   <Text style={styles.cardDescription}>
                     Express your emotions through beautiful verses and poetic lines
                   </Text>
@@ -736,7 +980,12 @@ export const SubmitScreen = () => {
       behavior="padding"
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
-      <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        ref={scrollRef}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
+        {renderStepIndicator()}
         {/* Save Status Indicator */}
         {saveStatus && (
           <View style={styles.saveStatusContainer}>
@@ -747,387 +996,503 @@ export const SubmitScreen = () => {
           </View>
         )}
 
+        {saveStatus === 'Limit reached — cannot save' && (
+          <View style={styles.limitBanner}>
+            <Ionicons name="warning" size={20} color={colors.error} />
+            <Text style={styles.limitBannerText}>
+              You’ve reached your draft limit. You can still publish this, but you can’t save new drafts. Delete an existing draft to continue.
+            </Text>
+          </View>
+        )}
+
         {error ? (
           <View style={styles.errorBanner}>
             <Text style={styles.errorText}>{error}</Text>
           </View>
         ) : null}
 
-        {/* Title */}
-        <View style={styles.section}>
-          <Text style={styles.label}>Title *</Text>
-          <TextInput
-            style={styles.input}
-            value={title}
-            onChangeText={setTitle}
-            placeholder={submitType === 'novel' ? 'Enter your novel title' : 'Enter your poem title'}
-            placeholderTextColor={colors.textSecondary}
-          />
-        </View>
-
-        {/* Description */}
-        <View style={styles.section}>
-          <Text style={styles.label}>Description (one sentence) *</Text>
-          <TextInput
-            style={styles.input}
-            value={description}
-            onChangeText={handleDescriptionChange}
-            placeholder="Capture the essence in one line..."
-            placeholderTextColor={colors.textSecondary}
-          />
-          <Text style={styles.helperText}>
-            {countSentences(description)} of 1 sentence used
-          </Text>
-        </View>
-
-        {/* Novel-specific: Summary */}
+        {/* Step-based Novel Flow */}
         {submitType === 'novel' && (
-          <View style={styles.section}>
-            <Text style={styles.label}>Summary *</Text>
-            <TextInput
-              style={[styles.input, styles.textArea]}
-              value={summary}
-              onChangeText={setSummary}
-              placeholder="Write a compelling summary..."
-              placeholderTextColor={colors.textSecondary}
-              multiline
-              numberOfLines={4}
-            />
-          </View>
-        )}
-
-        {/* Novel-specific: Author's Note */}
-        {submitType === 'novel' && (
-          <View style={styles.section}>
-            <Text style={styles.label}>Author's Note (Optional)</Text>
-            <TextInput
-              style={[styles.input, styles.textArea]}
-              value={authorsNote}
-              onChangeText={setAuthorsNote}
-              placeholder="Share your thoughts with readers..."
-              placeholderTextColor={colors.textSecondary}
-              multiline
-              numberOfLines={4}
-            />
-          </View>
-        )}
-
-        {/* Novel-specific: Prologue */}
-        {submitType === 'novel' && (
-          <View style={styles.section}>
-            <Text style={styles.label}>Prologue (Optional)</Text>
-            <TextInput
-              style={[styles.input, styles.textArea]}
-              value={prologue}
-              onChangeText={setPrologue}
-              placeholder="Begin your story with an intriguing prologue..."
-              placeholderTextColor={colors.textSecondary}
-              multiline
-              numberOfLines={4}
-            />
-          </View>
-        )}
-
-        {/* Poem-specific: Content */}
-        {submitType === 'poem' && (
-          <View style={styles.section}>
-            <View style={styles.poemHeader}>
-              <Text style={styles.label}>Your Poem *</Text>
-              <TouchableOpacity
-                style={styles.previewToggle}
-                onPress={() => setShowPreview(!showPreview)}
-              >
-                <Ionicons
-                  name={showPreview ? 'eye-off-outline' : 'eye-outline'}
-                  size={18}
-                  color={colors.primary}
-                />
-                <Text style={styles.previewToggleText}>
-                  {showPreview ? 'Edit' : 'Preview'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            {!showPreview ? (
-              <>
-                <TextInput
-                  style={[styles.input, styles.textArea, styles.poemInput]}
-                  value={content}
-                  onChangeText={setContent}
-                  placeholder="Let your verses flow..."
-                  placeholderTextColor={colors.textSecondary}
-                  multiline
-                  numberOfLines={15}
-                />
-                <View style={styles.statsRow}>
-                  <Text style={styles.statText}>{lineCount} lines</Text>
-                  <Text style={styles.statText}>•</Text>
-                  <Text style={styles.statText}>{wordCount} words</Text>
-                  <Text style={styles.statText}>•</Text>
-                  <Text style={styles.statText}>{stanzaCount} stanza{stanzaCount !== 1 ? 's' : ''}</Text>
+          <View style={styles.wizardContainer}>
+            {/* Step 1: Identity */}
+            {currentStep === 1 && (
+              <Animated.View style={[styles.stepContent, { opacity: stepAnim, transform: [{ translateY: stepSlideVal }] }]}>
+                <View style={styles.section}>
+                  <Text style={styles.label}>Title *</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={title}
+                    onChangeText={setTitle}
+                    placeholder="Enter your novel title"
+                    placeholderTextColor={colors.textSecondary}
+                  />
                 </View>
-              </>
-            ) : (
-              <View style={styles.poemPreview}>
-                {content ? (
-                  <>
-                    {title && (
-                      <Text style={styles.previewTitle}>{title}</Text>
-                    )}
-                    <Text style={styles.previewContent}>{content}</Text>
-                    {genres.length > 0 && (
-                      <View style={styles.previewGenres}>
-                        {genres.map((genre) => (
-                          <View key={genre} style={styles.previewGenreChip}>
-                            <Text style={styles.previewGenreText}>{genre}</Text>
-                          </View>
-                        ))}
-                      </View>
-                    )}
-                  </>
-                ) : (
-                  <View style={styles.emptyPreview}>
-                    <Ionicons name="document-text-outline" size={48} color={colors.textSecondary} />
-                    <Text style={styles.emptyPreviewText}>Your poem will appear here</Text>
-                    <Text style={styles.emptyPreviewSubtext}>Start writing to see the preview</Text>
-                  </View>
-                )}
-              </View>
-            )}
-          </View>
-        )}
-
-        {/* Cover Image */}
-        <View style={styles.section}>
-          <Text style={styles.label}>Cover Image</Text>
-          <TouchableOpacity style={styles.imageButton} onPress={handleImagePick}>
-            <Ionicons name="image-outline" size={24} color={colors.primary} />
-            <Text style={styles.imageButtonText}>Choose Image</Text>
-          </TouchableOpacity>
-          {coverImage && (
-            <View style={styles.imagePreview}>
-              <CachedImage uri={coverImage} style={styles.previewImage} />
-              <TouchableOpacity
-                style={styles.removeImageButton}
-                onPress={() => setCoverImage(null)}
-              >
-                <Ionicons name="close-circle" size={24} color={colors.error} />
-              </TouchableOpacity>
-            </View>
-          )}
-        </View>
-
-        {/* Genres */}
-        <View style={styles.section}>
-          <Text style={styles.label}>
-            {submitType === 'novel' ? 'Genres' : 'Poetry Styles'} (select at least one) *
-          </Text>
-          <View style={styles.genresGrid}>
-            {availableGenres.map((genre) => (
-              <TouchableOpacity
-                key={genre}
-                style={[
-                  styles.genreChip,
-                  genres.includes(genre) && styles.genreChipSelected
-                ]}
-                onPress={() => handleGenreToggle(genre)}
-              >
-                <Text style={[
-                  styles.genreChipText,
-                  genres.includes(genre) && styles.genreChipTextSelected
-                ]}>
-                  {genre}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-
-        {/* Novel-specific: Graphic Content */}
-        {submitType === 'novel' && (
-          <View style={styles.section}>
-            <Text style={styles.label}>Contains graphic/gory content?</Text>
-            <View style={styles.radioGroup}>
-              <TouchableOpacity
-                style={[styles.radioButton, hasGraphicContent && styles.radioButtonSelected]}
-                onPress={() => setHasGraphicContent(true)}
-              >
-                <Text style={[styles.radioButtonText, hasGraphicContent && styles.radioButtonTextSelected]}>
-                  Yes
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.radioButton, !hasGraphicContent && styles.radioButtonSelected]}
-                onPress={() => setHasGraphicContent(false)}
-              >
-                <Text style={[styles.radioButtonText, !hasGraphicContent && styles.radioButtonTextSelected]}>
-                  No
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
-
-        {/* Novel-specific: Chapters */}
-        {submitType === 'novel' && (
-          <View style={styles.section}>
-            {/* PDF Import Button */}
-            <TouchableOpacity
-              style={[styles.pdfImportButton, (uploadingPdf || pdfProcessing) && styles.pdfImportButtonDisabled]}
-              onPress={handlePdfImport}
-              disabled={uploadingPdf || pdfProcessing}
-            >
-              {uploadingPdf ? (
-                <>
-                  <ActivityIndicator size="small" color={colors.primary} />
-                  <Text style={styles.pdfImportButtonText}>Uploading PDF...</Text>
-                </>
-              ) : pdfProcessing ? (
-                <>
-                  <ActivityIndicator size="small" color={colors.primary} />
-                  <Text style={styles.pdfImportButtonText}>Processing PDF...</Text>
-                </>
-              ) : (
-                <>
-                  <Ionicons name="document-text-outline" size={24} color={colors.primary} />
-                  <View style={styles.pdfImportTextContainer}>
-                    <Text style={styles.pdfImportButtonText}>Import from PDF</Text>
-                    <Text style={styles.pdfImportButtonSubtext}>Automatically extract chapters</Text>
-                  </View>
-                </>
-              )}
-            </TouchableOpacity>
-
-            {parseError && (
-              <View style={styles.pdfErrorContainer}>
-                <Ionicons name="alert-circle-outline" size={20} color={colors.error} />
-                <Text style={styles.pdfErrorText}>{parseError}</Text>
-              </View>
-            )}
-
-            {pdfFileName && chapters.length > 0 && (
-              <View style={styles.pdfSuccessContainer}>
-                <Ionicons name="checkmark-circle" size={20} color={colors.primary} />
-                <Text style={styles.pdfSuccessText}>Imported from: {pdfFileName}</Text>
-              </View>
-            )}
-
-            <View style={styles.chaptersHeader}>
-              <Text style={styles.sectionTitle}>Chapters</Text>
-              <TouchableOpacity
-                style={styles.addButton}
-                onPress={() => {
-                  const chapterNumber = chapters.length + 1;
-                  navigation.navigate('ChapterEditor', {
-                    chapterNumber,
-                    initialTitle: '',
-                    initialContent: '',
-                    onSave: (newChapter: { title: string; content: string }) => {
-                      setChapters([...chapters, {
-                        title: newChapter.title,
-                        content: newChapter.content,
-                        chatMessages: []
-                      }]);
-                    },
-                    onAutoSave: (newChapter: { title: string; content: string }) => {
-                      setChapters([...chapters, {
-                        title: newChapter.title,
-                        content: newChapter.content,
-                        chatMessages: []
-                      }]);
-                    }
-                  });
-                }}
-              >
-                <Ionicons name="add-circle" size={20} color={colors.primary} />
-                <Text style={styles.addButtonText}>Add Chapter</Text>
-              </TouchableOpacity>
-            </View>
-
-            {chapters.length === 0 ? (
-              <View style={styles.emptyChapters}>
-                <Ionicons name="book-outline" size={48} color={colors.textSecondary} />
-                <Text style={styles.emptyChaptersText}>No chapters added yet</Text>
-                <Text style={styles.emptyChaptersSubtext}>
-                  Tap "Add Chapter" to start writing your story
-                </Text>
-              </View>
-            ) : (
-              chapters.map((chapter, index) => (
-                <TouchableOpacity
-                  key={index}
-                  style={styles.chapterCard}
-                  onPress={() => {
-                    navigation.navigate('ChapterEditor', {
-                      chapterNumber: index + 1,
-                      initialTitle: chapter.title,
-                      initialContent: chapter.content,
-                      onSave: (updatedChapter: { title: string; content: string }) => {
-                        const newChapters = [...chapters];
-                        newChapters[index] = {
-                          ...newChapters[index],
-                          title: updatedChapter.title,
-                          content: updatedChapter.content
-                        };
-                        setChapters(newChapters);
-                      },
-                      onAutoSave: (updatedChapter: { title: string; content: string }) => {
-                        const newChapters = [...chapters];
-                        newChapters[index] = {
-                          ...newChapters[index],
-                          title: updatedChapter.title,
-                          content: updatedChapter.content
-                        };
-                        setChapters(newChapters);
-                      }
-                    });
-                  }}
-                  activeOpacity={0.7}
-                >
-                  <View style={styles.chapterHeader}>
-                    <View style={styles.chapterTitleRow}>
-                      <Text style={styles.chapterNumber}>Chapter {index + 1}</Text>
-                      <Ionicons name="create-outline" size={16} color={colors.primary} />
+                <View style={styles.section}>
+                  <Text style={styles.label}>Description (one sentence) *</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={description}
+                    onChangeText={handleDescriptionChange}
+                    placeholder="Capture the essence in one line..."
+                    placeholderTextColor={colors.textSecondary}
+                  />
+                  <Text style={styles.helperText}>
+                    {countSentences(description)} of 1 sentence used
+                  </Text>
+                </View>
+                <View style={styles.section}>
+                  <Text style={styles.label}>Cover Image</Text>
+                  <TouchableOpacity style={styles.imageButton} onPress={handleImagePick}>
+                    <Ionicons name="image-outline" size={24} color={colors.primary} />
+                    <Text style={styles.imageButtonText}>Choose Image</Text>
+                  </TouchableOpacity>
+                  {coverImage && (
+                    <View style={styles.imagePreview}>
+                      <CachedImage
+                        uri={coverImage}
+                        style={[
+                          styles.previewImage,
+                          coverAspectRatio ? { aspectRatio: coverAspectRatio, height: undefined } : {}
+                        ]}
+                      />
+                      <TouchableOpacity
+                        style={styles.removeImageButton}
+                        onPress={() => setCoverImage(null)}
+                      >
+                        <Ionicons name="close-circle" size={24} color={colors.error} />
+                      </TouchableOpacity>
                     </View>
+                  )}
+                </View>
+                <View style={styles.section}>
+                  <Text style={styles.label}>Genres (select at least one) *</Text>
+                  <View style={styles.genresGrid}>
+                    {availableGenres.map((genre) => (
+                      <TouchableOpacity
+                        key={genre}
+                        style={[
+                          styles.genreChip,
+                          genres.includes(genre) && styles.genreChipSelected
+                        ]}
+                        onPress={() => handleGenreToggle(genre)}
+                      >
+                        <Text style={[
+                          styles.genreChipText,
+                          genres.includes(genre) && styles.genreChipTextSelected
+                        ]}>
+                          {genre}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+              </Animated.View>
+            )}
+
+            {/* Step 2: Hook */}
+            {currentStep === 2 && (
+              <Animated.View style={[styles.stepContent, { opacity: stepAnim, transform: [{ translateY: stepSlideVal }] }]}>
+                <View style={styles.section}>
+                  <Text style={styles.label}>Summary *</Text>
+                  <TextInput
+                    style={[styles.input, styles.textArea]}
+                    value={summary}
+                    onChangeText={setSummary}
+                    placeholder="Write a compelling summary..."
+                    placeholderTextColor={colors.textSecondary}
+                    multiline
+                    numberOfLines={4}
+                  />
+                </View>
+                <View style={styles.section}>
+                  <Text style={styles.label}>Author's Note (Optional)</Text>
+                  <TextInput
+                    style={[styles.input, styles.textArea]}
+                    value={authorsNote}
+                    onChangeText={setAuthorsNote}
+                    placeholder="Share your thoughts with readers..."
+                    placeholderTextColor={colors.textSecondary}
+                    multiline
+                    numberOfLines={4}
+                  />
+                </View>
+                <View style={styles.section}>
+                  <Text style={styles.label}>Prologue (Optional)</Text>
+                  <TextInput
+                    style={[styles.input, styles.textArea]}
+                    value={prologue}
+                    onChangeText={setPrologue}
+                    placeholder="Begin your story with an intriguing prologue..."
+                    placeholderTextColor={colors.textSecondary}
+                    multiline
+                    numberOfLines={4}
+                  />
+                </View>
+                <View style={styles.section}>
+                  <Text style={styles.label}>Contains graphic/gory content?</Text>
+                  <View style={styles.radioGroup}>
                     <TouchableOpacity
-                      onPress={() => removeChapter(index)}
-                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      style={[styles.radioButton, hasGraphicContent && styles.radioButtonSelected]}
+                      onPress={() => setHasGraphicContent(true)}
                     >
-                      <Ionicons name="trash-outline" size={20} color={colors.error} />
+                      <Text style={[styles.radioButtonText, hasGraphicContent && styles.radioButtonTextSelected]}>
+                        Yes
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.radioButton, !hasGraphicContent && styles.radioButtonSelected]}
+                      onPress={() => setHasGraphicContent(false)}
+                    >
+                      <Text style={[styles.radioButtonText, !hasGraphicContent && styles.radioButtonTextSelected]}>
+                        No
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </Animated.View>
+            )}
+
+            {/* Step 3: Cast */}
+            {currentStep === 3 && (
+              <Animated.View style={[styles.stepContent, { opacity: stepAnim, transform: [{ translateY: stepSlideVal }] }]}>
+                <View style={styles.section}>
+                  <View style={styles.chaptersHeader}>
+                    <Text style={styles.sectionTitle}>Cast of Characters</Text>
+                    <TouchableOpacity
+                      style={styles.addButton}
+                      onPress={() => {
+                        navigation.navigate('CharacterManager', {
+                          novelId: draftId,
+                          initialCharacters: characters,
+                          onSave: (updatedChars: any[]) => {
+                            setCharacters(updatedChars);
+                          }
+                        });
+                      }}
+                    >
+                      <Ionicons name="people-outline" size={20} color={colors.primary} />
+                      <Text style={styles.addButtonText}>Manage</Text>
                     </TouchableOpacity>
                   </View>
 
-                  <Text style={styles.chapterTitleText} numberOfLines={2}>
-                    {chapter.title || `Chapter ${index + 1} (Untitled)`}
-                  </Text>
-
-                  <Text style={styles.chapterPreview} numberOfLines={3}>
-                    {chapter.content || 'No content yet. Tap to edit.'}
-                  </Text>
-
-                  <View style={styles.chapterStats}>
-                    <View style={styles.statItem}>
-                      <Ionicons name="text-outline" size={12} color={colors.textSecondary} />
-                      <Text style={styles.chapterStatText}>{chapter.content.length} chars</Text>
+                  {characters.length === 0 ? (
+                    <View style={styles.emptyCharacters}>
+                      <Ionicons name="people-outline" size={48} color={colors.textSecondary} />
+                      <Text style={styles.emptyCharactersText}>No characters added yet</Text>
                     </View>
-                    <View style={styles.statItem}>
-                      <Ionicons name="document-text-outline" size={12} color={colors.textSecondary} />
-                      <Text style={styles.chapterStatText}>
-                        {chapter.content.trim().split(/\s+/).filter((w: string) => w).length} words
-                      </Text>
-                    </View>
-                  </View>
-                </TouchableOpacity>
-              ))
+                  ) : (
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.characterList}>
+                      {characters.map((char) => (
+                        <View key={char.id} style={styles.characterThumbnail}>
+                          {char.imageUrl ? (
+                            <CachedImage uri={char.imageUrl} style={styles.charAvatar} />
+                          ) : (
+                            <View style={[styles.charAvatar, { backgroundColor: colors.primary + '20', justifyContent: 'center', alignItems: 'center' }]}>
+                              <Text style={{ color: colors.primary }}>{char.name.charAt(0)}</Text>
+                            </View>
+                          )}
+                          <Text style={styles.charName} numberOfLines={1}>{char.name}</Text>
+                        </View>
+                      ))}
+                    </ScrollView>
+                  )}
+                </View>
+              </Animated.View>
             )}
+
+            {/* Step 4: Manuscript */}
+            {currentStep === 4 && (
+              <Animated.View style={[styles.stepContent, { opacity: stepAnim, transform: [{ translateY: stepSlideVal }] }]}>
+                <View style={styles.section}>
+                  <TouchableOpacity
+                    style={[styles.pdfImportButton, (uploadingPdf || pdfProcessing) && styles.pdfImportButtonDisabled]}
+                    onPress={handlePdfImport}
+                    disabled={uploadingPdf || pdfProcessing}
+                  >
+                    <Ionicons name="document-text-outline" size={24} color={colors.primary} />
+                    <View style={styles.pdfImportTextContainer}>
+                      <Text style={styles.pdfImportButtonText}>Import from PDF</Text>
+                      <Text style={styles.pdfImportButtonSubtext}>Extract chapters automatically</Text>
+                    </View>
+                  </TouchableOpacity>
+
+                  <View style={styles.chaptersHeader}>
+                    <Text style={styles.sectionTitle}>Chapters</Text>
+                    <TouchableOpacity
+                      style={styles.addButton}
+                      onPress={() => {
+                        const chapterNumber = chapters.length + 1;
+                        navigation.navigate('ChapterEditor', {
+                          chapterNumber,
+                          onSave: (newChapter: any) => {
+                            setChapters(prev => [...prev, { ...newChapter, chatMessages: [] }]);
+                          },
+                          onAutoSave: (newChapter: any) => {
+                            setChapters(prev => [...prev, { ...newChapter, chatMessages: [] }]);
+                            DeviceEventEmitter.emit('draftSaveStatus', 'Draft updated');
+                            setTimeout(() => DeviceEventEmitter.emit('draftSaveStatus', null), 2000);
+                          }
+                        });
+                      }}
+                    >
+                      <Ionicons name="add-circle" size={20} color={colors.primary} />
+                      <Text style={styles.addButtonText}>Add Chapter</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {chapters.length === 0 ? (
+                    <View style={styles.emptyChapters}>
+                      <Ionicons name="book-outline" size={48} color={colors.textSecondary} />
+                      <Text style={styles.emptyChaptersText}>No chapters yet</Text>
+                    </View>
+                  ) : (
+                    chapters.map((chapter, index) => (
+                      <TouchableOpacity
+                        key={index}
+                        style={styles.chapterCard}
+                        onPress={() => {
+                          navigation.navigate('ChapterEditor', {
+                            chapterNumber: index + 1,
+                            initialTitle: chapter.title,
+                            initialContent: chapter.content,
+                            onSave: (updatedChapter: any) => {
+                              setChapters(prev => {
+                                const next = [...prev];
+                                next[index] = { ...next[index], ...updatedChapter };
+                                return next;
+                              });
+                            },
+                            onAutoSave: (updatedChapter: any) => {
+                              DeviceEventEmitter.emit('draftSaveStatus', 'Saving...');
+                              setChapters(prev => {
+                                const next = [...prev];
+                                next[index] = { ...next[index], ...updatedChapter };
+                                return next;
+                              });
+                              setTimeout(() => {
+                                DeviceEventEmitter.emit('draftSaveStatus', 'Draft updated');
+                                setTimeout(() => DeviceEventEmitter.emit('draftSaveStatus', null), 2000);
+                              }, 500);
+                            }
+                          });
+                        }}
+                      >
+                        <View style={styles.chapterHeader}>
+                          <Text style={styles.chapterNumber}>Chapter {index + 1}</Text>
+                          <TouchableOpacity onPress={() => removeChapter(index)}>
+                            <Ionicons name="trash-outline" size={20} color={colors.error} />
+                          </TouchableOpacity>
+                        </View>
+                        <Text style={styles.chapterTitleText} numberOfLines={1}>{chapter.title}</Text>
+                      </TouchableOpacity>
+                    ))
+                  )}
+                </View>
+              </Animated.View>
+            )}
+
+            {/* Step 5: Final Review */}
+            {currentStep === 5 && (
+              <Animated.View style={[styles.stepContent, { opacity: stepAnim, transform: [{ translateY: stepSlideVal }] }]}>
+                <View style={styles.reviewHeader}>
+                  <Ionicons name="sparkles" size={32} color={colors.primary} />
+                  <Text style={styles.reviewHeaderTitle}>Your masterpiece is ready</Text>
+                  <Text style={styles.reviewHeaderSubtitle}>Review your novel's identity before it goes live</Text>
+                </View>
+
+                <View style={styles.reviewEditorialContent}>
+                  {coverImage && (
+                    <View style={styles.reviewEditorialCoverWrapper}>
+                      <CachedImage
+                        uri={coverImage}
+                        style={[
+                          styles.reviewCover,
+                          coverAspectRatio ? { aspectRatio: coverAspectRatio, height: undefined } : {}
+                        ]}
+                      />
+                    </View>
+                  )}
+
+                  <View style={styles.reviewEditorialInfo}>
+                    <Text style={styles.reviewNovelTitle}>{title}</Text>
+
+                    <View style={styles.reviewBadgeRow}>
+                      {genres.map(genre => (
+                        <View key={genre} style={styles.reviewGenreBadge}>
+                          <Text style={styles.reviewGenreBadgeText}>{genre}</Text>
+                        </View>
+                      ))}
+                    </View>
+
+                    <View style={styles.reviewStatsRow}>
+                      <View style={styles.reviewStatBox}>
+                        <Ionicons name="book-outline" size={20} color={colors.primary} />
+                        <Text style={styles.reviewStatValue}>{chapters.length}</Text>
+                        <Text style={styles.reviewStatLabel}>Chapters</Text>
+                      </View>
+                      <View style={styles.reviewStatBox}>
+                        <Ionicons name="people-outline" size={20} color={colors.primary} />
+                        <Text style={styles.reviewStatValue}>{characters.length}</Text>
+                        <Text style={styles.reviewStatLabel}>Characters</Text>
+                      </View>
+                    </View>
+
+                    {description ? (
+                      <View style={styles.reviewSummarySection}>
+                        <Text style={styles.reviewSummaryLabel}>Description</Text>
+                        <Text style={styles.reviewSummaryText}>{description}</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                </View>
+              </Animated.View>
+            )}
+
+            {/* Wizard Navigation */}
+            <View style={styles.wizardNavigation}>
+              <TouchableOpacity style={styles.wizardBackButton} onPress={goToPrevStep}>
+                <Ionicons name="arrow-back" size={20} color={colors.text} />
+                <Text style={styles.wizardBackText}>{currentStep === 1 ? 'Cancel' : 'Back'}</Text>
+              </TouchableOpacity>
+
+              {currentStep < totalSteps ? (
+                <TouchableOpacity style={styles.wizardNextButton} onPress={goToNextStep}>
+                  <Text style={styles.wizardNextText}>Next</Text>
+                  <Ionicons name="arrow-forward" size={20} color="#fff" />
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  style={[styles.publishButton, loading && styles.submitButtonDisabled]}
+                  onPress={handleSubmit}
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <>
+                      <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
+                      <Text style={styles.submitButtonText}>Publish Novel</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
         )}
 
-        {/* Submit Button */}
-        <View style={styles.actionsRow}>
-          <View style={styles.actionWrapper}>
+        {/* Keeping Poem Flow as is */}
+        {submitType === 'poem' && (
+          <View>
+            <View style={styles.section}>
+              <Text style={styles.label}>Title *</Text>
+              <TextInput
+                style={styles.input}
+                value={title}
+                onChangeText={setTitle}
+                placeholder="Enter your poem title"
+                placeholderTextColor={colors.textSecondary}
+              />
+            </View>
+            <View style={styles.section}>
+              <Text style={styles.label}>Description (one sentence) *</Text>
+              <TextInput
+                style={styles.input}
+                value={description}
+                onChangeText={handleDescriptionChange}
+                placeholder="Capture the essence in one line..."
+                placeholderTextColor={colors.textSecondary}
+              />
+              <Text style={styles.helperText}>
+                {countSentences(description)} of 1 sentence used
+              </Text>
+            </View>
+            <View style={styles.section}>
+              <View style={styles.poemHeader}>
+                <Text style={styles.label}>Your Poem *</Text>
+                <TouchableOpacity
+                  style={styles.previewToggle}
+                  onPress={() => setShowPreview(!showPreview)}
+                >
+                  <Ionicons
+                    name={showPreview ? 'eye-off-outline' : 'eye-outline'}
+                    size={18}
+                    color={colors.primary}
+                  />
+                  <Text style={styles.previewToggleText}>
+                    {showPreview ? 'Edit' : 'Preview'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {!showPreview ? (
+                <>
+                  <TextInput
+                    style={[styles.input, styles.textArea, styles.poemInput]}
+                    value={content}
+                    onChangeText={setContent}
+                    placeholder="Let your verses flow..."
+                    placeholderTextColor={colors.textSecondary}
+                    multiline
+                    numberOfLines={15}
+                  />
+                  <View style={styles.statsRow}>
+                    <Text style={styles.statText}>{lineCount} lines</Text>
+                    <Text style={styles.statText}>•</Text>
+                    <Text style={styles.statText}>{wordCount} words</Text>
+                    <Text style={styles.statText}>•</Text>
+                    <Text style={styles.statText}>{stanzaCount} stanzas</Text>
+                  </View>
+                </>
+              ) : (
+                <View style={styles.poemPreview}>
+                  <Text style={styles.previewTitle}>{title}</Text>
+                  <Text style={styles.previewContent}>{content}</Text>
+                </View>
+              )}
+            </View>
+            <View style={styles.section}>
+              <Text style={styles.label}>Cover Image</Text>
+              <TouchableOpacity style={styles.imageButton} onPress={handleImagePick}>
+                <Ionicons name="image-outline" size={24} color={colors.primary} />
+                <Text style={styles.imageButtonText}>Choose Image</Text>
+              </TouchableOpacity>
+              {coverImage && (
+                <View style={styles.imagePreview}>
+                  <CachedImage uri={coverImage} style={styles.previewImage} />
+                  <TouchableOpacity
+                    style={styles.removeImageButton}
+                    onPress={() => setCoverImage(null)}
+                  >
+                    <Ionicons name="close-circle" size={24} color={colors.error} />
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+            <View style={styles.section}>
+              <Text style={styles.label}>Genres *</Text>
+              <View style={styles.genresGrid}>
+                {availableGenres.map((genre) => (
+                  <TouchableOpacity
+                    key={genre}
+                    style={[
+                      styles.genreChip,
+                      genres.includes(genre) && styles.genreChipSelected
+                    ]}
+                    onPress={() => handleGenreToggle(genre)}
+                  >
+                    <Text style={[
+                      styles.genreChipText,
+                      genres.includes(genre) && styles.genreChipTextSelected
+                    ]}>
+                      {genre}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
             <TouchableOpacity
-              style={[styles.publishButton, loading && styles.submitButtonDisabled, { width: '100%' }]}
+              style={[styles.publishButton, loading && styles.submitButtonDisabled, { margin: spacing.lg }]}
               onPress={handleSubmit}
               disabled={loading}
             >
@@ -1136,14 +1501,12 @@ export const SubmitScreen = () => {
               ) : (
                 <>
                   <Ionicons name="cloud-upload-outline" size={18} color="#fff" />
-                  <Text style={styles.submitButtonText}>
-                    Publish {submitType === 'novel' ? 'Novel' : 'Poem'}
-                  </Text>
+                  <Text style={styles.submitButtonText}>Publish Poem</Text>
                 </>
               )}
             </TouchableOpacity>
           </View>
-        </View>
+        )}
 
         <View style={styles.bottomSpacing} />
       </ScrollView>
@@ -1484,7 +1847,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   },
   previewImage: {
     width: '100%',
-    height: 220,
+    height: 220, // Default height if no aspect ratio detected
     borderRadius: 12,
   },
   removeImageButton: {
@@ -1501,7 +1864,348 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.2,
     shadowRadius: 4,
+    marginTop: spacing.xs,
+  },
+  // Wizard Styles
+  stepIndicatorContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.xl,
+    backgroundColor: themeColors.background,
+    borderBottomWidth: 1,
+    borderBottomColor: themeColors.border,
+  },
+  stepItem: {
+    alignItems: 'center',
+    zIndex: 1,
+  },
+  stepDot: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: themeColors.backgroundSecondary,
+    borderWidth: 2,
+    borderColor: themeColors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  stepDotActive: {
+    backgroundColor: themeColors.primary,
+    borderColor: themeColors.primary,
+  },
+  stepDotCompleted: {
+    backgroundColor: '#10b981',
+    borderColor: '#10b981',
+  },
+  stepLabel: {
+    fontSize: 10,
+    color: themeColors.textSecondary,
+    fontWeight: '500',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  stepLabelActive: {
+    color: themeColors.text,
+    fontWeight: '700',
+  },
+  stepLine: {
+    flex: 1,
+    height: 2,
+    backgroundColor: themeColors.border,
+    marginHorizontal: -4,
+    marginTop: -16,
+  },
+  stepLineActive: {
+    backgroundColor: themeColors.primary,
+  },
+  wizardContainer: {
+    flex: 1,
+  },
+  stepContent: {
+    flex: 1,
+    minHeight: 400,
+  },
+  wizardNavigation: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    padding: spacing.lg,
+    paddingBottom: spacing.xl * 2,
+    gap: spacing.md,
+  },
+  wizardBackButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderRadius: 12,
+    backgroundColor: themeColors.backgroundSecondary,
+    borderWidth: 1,
+    borderColor: themeColors.border,
+    flex: 1,
+    gap: spacing.sm,
+  },
+  wizardBackText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: themeColors.text,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  wizardNextButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderRadius: 12,
+    backgroundColor: themeColors.primary,
+    flex: 1,
+    gap: spacing.sm,
+    shadowColor: themeColors.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
     elevation: 4,
+  },
+  wizardNextText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  // Review Cards
+  reviewEditorialContent: {
+    marginVertical: spacing.lg,
+  },
+  reviewEditorialCoverWrapper: {
+    width: '100%',
+    alignItems: 'center',
+    marginBottom: spacing.xl,
+  },
+  reviewHeader: {
+    alignItems: 'center',
+    marginTop: spacing.xl,
+    marginBottom: spacing.md,
+    paddingHorizontal: spacing.lg,
+  },
+  reviewHeaderTitle: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: themeColors.text,
+    marginTop: spacing.sm,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    textAlign: 'center',
+  },
+  reviewHeaderSubtitle: {
+    fontSize: 15,
+    color: themeColors.textSecondary,
+    marginTop: 6,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    textAlign: 'center',
+  },
+  reviewCover: {
+    width: '55%',
+    height: 250,
+    borderRadius: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.25,
+    shadowRadius: 16,
+    elevation: 12,
+  },
+  reviewEditorialInfo: {
+    paddingHorizontal: spacing.xl,
+  },
+  reviewNovelTitle: {
+    fontSize: 34,
+    fontWeight: '800',
+    color: themeColors.text,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    textAlign: 'center',
+    marginBottom: spacing.md,
+    letterSpacing: -0.5,
+  },
+  reviewBadgeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.xl,
+  },
+  reviewGenreBadge: {
+    backgroundColor: themeColors.primary + '12',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: 8,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: themeColors.primary + '25',
+  },
+  reviewGenreBadgeText: {
+    fontSize: 12,
+    color: themeColors.primary,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+  },
+  reviewStatsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    backgroundColor: themeColors.backgroundSecondary,
+    borderRadius: 24,
+    padding: spacing.xl,
+    marginBottom: spacing.xl * 1.5,
+    borderWidth: 1,
+    borderColor: themeColors.border,
+  },
+  reviewStatBox: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  reviewStatValue: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: themeColors.text,
+    marginTop: 6,
+  },
+  reviewStatLabel: {
+    fontSize: 11,
+    color: themeColors.textSecondary,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    marginTop: 2,
+  },
+  reviewSummarySection: {
+    marginBottom: spacing.xl,
+    paddingBottom: spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: themeColors.border + '50',
+  },
+  reviewSummaryLabel: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: themeColors.text,
+    textTransform: 'uppercase',
+    letterSpacing: 1.5,
+    marginBottom: spacing.md,
+  },
+  reviewSummaryText: {
+    fontSize: 16,
+    color: themeColors.text,
+    lineHeight: 26,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    fontStyle: 'italic',
+    opacity: 0.9,
+  },
+  // Character Step Styles
+  characterList: {
+    paddingVertical: spacing.sm,
+    gap: spacing.md,
+  },
+  characterThumbnail: {
+    width: 80,
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  charAvatar: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: themeColors.backgroundSecondary,
+  },
+  charName: {
+    fontSize: 12,
+    color: themeColors.text,
+    textAlign: 'center',
+    fontWeight: '600',
+  },
+  emptyCharacters: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.xl,
+    backgroundColor: themeColors.backgroundSecondary,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: themeColors.border,
+    borderStyle: 'dashed',
+  },
+  emptyCharactersText: {
+    marginTop: spacing.sm,
+    fontSize: 14,
+    color: themeColors.textSecondary,
+    fontWeight: '500',
+  },
+  // Manuscript Step Styles
+  chapterPreview: {
+    fontSize: 13,
+    color: themeColors.textSecondary,
+    lineHeight: 18,
+    marginBottom: spacing.sm,
+  },
+  chapterStats: {
+    flexDirection: 'row',
+    gap: spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: themeColors.border,
+    paddingTop: spacing.sm,
+  },
+  chapterTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  chapterNumber: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: themeColors.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  chapterTitleText: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: themeColors.text,
+    marginBottom: spacing.sm,
+  },
+  statItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  chapterStatText: {
+    fontSize: 12,
+    color: themeColors.textSecondary,
+    fontWeight: '500',
+  },
+  pdfErrorContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: spacing.md,
+    backgroundColor: themeColors.error + '10',
+    borderRadius: 8,
+    marginBottom: spacing.md,
+    gap: spacing.sm,
+  },
+  pdfErrorText: {
+    fontSize: 14,
+    color: themeColors.error,
+    flex: 1,
+  },
+  pdfSuccessContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: spacing.md,
+    backgroundColor: themeColors.primary + '10',
+    borderRadius: 8,
+    marginBottom: spacing.md,
+    gap: spacing.sm,
+  },
+  pdfSuccessText: {
+    fontSize: 14,
+    color: themeColors.primary,
+    flex: 1,
   },
   genresGrid: {
     flexDirection: 'row',
@@ -1650,41 +2354,6 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     opacity: 0.8,
     marginTop: 2,
   },
-  pdfErrorContainer: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: spacing.sm,
-    backgroundColor: themeColors.error + '10',
-    borderRadius: 8,
-    padding: spacing.md,
-    marginBottom: spacing.md,
-    borderLeftWidth: 4,
-    borderLeftColor: themeColors.error,
-  },
-  pdfErrorText: {
-    fontSize: 13,
-    color: themeColors.error,
-    fontWeight: '500',
-    flex: 1,
-    lineHeight: 18,
-  },
-  pdfSuccessContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    backgroundColor: themeColors.primary + '10',
-    borderRadius: 8,
-    padding: spacing.md,
-    marginBottom: spacing.md,
-    borderLeftWidth: 4,
-    borderLeftColor: themeColors.primary,
-  },
-  pdfSuccessText: {
-    fontSize: 13,
-    color: themeColors.primary,
-    fontWeight: '600',
-    flex: 1,
-  },
   sectionTitleContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1772,47 +2441,6 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: spacing.sm,
-  },
-  chapterTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-  },
-  chapterNumber: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: themeColors.textSecondary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  chapterTitleText: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: themeColors.text,
-    marginBottom: spacing.sm,
-  },
-  chapterPreview: {
-    fontSize: 14,
-    color: themeColors.textSecondary,
-    lineHeight: 20,
-    marginBottom: spacing.md,
-  },
-  chapterStats: {
-    flexDirection: 'row',
-    gap: spacing.lg,
-    paddingTop: spacing.sm,
-    borderTopWidth: 1,
-    borderTopColor: themeColors.border,
-  },
-  statItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-  },
-  chapterStatText: {
-    fontSize: 11,
-    color: themeColors.textSecondary,
-    fontWeight: '600',
   },
   submitButton: {
     flexDirection: 'row',
@@ -1996,5 +2624,43 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     color: themeColors.textSecondary,
     fontWeight: '600',
     fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  limitBanner: {
+    backgroundColor: themeColors.error + '15',
+    padding: spacing.md,
+    marginHorizontal: spacing.lg,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: themeColors.error + '30',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+    marginTop: spacing.sm,
+  },
+  limitBannerText: {
+    color: themeColors.error,
+    fontSize: 13,
+    fontWeight: '600',
+    flex: 1,
+    lineHeight: 18,
+  },
+  draftCounter: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: themeColors.textSecondary,
+    backgroundColor: themeColors.backgroundSecondary,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    alignSelf: 'flex-start',
+  },
+  draftCounterLimit: {
+    color: themeColors.error,
+    backgroundColor: themeColors.error + '10',
+  },
+  selectionCardLimit: {
+    opacity: 0.85,
+    borderColor: themeColors.error + '20',
   },
 });

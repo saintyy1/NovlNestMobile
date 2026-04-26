@@ -33,7 +33,6 @@ import { trackSearch } from '../../utils/Analytics-utils';
 import { withCache, CACHE_TTL } from '../../utils/cache';
 
 const NOVEL_GENRES = [
-  'All',
   'Fantasy',
   'Romance',
   'Mystery',
@@ -50,7 +49,6 @@ const NOVEL_GENRES = [
 ];
 
 const POEM_GENRES = [
-  'All',
   'Romantic',
   'Nature',
   'Free Verse',
@@ -76,7 +74,7 @@ export const BrowseScreen = () => {
   const route = useRoute();
   const [browseType, setBrowseType] = useState<BrowseType>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedGenre, setSelectedGenre] = useState('All');
+  const [selectedGenre, setSelectedGenre] = useState('');
   const [selectedFilter, setSelectedFilter] = useState('Trending');
   const [novels, setNovels] = useState<Novel[]>([]);
   const [poems, setPoems] = useState<Poem[]>([]);
@@ -141,7 +139,7 @@ export const BrowseScreen = () => {
 
   // Reset filters when browse type changes
   useEffect(() => {
-    setSelectedGenre('All');
+    setSelectedGenre(browseType === 'poems' ? 'Romantic' : 'Fantasy');
     setSearchQuery('');
     setSelectedFilter('Trending');
   }, [browseType]);
@@ -159,9 +157,7 @@ export const BrowseScreen = () => {
         queryConstraints.push(where('publicDomain', '==', true));
       }
 
-      if (selectedGenre !== 'All') {
-        queryConstraints.push(where('genres', 'array-contains', selectedGenre));
-      }
+      queryConstraints.push(where('genres', 'array-contains', selectedGenre));
 
       switch (selectedFilter) {
         case 'Trending':
@@ -188,12 +184,12 @@ export const BrowseScreen = () => {
         const rawData = await withCache(cacheKey, async () => {
           const snapshot = await getDocs(q);
           let dataList: any[] = [];
-          
+
           snapshot.forEach((doc) => {
             const itemData = doc.data();
             // If browsing community content, filter out classics
             if (!isClassics && itemData.publicDomain === true) return;
-            
+
             if (browseType === 'novels') {
               dataList.push({
                 id: doc.id,
@@ -213,7 +209,7 @@ export const BrowseScreen = () => {
                 poetName: itemData.poetName || 'Unknown',
                 coverImage: itemData.coverImage,
                 coverSmallImage: itemData.coverSmallImage,
-                content: itemData.content || '',
+                // Stripped content to save cache space
                 views: itemData.views || 0,
                 likes: itemData.likes || 0,
                 genres: itemData.genres || [],
@@ -334,7 +330,7 @@ export const BrowseScreen = () => {
               uri={getFirebaseDownloadUrl(novel.coverSmallImage || novel.coverImage || '')}
               style={styles.listItemImage}
               onError={() => handleImageError(novel.id)}
-              resizeMode="cover"
+              contentFit="cover"
             />
           ) : (
             <View style={[styles.listItemImageFallback, { backgroundColor: getGenreColor(novel.genres) }]}>
@@ -391,7 +387,7 @@ export const BrowseScreen = () => {
               uri={getFirebaseDownloadUrl(poem.coverSmallImage || poem.coverImage || '')}
               style={styles.listItemImage}
               onError={() => handleImageError(poem.id)}
-              resizeMode="cover"
+              contentFit="cover"
             />
           ) : (
             <View style={[styles.listItemImageFallback, { backgroundColor: getGenreColor(poem.genres) }]}>
@@ -577,7 +573,9 @@ export const BrowseScreen = () => {
               <TouchableOpacity
                 key={genre}
                 style={[styles.genreTag, selectedGenre === genre && styles.genreTagActive]}
-                onPress={() => setSelectedGenre(genre)}
+                onPress={() => {
+                  setSelectedGenre(genre);
+                }}
               >
                 <Text style={[styles.genreTagText, selectedGenre === genre && styles.genreTagTextActive]}>
                   {genre}

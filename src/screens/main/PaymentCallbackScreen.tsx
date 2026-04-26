@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
@@ -11,6 +11,7 @@ import * as Linking from 'expo-linking';
 
 const PaymentCallbackScreen = ({ route, navigation }: any) => {
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const styles = getStyles(colors);
 
   const [status, setStatus] = useState<'loading' | 'success' | 'failed'>('loading');
@@ -159,7 +160,7 @@ const PaymentCallbackScreen = ({ route, navigation }: any) => {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
-      <View style={styles.content}>
+      <View style={[styles.content, { paddingBottom: Math.max(insets.bottom, 20) }]}>
         {status === 'loading' && (
           <>
             <ActivityIndicator size="large" color={colors.primary} style={styles.spinner} />

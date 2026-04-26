@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -6,16 +6,29 @@ import {
   TouchableOpacity,
   ScrollView,
   StyleSheet,
-  Alert,
   KeyboardAvoidingView,
   Platform,
   DeviceEventEmitter,
   ActivityIndicator,
 } from 'react-native';
+import Animated, {
+  FadeIn,
+  FadeOut,
+  useAnimatedStyle,
+  withTiming,
+  useSharedValue
+} from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useAlert } from '../../contexts/AlertContext';
 import { InlineChatEditor, type ChatMessage } from '../../components/InlineChatEditor';
 import { spacing } from '../../theme';
+import ChapterBlockEditor from '../../components/ChapterBlockEditor';
+import * as ImagePicker from 'expo-image-picker';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { storage } from '../../firebase/config';
+import { compressImage } from '../../utils/imageUtils';
 
 interface ChapterEditorScreenProps {
   navigation: any;
@@ -24,13 +37,22 @@ interface ChapterEditorScreenProps {
 
 export const ChapterEditorScreen: React.FC<ChapterEditorScreenProps> = ({ navigation, route }) => {
   const { colors } = useTheme();
+  const { showToast } = useAlert();
+  const insets = useSafeAreaInsets();
   const { chapterNumber, initialTitle = '', initialContent = '', onSave, onAutoSave } = route.params;
 
   const [title, setTitle] = useState(initialTitle);
   const [content, setContent] = useState(initialContent);
-  const [selection, setSelection] = useState({ start: 0, end: 0 });
-  const [isPreview, setIsPreview] = useState(false);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
+  const [isDistractionFree, setIsDistractionFree] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+
+  // Animation values for Zen Mode transition
+  const zenProgress = useSharedValue(0);
+
+  React.useEffect(() => {
+    zenProgress.value = withTiming(isDistractionFree ? 1 : 0, { duration: 400 });
+  }, [isDistractionFree]);
 
   React.useEffect(() => {
     const subscription = DeviceEventEmitter.addListener('draftSaveStatus', (status) => {
@@ -39,7 +61,8 @@ export const ChapterEditorScreen: React.FC<ChapterEditorScreenProps> = ({ naviga
     return () => subscription.remove();
   }, []);
 
-  const styles = getStyles(colors);
+  const words = content.trim().split(/\s+/).filter((w: string) => w).length;
+  const styles = getStyles(colors, insets);
 
   React.useEffect(() => {
     // Only auto-save if something has actually changed from initial load
@@ -54,18 +77,62 @@ export const ChapterEditorScreen: React.FC<ChapterEditorScreenProps> = ({ naviga
     }
   }, [title, content, initialTitle, initialContent, onAutoSave]);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!title.trim()) {
-      Alert.alert('Error', 'Please enter a chapter title');
+      showToast({ message: 'Please enter a chapter title', type: 'error' });
       return;
     }
     if (!content.trim()) {
-      Alert.alert('Error', 'Please write some content for your chapter');
+      showToast({ message: 'Please write some content for your chapter', type: 'error' });
       return;
     }
 
-    onSave({ title: title.trim(), content: content.trim() });
-    navigation.goBack();
+    try {
+      setIsUploading(true);
+      
+      const { novelId, chapterIdx, novel } = route.params;
+      
+      if (novelId && novel && chapterIdx !== undefined) {
+        const updatedChapters = [...(novel.chapters || [])];
+        const existingChapter = updatedChapters[chapterIdx] || {};
+        
+        const newChapterData = {
+          ...existingChapter,
+          title: title.trim(),
+          content: content.trim(),
+          updatedAt: new Date().toISOString(),
+        };
+        
+        updatedChapters[chapterIdx] = newChapterData;
+
+        const { doc, updateDoc, setDoc } = require('firebase/firestore');
+        const { db } = require('../../firebase/config');
+        
+        // Update main novel document (array)
+        await updateDoc(doc(db, 'novels', novelId), {
+          chapters: updatedChapters,
+          updatedAt: new Date().toISOString(),
+        });
+
+        // 🚨 SYNC: Update sub-collection document (Reader)
+        const chapterDocRef = doc(db, 'novels', novelId, 'chapters', chapterIdx.toString());
+        await setDoc(chapterDocRef, newChapterData, { merge: true });
+
+        const { invalidateCache } = require('../../utils/cache');
+        await invalidateCache(`novel_${novelId}`);
+        await invalidateCache(`chapter_${novelId}_${chapterIdx}`);
+      }
+
+      if (onSave) {
+        await onSave({ title: title.trim(), content: content.trim() });
+      }
+      navigation.goBack();
+    } catch (err) {
+      console.error('Error saving in editor:', err);
+      showToast({ message: 'Failed to save chapter to database.', type: 'error' });
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   const insertChatIntoContent = (messages: ChatMessage[]) => {
@@ -74,435 +141,218 @@ export const ChapterEditorScreen: React.FC<ChapterEditorScreenProps> = ({ naviga
     setContent(newContent);
   };
 
-  const renderMarkdownPreview = () => {
-    const lines = content.split('\n');
-    return lines.map((line: string, index: number) => {
-      // Heading
-      if (line.startsWith('### ')) {
-        return (
-          <Text key={index} style={[styles.previewText, styles.previewHeading]}>
-            {line.replace(/^### /, '')}
-          </Text>
-        );
-      }
+  useEffect(() => {
+    // Pre-request permissions to avoid delay when clicking the image button
+    ImagePicker.requestMediaLibraryPermissionsAsync();
+  }, []);
 
-      // Process bold and italic in text
-      const parts: Array<{ text: string; bold?: boolean; italic?: boolean }> = [];
-      let currentText = line;
-      let buffer = '';
-      let i = 0;
+  const handleUploadImage = async (): Promise<string | null> => {
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [3, 4],
+        quality: 0.8,
+      });
 
-      while (i < currentText.length) {
-        if (currentText.substring(i, i + 2) === '**') {
-          if (buffer) parts.push({ text: buffer });
-          buffer = '';
-          const endIndex = currentText.indexOf('**', i + 2);
-          if (endIndex !== -1) {
-            parts.push({ text: currentText.substring(i + 2, endIndex), bold: true });
-            i = endIndex + 2;
-          } else {
-            buffer += '**';
-            i += 2;
-          }
-        } else if (currentText[i] === '*' && currentText[i + 1] !== '*') {
-          if (buffer) parts.push({ text: buffer });
-          buffer = '';
-          const endIndex = currentText.indexOf('*', i + 1);
-          if (endIndex !== -1 && currentText[endIndex - 1] !== '*') {
-            parts.push({ text: currentText.substring(i + 1, endIndex), italic: true });
-            i = endIndex + 1;
-          } else {
-            buffer += '*';
-            i += 1;
-          }
-        } else {
-          buffer += currentText[i];
-          i++;
-        }
-      }
-      if (buffer) parts.push({ text: buffer });
+      if (result.canceled) return null;
 
-      return (
-        <Text key={index} style={styles.previewText}>
-          {parts.map((part, idx) => (
-            <Text
-              key={idx}
-              style={[
-                part.bold && styles.previewBold,
-                part.italic && styles.previewItalic,
-              ]}
-            >
-              {part.text}
-            </Text>
-          ))}
-          {index < lines.length - 1 ? '\n' : ''}
-        </Text>
-      );
-    });
-  };
+      setIsUploading(true);
+      const { uri } = result.assets[0];
+      const compressedUri = await compressImage(uri, 1200, 0.7);
 
-  const applyMarkdownFormat = (format: 'bold' | 'italic' | 'heading') => {
-    const { start, end } = selection;
+      const response = await fetch(compressedUri);
+      const blob = await response.blob();
 
-    const beforeText = content.substring(0, start);
-    const selectedText = content.substring(start, end);
-    const afterText = content.substring(end);
+      const fileName = `manuscript_${Date.now()}.jpg`;
+      const imageRef = ref(storage, `manuscript_images/${fileName}`);
 
-    let formattedText = selectedText;
-    let newCursorPos = end;
-
-    if (format === 'bold') {
-      formattedText = selectedText ? `**${selectedText}**` : '**bold**';
-      newCursorPos = start + (selectedText ? selectedText.length + 4 : 8);
-    } else if (format === 'italic') {
-      formattedText = selectedText ? `*${selectedText}*` : '*italic*';
-      newCursorPos = start + (selectedText ? selectedText.length + 2 : 8);
-    } else if (format === 'heading') {
-      formattedText = selectedText ? `### ${selectedText}` : '### Heading';
-      newCursorPos = start + (selectedText ? selectedText.length + 4 : 11);
+      await uploadBytes(imageRef, blob);
+      const url = await getDownloadURL(imageRef);
+      setIsUploading(false);
+      return url;
+    } catch (error) {
+      console.error('Error uploading image:', error);
+      showToast({ message: 'Failed to upload image', type: 'error' });
+      return null;
+    } finally {
+      setIsUploading(false);
     }
-
-    const newContent = beforeText + formattedText + afterText;
-    setContent(newContent);
-    setSelection({ start: newCursorPos, end: newCursorPos });
   };
 
   React.useLayoutEffect(() => {
     navigation.setOptions({
-      headerTitle: `Chapter ${chapterNumber}`,
-      headerStyle: {
-        backgroundColor: colors.primary,
-      },
-      headerTintColor: '#fff',
-      headerRight: () => (
-        <TouchableOpacity
-          onPress={handleSave}
-          style={styles.headerButton}
-        >
-          <Ionicons name="checkmark" size={24} color="#fff" />
-        </TouchableOpacity>
-      ),
+      headerShown: false, // Using custom header for Zen Flow
     });
-  }, [navigation, title, content]);
+  }, [navigation]);
+
+  const headerAnimatedStyle = useAnimatedStyle(() => ({
+    opacity: withTiming(isDistractionFree ? 0 : 1, { duration: 300 }),
+    transform: [{ translateY: withTiming(isDistractionFree ? -100 : 0, { duration: 400 }) }],
+  }));
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
+      {/* Custom Premium Header */}
+      {!isDistractionFree && (
+        <Animated.View style={[styles.customHeader, headerAnimatedStyle]}>
+          <View style={[styles.headerInsets, { paddingTop: insets.top }]}>
+            <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerIcon}>
+              <Ionicons name="chevron-back" size={24} color={colors.text} />
+            </TouchableOpacity>
+
+            <View style={styles.headerTitleContainer}>
+              <Text style={styles.headerTitleText}>Chapter {chapterNumber}</Text>
+              {saveStatus && <Text style={styles.headerSaveStatus}>{saveStatus}</Text>}
+            </View>
+
+            <View style={styles.headerActions}>
+              <TouchableOpacity
+                onPress={() => setIsDistractionFree(true)}
+                style={styles.headerIcon}
+              >
+                <Ionicons name="expand-outline" size={22} color={colors.primary} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleSave}
+                style={[styles.headerIcon, styles.saveButtonHeader]}
+              >
+                {isUploading ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Ionicons name="checkmark" size={24} color="#fff" />
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Animated.View>
+      )}
+
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior="padding"
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-        >
-          {/* Save Status Indicator */}
-          {saveStatus && (
-            <View style={styles.saveStatusContainer}>
-              {saveStatus === 'Saving...' && <ActivityIndicator size="small" color={colors.textSecondary} style={{ marginRight: 6 }} />}
-              {saveStatus === 'Saved' && <Ionicons name="checkmark-circle" size={16} color={colors.primary} style={{ marginRight: 6 }} />}
-              {saveStatus === 'Offline — saving locally' && <Ionicons name="cloud-offline" size={16} color={colors.textSecondary} style={{ marginRight: 6 }} />}
-              <Text style={styles.saveStatusText}>{saveStatus}</Text>
-            </View>
-          )}
-
-          {/* Chapter Title */}
-          <View style={styles.section}>
-            <Text style={styles.label}>Chapter Title</Text>
-            <TextInput
-              style={styles.titleInput}
-              value={title}
-              onChangeText={setTitle}
-              placeholder={`Chapter ${chapterNumber} title`}
-              placeholderTextColor={colors.textSecondary}
-              autoFocus
-            />
-          </View>
-
-          {/* Toolbar */}
-          <View style={styles.toolbar}>
-            <InlineChatEditor onAddChat={insertChatIntoContent} />
-            <View style={styles.markdownButtons}>
-              <TouchableOpacity
-                style={styles.formatButton}
-                onPress={() => applyMarkdownFormat('bold')}
-              >
-                <Text style={styles.formatButtonText}>B</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.formatButton}
-                onPress={() => applyMarkdownFormat('italic')}
-              >
-                <Text style={[styles.formatButtonText, { fontStyle: 'italic' }]}>I</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.formatButton}
-                onPress={() => applyMarkdownFormat('heading')}
-              >
-                <Text style={styles.formatButtonText}>H</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {/* Chapter Content */}
-          <View style={styles.section}>
-            <View style={styles.labelRow}>
-              <Text style={styles.label}>Content</Text>
-              <TouchableOpacity
-                style={styles.previewButton}
-                onPress={() => setIsPreview(!isPreview)}
-              >
-                <Ionicons
-                  name={isPreview ? 'create-outline' : 'eye-outline'}
-                  size={18}
-                  color={colors.primary}
-                />
-                <Text style={styles.previewButtonText}>
-                  {isPreview ? 'Edit' : 'Preview'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-            <View style={styles.contentContainer}>
-              {isPreview ? (
-                <View style={styles.previewContainer}>
-                  {content.trim() ? (
-                    renderMarkdownPreview()
-                  ) : (
-                    <Text style={[styles.previewText, { color: colors.textSecondary }]}>
-                      No content to preview
-                    </Text>
-                  )}
-                </View>
-              ) : (
+        <ChapterBlockEditor
+          content={content}
+          onChangeContent={setContent}
+          onUploadImage={handleUploadImage}
+          isDistractionFree={isDistractionFree}
+          autoSaveStatus={saveStatus || undefined}
+          wordCount={words}
+          onExitDistractionFree={() => setIsDistractionFree(false)}
+          header={!isDistractionFree ? (
+            <>
+              <View style={styles.manuscriptHeader}>
                 <TextInput
-                  style={styles.contentInput}
-                  value={content}
-                  onChangeText={setContent}
-                  onSelectionChange={(event) => setSelection(event.nativeEvent.selection)}
-                  selection={selection}
-                  placeholder="Write your chapter content here... Highlight your words or sentences and tap the purple buttons above to format: **bold**, *italic*, ### headings"
-                  placeholderTextColor={colors.textSecondary}
+                  style={styles.manuscriptTitleInput}
+                  value={title}
+                  onChangeText={setTitle}
+                  placeholder="Untitled Chapter"
+                  placeholderTextColor={colors.textSecondary + '60'}
                   multiline
-                  scrollEnabled={false}
-                  textAlignVertical="top"
+                  keyboardAppearance="dark"
+                  cursorColor={colors.primary}
+                  selectionColor={colors.primary + '40'}
                 />
-              )}
-            </View>
-            <View style={styles.statsBar}>
-              <View style={styles.statItem}>
-                <Ionicons name="text-outline" size={14} color={colors.textSecondary} />
-                <Text style={styles.statText}>{content.length} characters</Text>
+                <View style={styles.titleUnderline} />
               </View>
-              <View style={styles.statItem}>
-                <Ionicons name="document-text-outline" size={14} color={colors.textSecondary} />
-                <Text style={styles.statText}>
-                  {content.trim().split(/\s+/).filter((w: string) => w).length} words
-                </Text>
+              <View style={styles.minimalToolbar}>
+                <InlineChatEditor onAddChat={insertChatIntoContent} />
               </View>
-            </View>
-          </View>
-
-          <View style={styles.bottomSpacing} />
-        </ScrollView>
+            </>
+          ) : null}
+        />
       </KeyboardAvoidingView>
-
     </View>
   );
 };
 
-const getStyles = (colors: any) => StyleSheet.create({
+const getStyles = (colors: any, insets: any) => StyleSheet.create({
   container: {
     flex: 1,
+  },
+  customHeader: {
+    backgroundColor: colors.background,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border + '20',
+    zIndex: 100,
+  },
+  headerInsets: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    justifyContent: 'space-between' as const,
+    paddingHorizontal: spacing.md,
+    height: 60 + insets.top,
+    paddingBottom: 10,
+  },
+  headerIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center' as const,
+    alignItems: 'center' as const,
+  },
+  headerTitleContainer: {
+    flex: 1,
+    alignItems: 'center' as const,
+  },
+  headerTitleText: {
+    fontSize: 16,
+    fontWeight: '800' as const,
+    color: colors.text,
+    letterSpacing: -0.5,
+  },
+  headerSaveStatus: {
+    fontSize: 10,
+    color: colors.primary,
+    fontWeight: '700' as const,
+    marginTop: 2,
+  },
+  headerActions: {
+    flexDirection: 'row' as const,
+    gap: 8,
+  },
+  saveButtonHeader: {
+    backgroundColor: colors.primary,
   },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
-    paddingBottom: 100,
+    paddingBottom: 100 + insets.bottom,
   },
-  saveStatusContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: spacing.sm,
-    backgroundColor: colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
+  manuscriptHeader: {
+    paddingHorizontal: spacing.xl,
+    marginTop: spacing.xl,
+    marginBottom: spacing.lg,
   },
-  saveStatusText: {
-    fontSize: 13,
-    color: colors.textSecondary,
-    fontWeight: '600',
-  },
-  headerButton: {
-    marginRight: spacing.md,
-  },
-  section: {
-    marginHorizontal: spacing.lg,
-    marginTop: spacing.lg,
-  },
-  label: {
-    fontSize: 13,
-    color: colors.textSecondary,
-    fontWeight: '700',
-    marginBottom: spacing.sm,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  labelRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: spacing.sm,
-  },
-  previewButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-    marginBottom: spacing.sm,
-  },
-  previewButtonText: {
-    fontSize: 13,
-    color: colors.primary,
-    fontWeight: '600',
-  },
-  previewContainer: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: spacing.md,
-    minHeight: 400,
-    borderWidth: 1.5,
-    borderColor: colors.border,
-  },
-  previewText: {
-    fontSize: 16,
+  manuscriptTitleInput: {
+    fontSize: 32,
+    fontWeight: '800' as const,
     color: colors.text,
-    lineHeight: 24,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    padding: 0,
+    letterSpacing: -1,
   },
-  previewBold: {
-    fontWeight: '700',
-  },
-  previewItalic: {
-    fontStyle: 'italic',
-  },
-  previewHeading: {
-    fontSize: 20,
-    fontWeight: '700',
+  titleUnderline: {
+    height: 4,
+    width: 40,
+    backgroundColor: colors.primary + '30',
     marginTop: spacing.sm,
-    marginBottom: spacing.xs,
+    borderRadius: 2,
   },
-  titleInput: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    padding: spacing.md,
-    fontSize: 18,
-    fontWeight: '700',
-    color: colors.text,
-    borderWidth: 1.5,
-    borderColor: colors.border,
+  minimalToolbar: {
+    marginHorizontal: spacing.xl,
+    backgroundColor: colors.surface + '60',
+    borderRadius: 15,
+    padding: 4,
+    marginBottom: spacing.lg,
   },
-  toolbar: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginHorizontal: spacing.lg,
-    marginTop: spacing.lg,
-    padding: spacing.sm,
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    gap: spacing.sm,
+  blockContainer: {
+    flex: 1,
   },
-  markdownButtons: {
-    flexDirection: 'row',
-    gap: spacing.xs,
-  },
-  formatButton: {
-    backgroundColor: colors.primary,
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    borderRadius: 8,
-    minWidth: 38,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: colors.primary,
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.3,
-    shadowRadius: 2,
-    elevation: 2,
-  },
-  formatButtonText: {
-    color: '#fff',
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  contentContainer: {
-    backgroundColor: colors.surface,
-    borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: colors.border,
-    minHeight: 400,
-  },
-  contentInput: {
-    padding: spacing.md,
-    fontSize: 16,
-    color: colors.text,
-    lineHeight: 24,
-    minHeight: 400,
-  },
-  statsBar: {
-    flexDirection: 'row',
-    gap: spacing.lg,
-    marginTop: spacing.sm,
-    paddingTop: spacing.sm,
-  },
-  statItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-  },
-  statText: {
-    fontSize: 12,
-    color: colors.textSecondary,
-  },
-  bottomSpacing: {
-    height: spacing.xl,
-  },
-  floatingButtonContainer: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    padding: spacing.lg,
-    backgroundColor: colors.background,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  saveButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.primary,
-    borderRadius: 16,
-    padding: spacing.lg,
-    gap: spacing.sm,
-    shadowColor: colors.primary,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 5,
-  },
-  saveButtonText: {
-    fontSize: 17,
-    color: '#fff',
-    fontWeight: '800',
-    letterSpacing: 0.5,
+  fullScreenEditor: {
+    flex: 1,
   },
 });
 

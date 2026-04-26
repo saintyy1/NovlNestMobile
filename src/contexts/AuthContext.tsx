@@ -17,6 +17,8 @@ import {
   checkActionCode,
   updatePassword,
   deleteUser as firebaseDeleteUser,
+  signInWithCredential,
+  AuthCredential,
 } from "firebase/auth"
 import {
   doc,
@@ -39,6 +41,16 @@ import AsyncStorage from "@react-native-async-storage/async-storage"
 import { auth, db, actionCodeSettings } from "../firebase/config"
 import { sendPushNotification } from "../services/PushNotificationService"
 import { deleteReadingProgress } from "../services/readingProgressService"
+import { 
+  invalidateCache, 
+  invalidateByPrefix, 
+  invalidateProfileCache, 
+  invalidateUserPreviewCache,
+  invalidateHomeCache,
+  invalidateBrowseCache,
+  invalidateNovelCache,
+  invalidatePoemCache
+} from "../utils/cache"
 
 // Extend the Firebase User type with custom properties
 export interface ExtendedUser extends User {
@@ -68,11 +80,13 @@ interface AuthContextType {
   register: (email: string, password: string, displayName: string) => Promise<void>
   logout: () => Promise<void>
   resetPassword: (email: string) => Promise<void>
-  sendEmailVerificationLink: () => Promise<void>
+  sendEmailVerificationLink: (email?: string, password?: string) => Promise<void>
   verifyEmail: (actionCode: string) => Promise<any>
   loading: boolean
   isAdmin: boolean
   refreshUser: () => Promise<void>
+  checkAccountStatus: (user: User) => Promise<void>
+  signInWithSocialCredential: (credential: AuthCredential) => Promise<void>
   updateUserPhoto: (photoBase64: string | null) => Promise<void>
   updateUserProfile: (
     displayName?: string,
@@ -230,6 +244,19 @@ const checkPoemAddedToLibraryCooldown = async (userId: string, poemId: string): 
 const followCooldowns = new Map<string, NodeJS.Timeout>()
 const lastUnfollowTimestamps = new Map<string, number>()
 
+// Global flag to temporarily ignore auth state changes during system actions
+let isSystemAuthAction = false
+
+// Helper to check if a user is within the 24-hour verification grace period
+const isGracePeriodActive = (createdAt: string | undefined): boolean => {
+  if (!createdAt) return true // Assume active if we can't determine age yet
+  const createdDate = new Date(createdAt)
+  const now = new Date()
+  const diffInMs = now.getTime() - createdDate.getTime()
+  const twentyFourHoursInMs = 24 * 60 * 60 * 1000
+  return diffInMs < twentyFourHoursInMs
+}
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<ExtendedUser | null>(null)
   const [loading, setLoading] = useState(true)
@@ -241,6 +268,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const userDoc = await getDoc(doc(db, "users", user.uid))
       if (userDoc.exists()) {
         const data = userDoc.data()
+        
+        // Sync email verification status from Firebase Auth to Firestore if needed
+        if (data.isVerified === false && user.emailVerified === true) {
+          try {
+            await updateDoc(doc(db, "users", user.uid), {
+              isVerified: true,
+              updatedAt: new Date().toISOString(),
+            })
+            data.isVerified = true // Update local data object for state sync below
+          } catch (e) {
+            console.error("Error syncing verification status:", e)
+          }
+        }
+
         const extendedUser = {
           ...user,
           isAdmin: data.isAdmin || false,
@@ -268,6 +309,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setIsAdmin(data.isAdmin === true)
         return extendedUser
       } else {
+        // Create user document if it doesn't exist
         const newUserData = {
           uid: user.uid,
           email: user.email,
@@ -288,6 +330,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           finishedReads: [],
           pendingEmail: null,
           pushNotificationsEnabled: true,
+          isActive: true,
+          isVerified: false, // Initialized for new users
         }
         await setDoc(doc(db, "users", user.uid), newUserData)
         const extendedUser = {
@@ -309,6 +353,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           finishedReads: newUserData.finishedReads,
           pendingEmail: newUserData.pendingEmail,
           pushNotificationsEnabled: true,
+          isActive: true,
+          isVerified: false,
         } as ExtendedUser
         setCurrentUser(extendedUser)
         setFirebaseUser(user)
@@ -343,6 +389,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         photoURL: photoBase64,
         updatedAt: new Date().toISOString(),
       })
+      
+      // 🚀 Invalidate caches
+      await invalidateProfileCache(currentUser.uid)
+      await invalidateUserPreviewCache(currentUser.uid)
+      
       setCurrentUser((prev) => (prev ? { ...prev, photoURL: photoBase64 } : null))
     } catch (error) {
       console.error("Error updating user photo:", error)
@@ -390,6 +441,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       await updateDoc(doc(db, "users", currentUser.uid), updates)
       
+      // 🚀 Invalidate caches for current user
+      await invalidateProfileCache(currentUser.uid)
+      await invalidateUserPreviewCache(currentUser.uid)
+
       if (displayName !== undefined && firebaseUser.displayName !== displayName) {
         await updateProfile(firebaseUser, { displayName })
       }
@@ -706,6 +761,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         updatedAt: new Date().toISOString(),
       })
 
+      // 🚀 Invalidate caches for both users
+      await invalidateProfileCache(currentUser.uid)
+      await invalidateProfileCache(targetUserId)
+      // Also invalidate user previews just in case following status is cached there
+      await invalidateUserPreviewCache(currentUser.uid)
+      await invalidateUserPreviewCache(targetUserId)
+
       if (!isCurrentlyFollowing) {
         const lastUnfollowTime = lastUnfollowTimestamps.get(cooldownKey)
         const currentTime = Date.now()
@@ -844,10 +906,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             { url: `novlnest://novel/${novelId}` }
           )
         }
-      } else if (!add) {
         await clearNovelLikeCooldown(currentUser.uid, novelId)
         await clearNovelAddedToLibraryCooldown(currentUser.uid, novelId)
       }
+
+      // 🚀 Invalidate novel cache and relevant feeds
+      await invalidateCache(`novel_${novelId}`)
+      await invalidateHomeCache()
+      await invalidateBrowseCache()
+      await invalidateProfileCache(currentUser.uid)
     } catch (error) {
       console.error("Error updating user library:", error)
       throw error
@@ -985,10 +1052,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             { url: `novlnest://poem/${poemId}` }
           )
         }
-      } else if (!add) {
         await clearPoemLikeCooldown(currentUser.uid, poemId)
         await clearPoemAddedToLibraryCooldown(currentUser.uid, poemId)
       }
+
+      // 🚀 Invalidate poem cache and relevant feeds
+      await invalidateCache(`poem_${poemId}`)
+      await invalidateHomeCache()
+      await invalidateBrowseCache()
+      await invalidateProfileCache(currentUser.uid)
     } catch (error) {
       console.error("Error updating poem library:", error)
       throw error
@@ -1029,6 +1101,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error("This display name is already taken. Try another one.")
     }
 
+    // Validate email domain
+    const allowedDomains = ["gmail.com", "outlook.com", "hotmail.com", "yahoo.com", "icloud.com", "aol.com", "zoho.com", "protonmail.com"]
+    const emailDomain = email.split("@")[1]?.toLowerCase()
+    
+    if (!emailDomain || !allowedDomains.includes(emailDomain)) {
+      throw new Error(`Registration restricted to standard email providers. Allowed domains: ${allowedDomains.join(", ")}`)
+    }
+
+    if (emailDomain === "example.com") {
+      throw new Error("Generic domains like example.com are not allowed for security.")
+    }
+
     const userCredential = await createUserWithEmailAndPassword(auth, email, password)
     const user = userCredential.user
 
@@ -1055,52 +1139,138 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       poemLibrary: [],
       finishedReads: [],
       pendingEmail: null,
+      isActive: true,
+      isVerified: false,
     }
     await setDoc(doc(db, "users", user.uid), newUserData)
+    
+    // NO LONGER logging out immediately - allowing grace period
+    await fetchUserData(user)
+  }
 
-    const extendedUser: ExtendedUser = {
-      ...user,
-      displayName: trimmedDisplayName,
-      photoURL: null,
-      isAdmin: false,
-      emailVisible: false,
-      createdAt: newUserData.createdAt,
-      bio: newUserData.bio,
-      followers: newUserData.followers,
-      following: newUserData.following,
-      instagramUrl: newUserData.instagramUrl,
-      twitterUrl: newUserData.twitterUrl,
-      supportLink: newUserData.supportLink,
-      location: newUserData.location,
-      library: newUserData.library,
-      poemLibrary: newUserData.poemLibrary,
-      finishedReads: newUserData.finishedReads,
-      pendingEmail: newUserData.pendingEmail,
+  const checkAccountStatus = async (user: User) => {
+    const userDoc = await getDoc(doc(db, "users", user.uid))
+    if (userDoc.exists()) {
+      const data = userDoc.data()
+      if (data.isActive === false) {
+        await signOut(auth)
+        throw new Error("ACCOUNT_DISABLED")
+      }
+      if (data.isVerified === false) {
+        // Double check with Firebase Auth - they might have verified while logged out
+        if (user.emailVerified) {
+          await updateDoc(doc(db, "users", user.uid), {
+            isVerified: true,
+            updatedAt: new Date().toISOString(),
+          })
+          // Sync successful, proceed with login
+        } else if (!isGracePeriodActive(data.createdAt)) {
+          // Only throw if NOT in grace period
+          await signOut(auth)
+          throw new Error("ACCOUNT_UNVERIFIED")
+        }
+      }
     }
-    setCurrentUser(extendedUser)
-    setFirebaseUser(user)
   }
 
   const login = async (email: string, password: string) => {
-    await signInWithEmailAndPassword(auth, email, password)
+    const userCredential = await signInWithEmailAndPassword(auth, email, password)
+    await checkAccountStatus(userCredential.user)
+    await fetchUserData(userCredential.user)
+  }
+
+  const signInWithSocialCredential = async (credential: AuthCredential) => {
+    isSystemAuthAction = true
+    try {
+      const userCredential = await signInWithCredential(auth, credential)
+      const user = userCredential.user
+
+      // Check if user document exists
+      const userDoc = await getDoc(doc(db, "users", user.uid))
+      if (!userDoc.exists()) {
+        // New social user - create doc and require verification
+        const newUserData = {
+          uid: user.uid,
+          email: user.email,
+          displayName: user.displayName || user.email?.split("@")[0] || "User",
+          photoURL: user.photoURL,
+          isAdmin: false,
+          emailVisible: false,
+          createdAt: new Date().toISOString(),
+          bio: "",
+          followers: [],
+          following: [],
+          instagramUrl: "",
+          twitterUrl: "",
+          supportLink: "",
+          location: "",
+          library: [],
+          poemLibrary: [],
+          finishedReads: [],
+          pendingEmail: null,
+          pushNotificationsEnabled: true,
+          isActive: true,
+          isVerified: false, // Force social users to verify (anti-bot)
+        }
+        await setDoc(doc(db, "users", user.uid), newUserData)
+        
+        // Send verification email
+        await sendEmailVerification(user, actionCodeSettings)
+        
+        // NO LONGER signing out for new social users - allowing grace period
+        await fetchUserData(user)
+      } else {
+        // Existing user - check status
+        const data = userDoc.data()
+        if (data.isActive === false) {
+          await signOut(auth)
+          throw new Error("ACCOUNT_DISABLED")
+        }
+        
+        if (data.isVerified === false) {
+          // Double check with Firebase Auth
+          if (user.emailVerified) {
+            await updateDoc(doc(db, "users", user.uid), {
+              isVerified: true,
+              updatedAt: new Date().toISOString()
+            })
+          } else if (!isGracePeriodActive(data.createdAt)) {
+            // Only throw if NOT in grace period
+            await signOut(auth)
+            throw new Error("ACCOUNT_UNVERIFIED")
+          }
+        }
+        
+        isSystemAuthAction = false // Allow listener to catch successful login
+        await fetchUserData(user)
+      }
+    } catch (error) {
+      console.error("Error signing in with social credential:", error)
+      await signOut(auth).catch(() => {}) // Ensure signed out
+      throw error
+    } finally {
+      setTimeout(() => {
+        isSystemAuthAction = false
+      }, 1000)
+    }
   }
 
   const logout = async () => {
+    // Clear state synchronously for immediate response
+    setIsAdmin(false)
+    setCurrentUser(null)
+    setFirebaseUser(null)
+
+    // Clear timers
+    followCooldowns.forEach((timeout) => clearTimeout(timeout))
+    followCooldowns.clear()
+    lastUnfollowTimestamps.clear()
+
     try {
       await signOut(auth)
-      setIsAdmin(false)
-      setCurrentUser(null)
-      setFirebaseUser(null)
-
-      // Do NOT clear AsyncStorage on logout; this wipes all local data including drafts.
-      // Remove this line to preserve user drafts and local preferences.
-
-      followCooldowns.forEach((timeout) => clearTimeout(timeout))
-      followCooldowns.clear()
-      lastUnfollowTimestamps.clear()
     } catch (error) {
       console.error("Error during logout:", error)
-      throw error
+      // Even if Firebase fails, our local state is now null, effectively "logging out" the user from the app's perspective
     }
   }
 
@@ -1108,7 +1278,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await sendPasswordResetEmail(auth, email)
   }
 
-  const sendEmailVerificationLink = async () => {
+  const sendEmailVerificationLink = async (email?: string, password?: string) => {
+    // If credentials are provided, we temporarily sign in to send the link (for ACCOUNT_UNVERIFIED flow)
+    if (email && password) {
+      isSystemAuthAction = true
+      try {
+        const userCredential = await signInWithEmailAndPassword(auth, email, password)
+        await sendEmailVerification(userCredential.user, actionCodeSettings)
+        await signOut(auth)
+      } finally {
+        setTimeout(() => {
+          isSystemAuthAction = false
+        }, 1000)
+      }
+      return
+    }
+
     if (!firebaseUser) throw new Error("No user logged in")
     await sendEmailVerification(firebaseUser, actionCodeSettings)
   }
@@ -1118,8 +1303,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const info = await checkActionCode(auth, actionCode)
       await applyActionCode(auth, actionCode)
 
+      // Refresh the user to get updated email verification status
       if (firebaseUser) {
         await firebaseUser.reload()
+      }
+
+      // Update Firestore status by email (works even if user is logged out)
+      const userEmail = info.data?.email;
+      if (userEmail) {
+        const q = query(collection(db, "users"), where("email", "==", userEmail))
+        const snapshot = await getDocs(q)
+        if (!snapshot.empty) {
+          const userRef = snapshot.docs[0].ref
+          await updateDoc(userRef, {
+            isVerified: true,
+            updatedAt: new Date().toISOString(),
+          })
+        }
+      }
+
+      if (firebaseUser) {
         await fetchUserData(firebaseUser)
       }
 
@@ -1237,6 +1440,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let unsubscribeSnapshot: () => void;
 
     const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
+      if (isSystemAuthAction) {
+        console.log("System auth action in progress. Skipping listener...")
+        return
+      }
+
       if (user) {
         setFirebaseUser(user)
         await fetchUserData(user)
@@ -1245,10 +1453,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         unsubscribeSnapshot = onSnapshot(doc(db, "users", user.uid), (docResp) => {
           if (docResp.exists()) {
             const data = docResp.data();
+            
+            // Auto logout if disabled or UNVERIFIED (and grace period expired)
+            if (data.isActive === false || (data.isVerified === false && !isGracePeriodActive(data.createdAt))) {
+              console.log("Account status invalid or grace period expired. Logging out...");
+              logout();
+              return;
+            }
+
             setCurrentUser((prev) => {
-              if (!prev) return prev;
+              // Even if prev is null (initial load), we can still use the data from onSnapshot
+              // but we need the base user object from Firebase
+              const baseUser = prev || user;
               const updatedUser: ExtendedUser = {
-                ...prev,
+                ...baseUser,
                 isAdmin: data.isAdmin || false,
                 emailVisible: data.emailVisible || false,
                 photoURL: data.photoURL || user.photoURL,
@@ -1292,25 +1510,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [])
 
-  // Poll for email verification when there's a pending email change
+  // Poll for email verification when there's a pending change or user is unverified
   useEffect(() => {
-    if (!currentUser?.pendingEmail || !firebaseUser) return
+    if (!firebaseUser) return
+    if (!currentUser?.pendingEmail && currentUser?.emailVerified) return
 
     const checkEmailVerification = async () => {
       try {
-        // Reload the Firebase auth user to get latest email
+        // Reload the Firebase auth user to get latest status
         await firebaseUser.reload()
         const refreshedUser = auth.currentUser
+        if (!refreshedUser) return
 
-        if (refreshedUser && refreshedUser.email === currentUser.pendingEmail) {
-          // Email has been verified and updated!
-          // Clear the pendingEmail in Firestore
+        // 1. Check for pending email change
+        if (currentUser?.pendingEmail && refreshedUser.email === currentUser.pendingEmail) {
           await updateDoc(doc(db, "users", currentUser.uid), {
             pendingEmail: null,
             updatedAt: new Date().toISOString(),
           })
+          await fetchUserData(refreshedUser)
+          return
+        }
 
-          // Refresh the user data to show the new email
+        // 2. Check for general verification status sync
+        if (!currentUser?.emailVerified && refreshedUser.emailVerified) {
+          // fetchUserData will handle the Firestore sync via the logic added there
           await fetchUserData(refreshedUser)
         }
       } catch (error) {
@@ -1321,11 +1545,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Check immediately
     checkEmailVerification()
 
-    // Then poll every 5 seconds
+    // Then poll every 5 seconds (more frequent for smoother UX during signup)
     const interval = setInterval(checkEmailVerification, 5000)
 
     return () => clearInterval(interval)
-  }, [currentUser?.pendingEmail, firebaseUser])
+  }, [currentUser?.pendingEmail, currentUser?.emailVerified, firebaseUser])
 
   const value = {
     currentUser,
@@ -1338,6 +1562,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     loading,
     isAdmin,
     refreshUser,
+    checkAccountStatus,
+    signInWithSocialCredential,
     updateUserPhoto,
     updateUserProfile,
     toggleFollow,

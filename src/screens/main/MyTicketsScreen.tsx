@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -6,8 +6,10 @@ import {
   StyleSheet,
   TouchableOpacity,
   ActivityIndicator,
+  Platform,
+  StatusBar,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { collection, query, where, orderBy, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase/config';
@@ -34,8 +36,9 @@ interface SupportTicket {
 
 const MyTicketsScreen = ({ navigation }: any) => {
   const { currentUser } = useAuth();
-  const { colors } = useTheme();
-  const styles = getStyles(colors);
+  const { colors, isDark } = useTheme();
+  const insets = useSafeAreaInsets();
+  const styles = getStyles(colors, isDark);
   const [tickets, setTickets] = useState<SupportTicket[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedTicket, setSelectedTicket] = useState<SupportTicket | null>(null);
@@ -64,535 +67,477 @@ const MyTicketsScreen = ({ navigation }: any) => {
     return () => unsubscribe();
   }, [currentUser]);
 
-  const getStatusColor = (status: string) => {
+  const getStatusConfig = (status: string) => {
     switch (status) {
       case 'unread':
-        return { bg: '#7F1D1D', text: '#FCA5A5', border: '#991B1B' };
+        return { color: '#EF4444', label: 'Unread', icon: 'alert-circle' };
       case 'in-progress':
-        return { bg: '#78350F', text: '#FCD34D', border: '#92400E' };
+        return { color: '#F59E0B', label: 'In Progress', icon: 'time' };
       case 'resolved':
-        return { bg: '#14532D', text: '#86EFAC', border: '#166534' };
+        return { color: '#10B981', label: 'Resolved', icon: 'checkmark-circle' };
       default:
-        return { bg: '#374151', text: '#9CA3AF', border: '#4B5563' };
+        return { color: colors.textSecondary, label: 'Unknown', icon: 'help-circle' };
     }
   };
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'unread':
-        return 'alert-circle';
-      case 'in-progress':
-        return 'time';
-      case 'resolved':
-        return 'checkmark-circle';
-      default:
-        return 'chatbubble-ellipses';
+  const conversationThread = useMemo(() => {
+    if (!selectedTicket) return [];
+
+    const messages = [
+      {
+        id: 'root',
+        type: 'user',
+        senderName: selectedTicket.name,
+        message: selectedTicket.message,
+        timestamp: selectedTicket.createdAt,
+      }
+    ];
+
+    if (selectedTicket.responses) {
+      selectedTicket.responses.forEach((resp, idx) => {
+        messages.push({
+          id: `resp-${idx}`,
+          type: 'support',
+          senderName: resp.adminName,
+          message: resp.message,
+          timestamp: resp.timestamp,
+        });
+      });
     }
+
+    // Sort by timestamp if necessary, though root is always first
+    return messages;
+  }, [selectedTicket]);
+
+  const formatMessageDate = (timestamp: string) => {
+    const date = new Date(timestamp);
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ', ' +
+      date.toLocaleDateString([], { month: 'short', day: 'numeric' });
   };
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.safeArea} edges={['bottom', 'left', 'right']}>
-        <View style={styles.centerContainer}>
-          <ActivityIndicator size="large" color="#8B5CF6" />
-        </View>
-      </SafeAreaView>
+      <View style={styles.centerContainer}>
+        <ActivityIndicator size="large" color={colors.primary} />
+      </View>
     );
   }
 
-  return (
-    <SafeAreaView style={styles.safeArea} edges={['bottom', 'left', 'right']}>
-      <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
-        {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerContent}>
-            <View style={styles.iconContainer}>
-              <Ionicons name="ticket" size={24} color="#fff" />
-            </View>
-            <Text style={styles.title}>My Support Tickets</Text>
-            <Text style={styles.subtitle}>View your support requests and responses</Text>
+  const renderTicketList = () => (
+    <ScrollView
+      style={styles.container}
+      showsVerticalScrollIndicator={false}
+      contentContainerStyle={{ padding: 16 }}
+    >
+      <View style={styles.listHeader}>
+        <TouchableOpacity 
+          style={styles.backButtonList} 
+          onPress={() => navigation.goBack()}
+        >
+          <Ionicons name="chevron-back" size={28} color={colors.text} />
+        </TouchableOpacity>
+        <Text style={styles.listHeaderTitle}>Support Tickets</Text>
+        <Text style={styles.listHeaderSubtitle}>{tickets.length} Active Tickets</Text>
+      </View>
+
+      {tickets.length === 0 ? (
+        <View style={styles.emptyContainer}>
+          <View style={styles.emptyIconCircle}>
+            <Ionicons name="chatbubbles-outline" size={40} color={colors.textSecondary} />
           </View>
+          <Text style={styles.emptyTitle}>No tickets found</Text>
+          <Text style={styles.emptySubtitle}>When you contact support, your tickets will appear here.</Text>
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={() => navigation.navigate('Support')}
+          >
+            <Text style={styles.actionButtonText}>Open a Ticket</Text>
+          </TouchableOpacity>
         </View>
-
-        {tickets.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <View style={styles.emptyIconContainer}>
-              <Ionicons name="ticket-outline" size={80} color="#4B5563" />
-            </View>
-            <Text style={styles.emptyTitle}>No support tickets yet</Text>
-            <Text style={styles.emptyText}>You haven't submitted any support requests</Text>
+      ) : (
+        tickets.map((ticket) => {
+          const status = getStatusConfig(ticket.status);
+          return (
             <TouchableOpacity
-              style={styles.contactButton}
-              onPress={() => navigation.navigate('Support')}
+              key={ticket.id}
+              style={styles.ticketCard}
+              activeOpacity={0.7}
+              onPress={() => setSelectedTicket(ticket)}
             >
-              <Ionicons name="chatbubble-ellipses" size={20} color="#fff" />
-              <Text style={styles.contactButtonText}>Contact Support</Text>
-            </TouchableOpacity>
-          </View>
-        ) : selectedTicket ? (
-          // Ticket Details View
-          <View style={styles.detailsContainer}>
-            <TouchableOpacity
-              style={styles.backToListButton}
-              onPress={() => setSelectedTicket(null)}
-            >
-              <Ionicons name="arrow-back" size={20} color="#A78BFA" />
-              <Text style={styles.backToListText}>Back to List</Text>
-            </TouchableOpacity>
-
-            <View style={styles.detailsCard}>
-              {/* Header */}
-              <View style={styles.detailsHeader}>
-                <Text style={styles.detailsTitle}>{selectedTicket.subject}</Text>
-                <View style={styles.detailsInfo}>
-                  {selectedTicket.ticketId && (
-                    <View style={styles.ticketIdBadge}>
-                      <Text style={styles.ticketIdText}>#{selectedTicket.ticketId}</Text>
-                    </View>
-                  )}
-                  <Text style={styles.detailsDate}>
-                    {new Date(selectedTicket.createdAt).toLocaleDateString()}
-                  </Text>
+              <View style={styles.ticketCardHeader}>
+                <View style={[styles.statusPill, { backgroundColor: status.color + '20' }]}>
+                  <View style={[styles.statusDot, { backgroundColor: status.color }]} />
+                  <Text style={[styles.statusPillText, { color: status.color }]}>{status.label}</Text>
                 </View>
-                <View
-                  style={[
-                    styles.statusBadge,
-                    { backgroundColor: getStatusColor(selectedTicket.status).bg },
-                  ]}
-                >
-                  <Ionicons
-                    name={getStatusIcon(selectedTicket.status) as any}
-                    size={16}
-                    color={getStatusColor(selectedTicket.status).text}
-                  />
-                  <Text
-                    style={[
-                      styles.statusText,
-                      { color: getStatusColor(selectedTicket.status).text },
-                    ]}
-                  >
-                    {selectedTicket.status.replace('-', ' ').toUpperCase()}
-                  </Text>
-                </View>
+                <Text style={styles.ticketCardDate}>{new Date(ticket.createdAt).toLocaleDateString()}</Text>
               </View>
 
-              {/* Original Message */}
-              <View style={styles.messageSection}>
-                <Text style={styles.messageSectionTitle}>YOUR MESSAGE</Text>
-                <View style={styles.messageCard}>
-                  <Text style={styles.messageText}>{selectedTicket.message}</Text>
-                  <View style={styles.messageDivider} />
-                  <Text style={styles.messageDate}>
-                    Submitted on {new Date(selectedTicket.createdAt).toLocaleString()}
-                  </Text>
-                </View>
-              </View>
+              <Text style={styles.ticketCardSubject} numberOfLines={1}>{ticket.subject}</Text>
+              <Text style={styles.ticketCardMessage} numberOfLines={2}>{ticket.message}</Text>
 
-              {/* Responses */}
-              {selectedTicket.responses && selectedTicket.responses.length > 0 ? (
-                <View style={styles.responsesSection}>
-                  <Text style={styles.messageSectionTitle}>SUPPORT TEAM RESPONSES</Text>
-                  {selectedTicket.responses.map((response, index) => (
-                    <View key={index} style={styles.responseCard}>
-                      <View style={styles.responseHeader}>
-                        <View style={styles.responseAvatar}>
-                          <Text style={styles.responseAvatarText}>
-                            {response.adminName.charAt(0)}
-                          </Text>
-                        </View>
-                        <View>
-                          <Text style={styles.responseAdminName}>{response.adminName}</Text>
-                          <Text style={styles.responseDate}>
-                            {new Date(response.timestamp).toLocaleString()}
-                          </Text>
-                        </View>
-                      </View>
-                      <Text style={styles.responseText}>{response.message}</Text>
-                    </View>
-                  ))}
-                </View>
-              ) : (
-                <View style={styles.noResponsesCard}>
-                  <Ionicons name="time-outline" size={64} color="#4B5563" />
-                  <Text style={styles.noResponsesTitle}>No responses yet</Text>
-                  <Text style={styles.noResponsesText}>
-                    Our support team will respond within 24 hours
-                  </Text>
-                </View>
-              )}
-            </View>
-          </View>
-        ) : (
-          // Tickets List View
-          <View style={styles.ticketsList}>
-            {tickets.map((ticket) => (
-              <TouchableOpacity
-                key={ticket.id}
-                style={styles.ticketCard}
-                onPress={() => setSelectedTicket(ticket)}
-                activeOpacity={0.7}
-              >
-                <View style={styles.ticketHeader}>
-                  <Text style={styles.ticketSubject} numberOfLines={1}>
-                    {ticket.subject}
-                  </Text>
-                  <View
-                    style={[
-                      styles.ticketStatusBadge,
-                      {
-                        backgroundColor: getStatusColor(ticket.status).bg,
-                        borderColor: getStatusColor(ticket.status).border,
-                      },
-                    ]}
-                  >
-                    <Ionicons
-                      name={getStatusIcon(ticket.status) as any}
-                      size={14}
-                      color={getStatusColor(ticket.status).text}
-                    />
-                    <Text
-                      style={[styles.ticketStatusText, { color: getStatusColor(ticket.status).text }]}
-                    >
-                      {ticket.status.replace('-', ' ')}
-                    </Text>
-                  </View>
-                </View>
-                {ticket.ticketId && (
-                  <View style={styles.ticketIdContainer}>
-                    <Text style={styles.ticketIdSmall}>#{ticket.ticketId}</Text>
+              <View style={styles.ticketCardFooter}>
+                <Text style={styles.ticketIdText}>ID: #{ticket.ticketId || ticket.id.substring(0, 8).toUpperCase()}</Text>
+                {ticket.responses && ticket.responses.length > 0 && (
+                  <View style={styles.replyBadge}>
+                    <Ionicons name="return-down-forward" size={14} color={colors.primary} />
+                    <Text style={styles.replyBadgeText}>{ticket.responses.length} Replies</Text>
                   </View>
                 )}
-                <Text style={styles.ticketMessage} numberOfLines={2}>
-                  {ticket.message}
-                </Text>
-                <View style={styles.ticketFooter}>
-                  <Text style={styles.ticketDate}>
-                    {new Date(ticket.createdAt).toLocaleDateString()}
-                  </Text>
-                  {ticket.responses && ticket.responses.length > 0 && (
-                    <Text style={styles.ticketReplies}>
-                      {ticket.responses.length} {ticket.responses.length === 1 ? 'reply' : 'replies'}
-                    </Text>
-                  )}
-                </View>
-              </TouchableOpacity>
-            ))}
-          </View>
-        )}
+              </View>
+            </TouchableOpacity>
+          );
+        })
+      )}
+    </ScrollView>
+  );
 
-        <View style={{ height: 40 }} />
-      </ScrollView>
+  const renderConversation = () => {
+    if (!selectedTicket) return null;
+    const status = getStatusConfig(selectedTicket.status);
+
+    return (
+      <View style={styles.detailContainer}>
+        {/* Detail Header */}
+        <View style={styles.detailHeader}>
+          <TouchableOpacity onPress={() => setSelectedTicket(null)} style={styles.backButton}>
+            <Ionicons name="chevron-back" size={28} color={colors.text} />
+          </TouchableOpacity>
+          <View style={styles.detailHeaderInfo}>
+            <Text style={styles.detailHeaderTitle} numberOfLines={1}>{selectedTicket.subject}</Text>
+            <Text style={styles.detailHeaderSubtitle}>Ticket #{selectedTicket.ticketId || selectedTicket.id.substring(0, 8).toUpperCase()}</Text>
+          </View>
+          <TouchableOpacity onPress={() => navigation.navigate('Support')} style={styles.headerIconButton}>
+            <Ionicons name="add-circle-outline" size={26} color={colors.primary} />
+          </TouchableOpacity>
+        </View>
+
+        {/* Status Bar */}
+        <View style={[styles.statusBar, { borderBottomColor: colors.border }]}>
+          <Ionicons name={status.icon as any} size={18} color={status.color} />
+          <Text style={[styles.statusBarText, { color: status.color }]}>Status: {status.label}</Text>
+        </View>
+
+        <ScrollView
+          style={styles.chatScroll}
+          contentContainerStyle={{ padding: 16, paddingTop: 0 }}
+        >
+          {conversationThread.map((msg) => {
+            const isUser = msg.type === 'user';
+            return (
+              <View
+                key={msg.id}
+                style={[
+                  styles.bubbleWrapper,
+                  isUser ? styles.bubbleWrapperUser : styles.bubbleWrapperSupport
+                ]}
+              >
+                {!isUser && (
+                  <View style={styles.avatar}>
+                    <Text style={styles.avatarText}>{msg.senderName.charAt(0)}</Text>
+                  </View>
+                )}
+                <View style={styles.bubbleContent}>
+                  {!isUser && <Text style={styles.senderName}>{msg.senderName}</Text>}
+                  <View
+                    style={[
+                      styles.bubble,
+                      isUser ? styles.bubbleUser : styles.bubbleSupport
+                    ]}
+                  >
+                    <Text style={[styles.bubbleText, isUser && styles.bubbleTextUser]}>
+                      {msg.message}
+                    </Text>
+                  </View>
+                  <Text style={[styles.bubbleTime, isUser && { textAlign: 'right' }]}>
+                    {formatMessageDate(msg.timestamp)}
+                  </Text>
+                </View>
+              </View>
+            );
+          })}
+        </ScrollView>
+      </View>
+    );
+  };
+
+  return (
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
+      {selectedTicket ? renderConversation() : renderTicketList()}
     </SafeAreaView>
   );
 };
 
-const getStyles = (themeColors: any) => StyleSheet.create({
+const getStyles = (themeColors: any, isDark: boolean) => StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: themeColors.background,
   },
   container: {
     flex: 1,
-    backgroundColor: themeColors.background,
   },
   centerContainer: {
     flex: 1,
-    justifyContent: 'center' as const,
-    alignItems: 'center' as const,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: themeColors.background,
   },
-  header: {
-    padding: 20,
+  listHeader: {
+    marginBottom: 24
   },
-  backButton: {
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-    gap: 8,
-    marginBottom: 24,
-  },
-  backText: {
-    color: themeColors.primary,
-    fontSize: 16,
-    fontWeight: '600' as const,
-  },
-  headerContent: {
-    gap: 12,
-  },
-  iconContainer: {
-    width: 48,
-    height: 48,
-    borderRadius: 12,
-    backgroundColor: themeColors.primary,
-    alignItems: 'center' as const,
-    justifyContent: 'center' as const,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: 'bold' as const,
-    color: themeColors.text,
-  },
-  subtitle: {
-    fontSize: 15,
-    color: themeColors.textSecondary,
-  },
-  emptyContainer: {
-    paddingHorizontal: 20,
-    paddingVertical: 60,
-    alignItems: 'center' as const,
-    backgroundColor: themeColors.surface,
-    marginHorizontal: 16,
-    borderRadius: 16,
-  },
-  emptyIconContainer: {
-    marginBottom: 20,
-  },
-  emptyTitle: {
-    fontSize: 22,
-    fontWeight: 'bold' as const,
-    color: themeColors.text,
+  backButtonList: {
+    marginLeft: -8,
     marginBottom: 8,
+    alignSelf: 'flex-start',
   },
-  emptyText: {
-    fontSize: 15,
-    color: themeColors.textSecondary,
-    marginBottom: 24,
-    textAlign: 'center' as const,
+  listHeaderTitle: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: themeColors.text,
+    letterSpacing: -0.5,
   },
-  contactButton: {
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-    gap: 8,
-    paddingHorizontal: 24,
-    paddingVertical: 14,
-    backgroundColor: themeColors.primary,
-    borderRadius: 12,
-  },
-  contactButtonText: {
-    color: '#fff',
+  listHeaderSubtitle: {
     fontSize: 16,
-    fontWeight: '600' as const,
-  },
-  ticketsList: {
-    paddingHorizontal: 16,
-    gap: 12,
+    color: themeColors.textSecondary,
+    marginTop: 0,
   },
   ticketCard: {
     backgroundColor: themeColors.surface,
-    borderRadius: 16,
-    padding: 16,
+    borderRadius: 20,
+    padding: 20,
+    marginBottom: 16,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: isDark ? 0.3 : 0.08,
+        shadowRadius: 12,
+      },
+      android: {
+        elevation: 4,
+      },
+    }),
     borderWidth: 1,
-    borderColor: themeColors.border,
+    borderColor: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.02)',
   },
-  ticketHeader: {
-    flexDirection: 'row' as const,
-    justifyContent: 'space-between' as const,
-    alignItems: 'flex-start' as const,
-    marginBottom: 8,
-    gap: 12,
+  ticketCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
   },
-  ticketSubject: {
-    flex: 1,
-    fontSize: 17,
-    fontWeight: '600' as const,
-    color: themeColors.text,
-  },
-  ticketStatusBadge: {
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-    gap: 4,
+  statusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingVertical: 5,
     borderRadius: 12,
-    borderWidth: 1,
   },
-  ticketStatusText: {
-    fontSize: 11,
-    fontWeight: '600' as const,
-    textTransform: 'capitalize' as const,
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginRight: 6,
   },
-  ticketIdContainer: {
-    marginBottom: 8,
-  },
-  ticketIdSmall: {
+  statusPillText: {
     fontSize: 12,
-    color: themeColors.primary,
-    fontFamily: 'monospace',
+    fontWeight: '700',
+    textTransform: 'uppercase',
   },
-  ticketMessage: {
+  ticketCardDate: {
+    fontSize: 12,
+    color: themeColors.textSecondary,
+  },
+  ticketCardSubject: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: themeColors.text,
+    marginBottom: 6,
+  },
+  ticketCardMessage: {
     fontSize: 14,
     color: themeColors.textSecondary,
     lineHeight: 20,
-    marginBottom: 12,
-  },
-  ticketFooter: {
-    flexDirection: 'row' as const,
-    justifyContent: 'space-between' as const,
-    alignItems: 'center' as const,
-  },
-  ticketDate: {
-    fontSize: 12,
-    color: themeColors.textSecondary,
-  },
-  ticketReplies: {
-    fontSize: 12,
-    color: themeColors.primary,
-    fontWeight: '600' as const,
-  },
-  detailsContainer: {
-    paddingHorizontal: 16,
-  },
-  backToListButton: {
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-    gap: 8,
     marginBottom: 16,
   },
-  backToListText: {
-    color: themeColors.primary,
-    fontSize: 15,
-    fontWeight: '600' as const,
-  },
-  detailsCard: {
-    backgroundColor: themeColors.surface,
-    borderRadius: 16,
-    overflow: 'hidden' as const,
-  },
-  detailsHeader: {
-    padding: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: themeColors.border,
-    gap: 12,
-  },
-  detailsTitle: {
-    fontSize: 24,
-    fontWeight: 'bold' as const,
-    color: themeColors.text,
-  },
-  detailsInfo: {
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-    gap: 12,
-  },
-  ticketIdBadge: {
-    backgroundColor: themeColors.primary + '20',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: themeColors.primary,
+  ticketCardFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: themeColors.border,
   },
   ticketIdText: {
+    fontSize: 12,
+    color: themeColors.textSecondary,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  replyBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  replyBadgeText: {
+    fontSize: 13,
+    fontWeight: '600',
     color: themeColors.primary,
-    fontSize: 12,
-    fontFamily: 'monospace',
-    fontWeight: '600' as const,
+    marginLeft: 4,
   },
-  detailsDate: {
-    color: themeColors.textSecondary,
-    fontSize: 13,
+  emptyContainer: {
+    alignItems: 'center',
+    paddingVertical: 100,
   },
-  statusBadge: {
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 12,
-    alignSelf: 'flex-start' as const,
+  emptyIconCircle: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: themeColors.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 20,
   },
-  statusText: {
-    fontSize: 12,
-    fontWeight: '600' as const,
-  },
-  messageSection: {
-    padding: 20,
-  },
-  messageSectionTitle: {
-    fontSize: 11,
-    fontWeight: '600' as const,
-    color: themeColors.textSecondary,
-    letterSpacing: 1,
-    marginBottom: 12,
-  },
-  messageCard: {
-    backgroundColor: themeColors.card,
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: themeColors.cardBorder,
-  },
-  messageText: {
-    color: themeColors.text,
-    fontSize: 15,
-    lineHeight: 22,
-  },
-  messageDivider: {
-    height: 1,
-    backgroundColor: themeColors.border,
-    marginVertical: 12,
-  },
-  messageDate: {
-    color: themeColors.textSecondary,
-    fontSize: 13,
-  },
-  responsesSection: {
-    padding: 20,
-    paddingTop: 0,
-    gap: 12,
-  },
-  responseCard: {
-    backgroundColor: themeColors.primary + '20',
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: themeColors.primary,
-  },
-  responseHeader: {
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-    gap: 12,
-    marginBottom: 12,
-  },
-  responseAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    backgroundColor: themeColors.primary,
-    alignItems: 'center' as const,
-    justifyContent: 'center' as const,
-  },
-  responseAvatarText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold' as const,
-  },
-  responseAdminName: {
-    color: themeColors.text,
-    fontSize: 15,
-    fontWeight: '600' as const,
-  },
-  responseDate: {
-    color: themeColors.textSecondary,
-    fontSize: 12,
-  },
-  responseText: {
-    color: themeColors.text,
-    fontSize: 15,
-    lineHeight: 22,
-  },
-  noResponsesCard: {
-    padding: 40,
-    alignItems: 'center' as const,
-    gap: 12,
-  },
-  noResponsesTitle: {
+  emptyTitle: {
     fontSize: 18,
-    fontWeight: '600' as const,
+    fontWeight: 'bold',
     color: themeColors.text,
+    marginBottom: 8,
   },
-  noResponsesText: {
+  emptySubtitle: {
     fontSize: 14,
     color: themeColors.textSecondary,
-    textAlign: 'center' as const,
+    textAlign: 'center',
+    paddingHorizontal: 40,
+    lineHeight: 20,
+    marginBottom: 24,
+  },
+  actionButton: {
+    backgroundColor: themeColors.primary,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 25,
+  },
+  actionButtonText: {
+    color: '#fff',
+    fontWeight: 'bold',
+    fontSize: 16,
+  },
+  detailContainer: {
+    flex: 1,
+  },
+  detailHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: themeColors.border,
+  },
+  backButton: {
+    padding: 8,
+  },
+  detailHeaderInfo: {
+    flex: 1,
+    marginLeft: 4,
+  },
+  detailHeaderTitle: {
+    fontSize: 17,
+    fontWeight: 'bold',
+    color: themeColors.text,
+  },
+  detailHeaderSubtitle: {
+    fontSize: 12,
+    color: themeColors.textSecondary,
+    marginTop: 1,
+  },
+  headerIconButton: {
+    padding: 8,
+    marginRight: 4,
+  },
+  statusBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: themeColors.surface,
+    borderBottomWidth: 1,
+  },
+  statusBarText: {
+    fontSize: 13,
+    fontWeight: '600',
+    marginLeft: 8,
+  },
+  chatScroll: {
+    flex: 1,
+  },
+  bubbleWrapper: {
+    flexDirection: 'row',
+    marginBottom: 20,
+    maxWidth: '85%',
+  },
+  bubbleWrapperUser: {
+    alignSelf: 'flex-end',
+    flexDirection: 'row-reverse',
+  },
+  bubbleWrapperSupport: {
+    alignSelf: 'flex-start',
+  },
+  avatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: themeColors.secondary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 10,
+    marginTop: 2,
+  },
+  avatarText: {
+    color: '#fff',
+    fontWeight: 'bold',
+    fontSize: 16,
+  },
+  bubbleContent: {
+    flex: 1,
+  },
+  senderName: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: themeColors.textSecondary,
+    marginBottom: 4,
+    marginLeft: 4,
+  },
+  bubble: {
+    padding: 14,
+    borderRadius: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  bubbleUser: {
+    backgroundColor: themeColors.primary,
+    borderBottomRightRadius: 4,
+  },
+  bubbleSupport: {
+    backgroundColor: themeColors.surface,
+    borderBottomLeftRadius: 4,
+    borderWidth: 1,
+    borderColor: themeColors.border,
+  },
+  bubbleText: {
+    fontSize: 15,
+    lineHeight: 20,
+    color: themeColors.text,
+  },
+  bubbleTextUser: {
+    color: '#fff',
+  },
+  bubbleTime: {
+    fontSize: 11,
+    color: themeColors.textSecondary,
+    marginTop: 6,
+    marginHorizontal: 4,
   },
 });
 

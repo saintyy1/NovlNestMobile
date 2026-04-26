@@ -19,6 +19,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import CachedImage from '../../components/CachedImage';
 import ClassicsBadge from '../../components/ClassicsBadge';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -44,9 +45,11 @@ import { db } from '../../firebase/config';
 import { Poem } from '../../types/poem';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useAlert } from '../../contexts/AlertContext';
 import { trackPoemView, trackContentInteraction } from '../../utils/Analytics-utils';
 import { withCache, CACHE_TTL, invalidateCache, invalidateByPrefix } from '../../utils/cache';
 import { sendPushNotification } from '../../services/PushNotificationService';
+import { hydrateComments } from '../../utils/commentUtils';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -72,6 +75,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
   const poemId = poemIdParam || id;
   const { currentUser, updatePoemLibrary, toggleFollow } = useAuth();
   const { colors } = useTheme();
+  const { showAlert, showToast } = useAlert();
   const insets = useSafeAreaInsets();
 
   const [poem, setPoem] = useState<Poem | null>(null);
@@ -123,7 +127,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
   const [showTipModal, setShowTipModal] = useState(false);
   const [showCommentsModal, setShowCommentsModal] = useState(false);
 
-  const styles = getStyles(colors);
+  const styles = getStyles(colors, insets);
 
   const buildCommentTree = useCallback((allComments: Comment[], parentId: string | null = null): Comment[] => {
     const children: Comment[] = [];
@@ -137,67 +141,74 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
   }, []);
 
   // Fetch poem data
+  const fetchpoem = useCallback(async () => {
+    if (!poemId) {
+      setError('Poem ID is missing');
+      setLoading(false);
+      return;
+    }
+    try {
+      setLoading(true);
+      const poemDocRef = doc(db, 'poems', poemId);
+
+      const poemData = await withCache(`poem_${poemId}`, async () => {
+        const poemDoc = await getDoc(poemDocRef);
+        if (poemDoc.exists()) {
+          return { id: poemDoc.id, ...poemDoc.data() } as Poem;
+        }
+        throw new Error('poem not found');
+      }, CACHE_TTL.CONTENT);
+
+      setPoem(poemData);
+
+      // Track poem view for analytics
+      trackPoemView({
+        poemId: poemData.id,
+        title: poemData.title,
+        authorId: poemData.poetId,
+        authorName: poemData.poetName,
+        genres: poemData.genres,
+      });
+
+      if (currentUser) {
+        // Increment view count only once per user
+        const viewKey = `poem_view_${poemId}_${currentUser.uid}`;
+        const hasViewed = await AsyncStorage.getItem(viewKey);
+
+        if (!hasViewed) {
+          try {
+            await updateDoc(poemDocRef, { views: increment(1) });
+            await AsyncStorage.setItem(viewKey, 'true');
+            // Invalidate cache immediately
+            await invalidateCache(`poem_${poemId}`);
+            setPoem(prev => prev ? { ...prev, views: (prev.views || 0) + 1 } : null);
+          } catch (error) {
+            console.error('Error incrementing view count:', error);
+          }
+        }
+      }
+    } catch (error: any) {
+      if (error.message === 'poem not found') {
+        setError('poem not found');
+      } else {
+        console.error('Error fetching poem:', error);
+        setError('Failed to load poem');
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [poemId, currentUser?.uid]);
+
   useEffect(() => {
-    const fetchpoem = async () => {
-      if (!poemId) {
-        setError('Poem ID is missing');
-        setLoading(false);
-        return;
-      }
-      try {
-        setLoading(true);
-        const poemDocRef = doc(db, 'poems', poemId);
-
-        const poemData = await withCache(`poem_${poemId}`, async () => {
-          const poemDoc = await getDoc(poemDocRef);
-          if (poemDoc.exists()) {
-            return { id: poemDoc.id, ...poemDoc.data() } as Poem;
-          }
-          throw new Error('poem not found');
-        }, CACHE_TTL.CONTENT);
-
-        setPoem(poemData);
-
-        // Track poem view for analytics
-        trackPoemView({
-          poemId: poemData.id,
-          title: poemData.title,
-          authorId: poemData.poetId,
-          authorName: poemData.poetName,
-          genres: poemData.genres,
-        });
-
-        if (currentUser) {
-          // Increment view count only once per user
-          const viewKey = `poem_view_${poemId}_${currentUser.uid}`;
-          const hasViewed = await AsyncStorage.getItem(viewKey);
-
-          if (!hasViewed) {
-            try {
-              await updateDoc(poemDocRef, { views: increment(1) });
-              await AsyncStorage.setItem(viewKey, 'true');
-              // Invalidate cache immediately
-              await invalidateCache(`poem_${poemId}`);
-              setPoem(prev => prev ? { ...prev, views: (prev.views || 0) + 1 } : null);
-            } catch (error) {
-              console.error('Error incrementing view count:', error);
-            }
-          }
-        }
-      } catch (error: any) {
-        if (error.message === 'poem not found') {
-          setError('poem not found');
-        } else {
-          console.error('Error fetching poem:', error);
-          setError('Failed to load poem');
-        }
-      } finally {
-        setLoading(false);
-      }
-    };
-
     fetchpoem();
-  }, [poemId]); // Removed currentUser dependency
+  }, [fetchpoem]);
+
+  // 🚀 Refresh on focus to catch changes from other screens
+  useFocusEffect(
+    useCallback(() => {
+      fetchpoem();
+    }, [fetchpoem])
+  );
 
   // Handle user-specific state (liked, isFollowing)
   useEffect(() => {
@@ -241,39 +252,12 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
     const unsubscribe = onSnapshot(commentsQuery, async (snapshot) => {
       setCommentsLoading(true);
       const commentsData: Comment[] = [];
-      const uniqueUserIds = new Set<string>();
-
       snapshot.forEach((doc) => {
-        const comment = { id: doc.id, ...doc.data() } as Comment;
-        commentsData.push(comment);
-        uniqueUserIds.add(comment.userId);
+        commentsData.push({ id: doc.id, ...doc.data() } as Comment);
       });
 
-      // Fetch user data for comments
-      const usersMap = new Map<string, { displayName: string; photoURL?: string }>();
-      const userPromises = Array.from(uniqueUserIds).map(async (uid) => {
-        const userDoc = await getDoc(doc(db, 'users', uid));
-        if (userDoc.exists()) {
-          const userData = userDoc.data();
-          usersMap.set(uid, {
-            displayName: userData.displayName || 'Anonymous',
-            photoURL: userData.photoURL,
-          });
-        } else {
-          usersMap.set(uid, { displayName: 'Deleted User' });
-        }
-      });
-
-      await Promise.all(userPromises);
-
-      const enrichedComments = commentsData.map((comment) => {
-        const userData = usersMap.get(comment.userId);
-        return {
-          ...comment,
-          userName: userData?.displayName || comment.userName,
-          userPhoto: userData?.photoURL || comment.userPhoto,
-        };
-      });
+      // Hydrate all comments with fresh profile info using the centralized utility
+      const enrichedComments = await hydrateComments(commentsData);
 
       const topLevelComments = enrichedComments.filter((comment) => !comment.parentId);
       const organizedComments = topLevelComments.map((comment) => ({
@@ -317,7 +301,8 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
             const classicGenreItems: Poem[] = [];
 
             genreSnapshot.forEach((doc) => {
-              const data = { id: doc.id, ...doc.data() } as Poem;
+              const { content, ...rest } = doc.data() as any;
+              const data = { id: doc.id, ...rest } as Poem;
               if (!seenIds.has(data.id)) {
                 if (data.publicDomain) {
                   classicGenreItems.push(data);
@@ -343,7 +328,8 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
             const classicLatestItems: Poem[] = [];
 
             latestSnapshot.forEach((doc) => {
-              const data = { id: doc.id, ...doc.data() } as Poem;
+              const { content, ...rest } = doc.data() as any;
+              const data = { id: doc.id, ...rest } as Poem;
               if (!seenIds.has(data.id)) {
                 if (data.publicDomain) {
                   classicLatestItems.push(data);
@@ -371,7 +357,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
 
   const handleLike = async () => {
     if (!poem?.id || !currentUser) {
-      Alert.alert('Error', 'Please login to like poems');
+      showAlert({ title: 'Error', message: 'Please login to like poems', type: 'info' });
       return;
     }
 
@@ -383,12 +369,12 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
 
     try {
       const poemRef = doc(db, 'poems', poem.id);
-      
+
       // Full optimistic update
       setLiked(newLikeStatus);
       setPoem(prev => {
         if (!prev) return null;
-        const newLikedBy = newLikeStatus 
+        const newLikedBy = newLikeStatus
           ? [...(prev.likedBy || []), currentUser.uid]
           : (prev.likedBy || []).filter(id => id !== currentUser.uid);
         return { ...prev, likes: newLikedBy.length, likedBy: newLikedBy };
@@ -403,18 +389,18 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
 
       // Verify with server ONLY if this is the last pending request
       activeLikeRequests.current--;
-      
+
       if (activeLikeRequests.current === 0) {
         const updatedpoemDoc = await getDoc(poemRef);
         if (updatedpoemDoc.exists() && activeLikeRequests.current === 0) {
           const serverData = { ...updatedpoemDoc.data(), id: poem.id } as Poem;
-          
+
           // Double verify server sync: if likes field doesn't match likedBy length, fix it
           if (serverData.likes !== (serverData.likedBy?.length || 0)) {
             await updateDoc(poemRef, { likes: serverData.likedBy?.length || 0 });
             serverData.likes = serverData.likedBy?.length || 0;
           }
-          
+
           setPoem(serverData);
 
           // After successful update, invalidate relevant caches to ensure fresh data app-wide
@@ -430,13 +416,17 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
         setLiked(previousLiked);
         setPoem(previousPoem);
       }
-      Alert.alert('Error', 'Failed to update like status');
+      showToast({ message: 'Failed to update like status', type: 'error' });
     }
   };
 
   const handleFollowToggle = async () => {
     if (!currentUser) {
-      Alert.alert('Login Required', 'Please login to follow authors');
+      showAlert({
+        title: 'Login Required',
+        message: 'Please login to follow poets',
+        type: 'info'
+      });
       return;
     }
     if (!poem?.poetId) return;
@@ -453,7 +443,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
 
     } catch (error) {
       console.error('Error toggling follow:', error);
-      Alert.alert('Error', 'Failed to update follow status');
+      showToast({ message: 'Failed to update follow status', type: 'error' });
       // Revert on error
       setIsFollowing(isFollowing);
     } finally {
@@ -493,8 +483,8 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
         // Send Push Notification
         await sendPushNotification(
           poem.poetId,
-          `${currentUser.displayName || "Someone"} 💬`,
-          `Commented on your poem "${poem.title}"`,
+          `${currentUser.displayName || "Someone"} commented on your poem`,
+          `"${poem.title}"`,
           { url: `novlnest://poem/${poem.id}` }
         )
       }
@@ -504,10 +494,10 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
       if (poem) {
         await invalidateCache(`poem_${poem.id}`);
       }
-      Alert.alert('Success', 'Comment posted successfully!');
+      showToast({ message: 'Comment posted successfully!', type: 'success' });
     } catch (error) {
       console.error('Error submitting comment:', error);
-      Alert.alert('Error', 'Failed to post comment');
+      showToast({ message: 'Failed to post comment', type: 'error' });
     } finally {
       setSubmittingComment(false);
     }
@@ -586,10 +576,10 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
       if (poem) {
         await invalidateCache(`poem_${poem.id}`);
       }
-      Alert.alert('Success', 'Reply posted successfully!');
+      showToast({ message: 'Reply posted successfully!', type: 'success' });
     } catch (error) {
       console.error('Error submitting reply:', error);
-      Alert.alert('Error', 'Failed to post reply');
+      showToast({ message: 'Failed to post reply', type: 'error' });
     } finally {
       setSubmittingReply(false);
     }
@@ -598,10 +588,11 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
   const handleDeleteComment = async (commentId: string) => {
     if (!currentUser) return;
 
-    Alert.alert(
-      'Delete Comment',
-      'Are you sure you want to delete this comment? This action cannot be undone.',
-      [
+    showAlert({
+      title: 'Delete Comment',
+      message: 'Are you sure you want to delete this comment? This action cannot be undone.',
+      type: 'warning',
+      buttons: [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete',
@@ -614,22 +605,22 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
               if (poem) {
                 await invalidateCache(`poem_${poem.id}`);
               }
-              Alert.alert('Success', 'Comment deleted successfully!');
+              showToast({ message: 'Comment deleted successfully!', type: 'success' });
             } catch (error) {
               console.error('Error deleting comment:', error);
-              Alert.alert('Error', 'Failed to delete comment');
+              showToast({ message: 'Failed to delete comment', type: 'error' });
             } finally {
               setDeletingComment(null);
             }
           },
         },
       ]
-    );
+    });
   };
 
   const handleCopyComment = async (text: string) => {
     await Clipboard.setStringAsync(text);
-    Alert.alert('Copied', 'Comment copied to clipboard');
+    showToast({ message: 'Comment copied to clipboard', type: 'success' });
   };
 
   const handleEditSubmit = async () => {
@@ -649,10 +640,10 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
       if (poem) {
         await invalidateCache(`poem_${poem.id}`);
       }
-      Alert.alert('Success', 'Comment updated successfully!');
+      showToast({ message: 'Comment updated successfully!', type: 'success' });
     } catch (error) {
       console.error('Error updating comment:', error);
-      Alert.alert('Error', 'Failed to update comment');
+      showToast({ message: 'Failed to update comment', type: 'error' });
     } finally {
       setSubmittingComment(false);
     }
@@ -661,14 +652,55 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
   const handleCommentLike = async (commentId: string, isLiked: boolean) => {
     if (!currentUser) return;
 
+    // Store previous state for potential reversal
+    const previousComments = [...comments];
+
+    // Define a recursive function to update the comment within the tree
+    const updateCommentInTree = (list: Comment[]): Comment[] => {
+      return list.map((c) => {
+        if (c.id === commentId) {
+          const newLikedBy = isLiked
+            ? (c.likedBy || []).filter((uid) => uid !== currentUser.uid)
+            : [...(c.likedBy || []), currentUser.uid];
+
+          return {
+            ...c,
+            likedBy: newLikedBy,
+            likes: newLikedBy.length,
+          };
+        }
+        if (c.replies && c.replies.length > 0) {
+          return {
+            ...c,
+            replies: updateCommentInTree(c.replies),
+          };
+        }
+        return c;
+      });
+    };
+
+    // Apply optimistic update immediately
+    setComments((prev) => updateCommentInTree(prev));
+
     try {
       const commentRef = doc(db, 'poemComments', commentId);
-      const commentDoc = await getDoc(commentRef);
 
-      if (!commentDoc.exists()) return;
+      // Find the comment data from our existing state instead of fetching it again
+      const findCommentById = (list: Comment[], id: string): Comment | null => {
+        for (const c of list) {
+          if (c.id === id) return c;
+          if (c.replies) {
+            const found = findCommentById(c.replies, id);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
 
-      const commentData = commentDoc.data();
-      const commentAuthorId = commentData.userId;
+      const targetComment = findCommentById(previousComments, commentId);
+      if (!targetComment) return;
+
+      const commentAuthorId = targetComment.userId;
 
       if (isLiked) {
         await updateDoc(commentRef, {
@@ -701,23 +733,26 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
               poemId: poem?.id,
               poemTitle: poem?.title,
               commentId: commentId,
-              commentContent: commentData.content,
+              commentContent: targetComment.content,
               createdAt: new Date().toISOString(),
               read: false,
             });
 
-            // Send Push Notification
-            await sendPushNotification(
+            // Send Push Notification in the background
+            sendPushNotification(
               commentAuthorId,
               `${currentUser.displayName || 'Someone'} ❤️`,
               `Liked your comment on "${poem?.title || 'a poem'}"`,
               { url: `novlnest://poem/${poem?.id}` }
-            );
+            ).catch(err => console.error("Error sending push notification:", err));
           }
         }
       }
     } catch (error) {
       console.error('Error updating comment like:', error);
+      // Revert to previous state if backend update fails
+      setComments(previousComments);
+      showToast({ message: 'Failed to update like status. Please try again.', type: 'error' });
     }
   };
 
@@ -887,7 +922,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
             >
               <Ionicons
                 name={comment.likedBy?.includes(currentUser?.uid || '') ? 'heart' : 'heart-outline'}
-                size={16}
+                size={24}
                 color={comment.likedBy?.includes(currentUser?.uid || '') ? '#EF4444' : '#9CA3AF'}
               />
               <Text style={styles.commentLikeCount}>{comment.likes || 0}</Text>
@@ -926,7 +961,16 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
         <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
           {/* Header */}
           <View style={styles.header}>
-            <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerButton}>
+            <TouchableOpacity
+              onPress={() => {
+                if (navigation.canGoBack()) {
+                  navigation.goBack();
+                } else {
+                  navigation.replace('MainTabs');
+                }
+              }}
+              style={styles.headerButton}
+            >
               <Ionicons name="arrow-back" size={24} color={colors.text} />
             </TouchableOpacity>
             <View style={styles.headerActions}>
@@ -936,14 +980,18 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
             </View>
           </View>
 
-          <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+          <ScrollView
+            style={styles.container}
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 20) }}
+          >
             {/* Cover and Info */}
             <View style={styles.coverSection}>
               {poem.coverImage ? (
                 <CachedImage
                   uri={getFirebaseDownloadUrl(poem.coverImage)}
                   style={styles.coverImage}
-                  resizeMode="cover"
+                  contentFit="cover"
                   placeholderColor={colors.backgroundSecondary}
                 />
               ) : (
@@ -1095,7 +1143,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
                           <CachedImage
                             uri={getFirebaseDownloadUrl(item.coverSmallImage || item.coverImage || '')}
                             style={styles.relatedCover}
-                            resizeMode="cover"
+                            contentFit="cover"
                             placeholderColor={colors.backgroundSecondary}
                           />
                         ) : (
@@ -1218,7 +1266,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
                   style={styles.copyButton}
                   onPress={async () => {
                     await Clipboard.setStringAsync(authorData.supportLink ?? '');
-                    Alert.alert('Success', 'Payment details copied to clipboard!');
+                    showToast({ message: 'Payment details copied to clipboard!', type: 'success' });
                   }}
                 >
                   <Ionicons name="copy-outline" size={20} color="#fff" />
@@ -1263,6 +1311,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
                   style={styles.commentsModalList}
                   showsVerticalScrollIndicator={true}
                   keyboardShouldPersistTaps="handled"
+                  contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 20) }}
                 >
                   {comments.map((comment) => renderComment(comment))}
                 </ScrollView>
@@ -1316,7 +1365,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
                         placeholderTextColor="#9CA3AF"
                         style={styles.commentsModalInput}
                         multiline
-                        maxLength={500}
+                        maxLength={1000}
                       />
                       <TouchableOpacity
                         onPress={() => {
@@ -1439,7 +1488,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
   );
 };
 
-const getStyles = (themeColors: any) => StyleSheet.create({
+const getStyles = (themeColors: any, insets: any) => StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: themeColors.background,
@@ -2178,7 +2227,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     backgroundColor: themeColors.surface,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    paddingBottom: Platform.OS === 'ios' ? 40 : 24,
+    paddingBottom: Math.max(insets.bottom, 24),
     paddingHorizontal: 16,
     alignItems: 'center',
   },

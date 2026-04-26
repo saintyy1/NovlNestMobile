@@ -8,7 +8,6 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
-  Alert,
   ActivityIndicator,
   ScrollView,
   Image,
@@ -19,6 +18,7 @@ import * as AppleAuthentication from 'expo-apple-authentication';
 import { GoogleAuthProvider, OAuthProvider, signInWithCredential } from 'firebase/auth';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useAlert } from '../../contexts/AlertContext';
 import { spacing, typography } from '../../theme';
 import { auth } from '../../firebase/config';
 import { trackSignUp } from '../../utils/Analytics-utils';
@@ -30,8 +30,10 @@ export const SignupScreen = ({ navigation }: any) => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const confirmationRef = React.useRef(false);
   const { register, loading } = useAuth();
   const { colors } = useTheme();
+  const { showAlert, showToast } = useAlert();
   const [isRegistering, setIsRegistering] = useState(false);
   const [isGoogleSignInAvailable, setIsGoogleSignInAvailable] = useState(false);
 
@@ -102,10 +104,7 @@ export const SignupScreen = ({ navigation }: any) => {
       }
 
       console.error('Apple Sign-In Error:', error);
-      Alert.alert(
-        'Sign in failed',
-        error.message || 'Unable to sign in with Apple'
-      );
+      showToast({ message: error.message || 'Unable to sign in with Apple', type: 'error' });
     }
   };
 
@@ -121,7 +120,7 @@ export const SignupScreen = ({ navigation }: any) => {
       await GoogleSignin.signOut();
 
       // Check if your device supports Google Play
-      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+      await GoogleSignin.hasPlayServices();
 
       // Get the users ID token
       const signInResult = await GoogleSignin.signIn();
@@ -148,23 +147,23 @@ export const SignupScreen = ({ navigation }: any) => {
         return;
       }
       console.error('Google Sign-Up Error:', error);
-      Alert.alert('Error', error.message || 'Failed to sign up with Google');
+      showToast({ message: error.message || 'Failed to sign up with Google', type: 'error' });
     }
   };
 
   const handleSignup = async () => {
     if (!name || !email || !password || !confirmPassword) {
-      Alert.alert('Error', 'Please fill in all fields');
+      showToast({ message: 'Please fill in all fields', type: 'error' });
       return;
     }
 
     if (password !== confirmPassword) {
-      Alert.alert('Error', 'Passwords do not match');
+      showToast({ message: 'Passwords do not match', type: 'error' });
       return;
     }
 
     if (password.length < 6) {
-      Alert.alert('Error', 'Password must be at least 6 characters');
+      showToast({ message: 'Password must be at least 6 characters', type: 'error' });
       return;
     }
 
@@ -178,33 +177,33 @@ export const SignupScreen = ({ navigation }: any) => {
       }
 
       setIsRegistering(false); // Reset to allow OK button click on alert
-      Alert.alert(
-        'Account Created!',
-        'Please check your email to verify your account.',
-        [{ text: 'OK' }]
-      );
+      showAlert({
+        title: 'Welcome to NovlNest!',
+        message: 'Your account has been created. A verification link has been sent to your email. You can start using the app now, but please verify within 24 hours to maintain access.',
+        type: 'success',
+        buttons: [{ text: 'Great!' }]
+      });
       // Navigation will happen automatically via auth state listener
     } catch (error: any) {
       setIsRegistering(false);
       let errorMessage = 'Failed to create account';
 
-      if (error.message === 'This display name is already taken. Try another one.') {
-        errorMessage = error.message;
-      } else if (error.message === 'Display name must be at least 2 characters long') {
-        errorMessage = error.message;
-      } else if (error.message === 'Display name must not exceed 50 characters') {
-        errorMessage = error.message;
-      } else if (error.message === 'Display name can only contain letters, numbers, spaces, hyphens, and apostrophes') {
-        errorMessage = error.message;
-      } else if (error.code === 'auth/email-already-in-use') {
+      // 1. Check for specific Firebase auth codes
+      if (error.code === 'auth/email-already-in-use') {
         errorMessage = 'This email is already registered';
       } else if (error.code === 'auth/invalid-email') {
         errorMessage = 'Invalid email address';
       } else if (error.code === 'auth/weak-password') {
         errorMessage = 'Password is too weak';
+      } else if (error.code === 'auth/network-request-failed') {
+        errorMessage = 'Network error. Please check your connection.';
+      }
+      // 2. If no code, or it's a custom error, use the message directly
+      else if (error.message) {
+        errorMessage = error.message;
       }
 
-      Alert.alert('Signup Failed', errorMessage);
+      showToast({ message: errorMessage, type: 'error' });
     }
   };
 

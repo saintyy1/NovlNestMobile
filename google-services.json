@@ -1,0 +1,62 @@
+{
+  "project_info": {
+    "project_number": "171117861268",
+    "project_id": "novelnest-50ab1",
+    "storage_bucket": "novelnest-50ab1.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:171117861268:android:4c82572e54fda927955781",
+        "android_client_info": {
+          "package_name": "com.novlnest"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "171117861268-ea1stgnsldireqec4o711p70hqch6pt3.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.novlnest",
+            "certificate_hash": "3480e924c420af6b5e1b8ad70601e92908e4423e"
+          }
+        },
+        {
+          "client_id": "171117861268-og64cj3qdq8d0pn4b779i1v01lruv5s2.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.novlnest",
+            "certificate_hash": "427fe9b15917d1ec9ffd301584f9e1d59a94c758"
+          }
+        },
+        {
+          "client_id": "171117861268-msg103kefn7trmdmsmj586t754h8fjh8.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCgADBhEFO1tid5xtv5_2QsQQ7mpIw-n9g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "171117861268-msg103kefn7trmdmsmj586t754h8fjh8.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "171117861268-nj2vicso0ia0ss2jj3vllago0dbm9lno.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.tolu.novlnest"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

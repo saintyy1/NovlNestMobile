@@ -85,7 +85,10 @@ export const deleteReadingProgress = async (userId: string, novelId: string) => 
     try {
         const progressRef = doc(db, 'readingProgress', `${userId}_${novelId}`);
         await deleteDoc(progressRef);
-    } catch (error) {
-        console.error('Error deleting reading progress:', error);
+    } catch (error: any) {
+        // Only log if it's NOT a permission issue, as cleanup is non-critical
+        if (error.code !== 'permission-denied') {
+            console.error('Error deleting reading progress:', error);
+        }
     }
 };

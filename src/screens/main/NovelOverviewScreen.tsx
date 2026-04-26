@@ -16,11 +16,14 @@ import {
   Platform,
   Modal,
   Pressable,
+  Animated,
+  Easing,
 } from 'react-native';
 import CachedImage from '../../components/CachedImage';
 import ClassicsBadge from '../../components/ClassicsBadge';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import {
@@ -47,7 +50,9 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { trackNovelView, trackContentInteraction, trackShare } from '../../utils/Analytics-utils';
 import { withCache, CACHE_TTL, invalidateCache, invalidateByPrefix } from '../../utils/cache';
+import { useAlert } from '../../contexts/AlertContext';
 import { sendPushNotification } from '../../services/PushNotificationService';
+import { hydrateComments } from '../../utils/commentUtils';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -72,7 +77,8 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
   const { novelId: novelIdParam, id } = route.params;
   const novelId = novelIdParam || id;
   const { currentUser, updateUserLibrary, toggleFollow } = useAuth();
-  const { colors } = useTheme();
+  const { showAlert, showToast } = useAlert();
+  const { colors, isDark } = useTheme();
   const insets = useSafeAreaInsets();
 
   const [novel, setNovel] = useState<Novel | null>(null);
@@ -121,8 +127,25 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
 
   const [showTipModal, setShowTipModal] = useState(false);
   const [showCommentsModal, setShowCommentsModal] = useState(false);
+  const [selectedCharacter, setSelectedCharacter] = useState<any | null>(null);
+  const spotlightAnim = useRef(new Animated.Value(0)).current;
+  const scrollY = useRef(new Animated.Value(0)).current;
 
-  const styles = getStyles(colors);
+  useEffect(() => {
+    if (selectedCharacter) {
+      scrollY.setValue(0);
+      Animated.spring(spotlightAnim, {
+        toValue: 1,
+        useNativeDriver: true,
+        tension: 50,
+        friction: 8,
+      }).start();
+    } else {
+      spotlightAnim.setValue(0);
+    }
+  }, [selectedCharacter]);
+
+  const styles = getStyles(colors, insets);
 
   const buildCommentTree = useCallback((allComments: Comment[], parentId: string | null = null): Comment[] => {
     const children: Comment[] = [];
@@ -136,68 +159,74 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
   }, []);
 
   // Fetch novel data
+  const fetchNovel = useCallback(async () => {
+    if (!novelId) {
+      setError('Novel ID is missing');
+      setLoading(false);
+      return;
+    }
+    try {
+      setLoading(true);
+      const novelDocRef = doc(db, 'novels', novelId);
+
+      const novelData = await withCache(`novel_${novelId}`, async () => {
+        const novelDoc = await getDoc(novelDocRef);
+        if (novelDoc.exists()) {
+          return { id: novelDoc.id, ...novelDoc.data() } as Novel;
+        }
+        throw new Error('Novel not found');
+      }, CACHE_TTL.CONTENT);
+
+      setNovel(novelData);
+
+      // Track novel view for analytics
+      trackNovelView({
+        novelId: novelData.id,
+        title: novelData.title,
+        authorId: novelData.authorId,
+        authorName: novelData.authorName,
+        genres: novelData.genres,
+      });
+
+      if (currentUser) {
+        // Increment view count only once per user
+        const viewKey = `novel_view_${novelId}_${currentUser.uid}`;
+        const hasViewed = await AsyncStorage.getItem(viewKey);
+
+        if (!hasViewed) {
+          try {
+            await updateDoc(novelDocRef, { views: increment(1) });
+            await AsyncStorage.setItem(viewKey, 'true');
+            // Invalidate cache immediately so return visits show updated view count
+            await invalidateCache(`novel_${novelId}`);
+            setNovel(prev => prev ? { ...prev, views: (prev.views || 0) + 1 } : null);
+          } catch (error) {
+            console.error('Error incrementing view count:', error);
+          }
+        }
+      }
+    } catch (error: any) {
+      if (error.message === 'Novel not found') {
+        setError('Novel not found');
+      } else {
+        console.error('Error fetching novel:', error);
+        setError('Failed to load novel');
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [novelId, currentUser?.uid]);
+
   useEffect(() => {
-    const fetchNovel = async () => {
-      if (!novelId) {
-        setError('Novel ID is missing');
-        setLoading(false);
-        return;
-      }
-      try {
-        setLoading(true);
-        const novelDocRef = doc(db, 'novels', novelId);
-
-
-        const novelData = await withCache(`novel_${novelId}`, async () => {
-          const novelDoc = await getDoc(novelDocRef);
-          if (novelDoc.exists()) {
-            return { id: novelDoc.id, ...novelDoc.data() } as Novel;
-          }
-          throw new Error('Novel not found');
-        }, CACHE_TTL.CONTENT);
-
-        setNovel(novelData);
-
-        // Track novel view for analytics
-        trackNovelView({
-          novelId: novelData.id,
-          title: novelData.title,
-          authorId: novelData.authorId,
-          authorName: novelData.authorName,
-          genres: novelData.genres,
-        });
-
-        if (currentUser) {
-          // Increment view count only once per user
-          const viewKey = `novel_view_${novelId}_${currentUser.uid}`;
-          const hasViewed = await AsyncStorage.getItem(viewKey);
-
-          if (!hasViewed) {
-            try {
-              await updateDoc(novelDocRef, { views: increment(1) });
-              await AsyncStorage.setItem(viewKey, 'true');
-              // Invalidate cache immediately so return visits show updated view count
-              await invalidateCache(`novel_${novelId}`);
-              setNovel(prev => prev ? { ...prev, views: (prev.views || 0) + 1 } : null);
-            } catch (error) {
-              console.error('Error incrementing view count:', error);
-            }
-          }
-        }
-      } catch (error: any) {
-        if (error.message === 'Novel not found') {
-          setError('Novel not found');
-        } else {
-          console.error('Error fetching novel:', error);
-          setError('Failed to load novel');
-        }
-      } finally {
-        setLoading(false);
-      }
-    };
-
     fetchNovel();
-  }, [novelId]); // Removed currentUser dependency
+  }, [fetchNovel]);
+
+  // 🚀 Refresh on focus to catch changes from other screens
+  useFocusEffect(
+    useCallback(() => {
+      fetchNovel();
+    }, [fetchNovel])
+  );
 
   // Handle user-specific state (liked, isFollowing)
   useEffect(() => {
@@ -241,39 +270,12 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
     const unsubscribe = onSnapshot(commentsQuery, async (snapshot) => {
       setCommentsLoading(true);
       const commentsData: Comment[] = [];
-      const uniqueUserIds = new Set<string>();
-
       snapshot.forEach((doc) => {
-        const comment = { id: doc.id, ...doc.data() } as Comment;
-        commentsData.push(comment);
-        uniqueUserIds.add(comment.userId);
+        commentsData.push({ id: doc.id, ...doc.data() } as Comment);
       });
 
-      // Fetch user data for comments
-      const usersMap = new Map<string, { displayName: string; photoURL?: string }>();
-      const userPromises = Array.from(uniqueUserIds).map(async (uid) => {
-        const userDoc = await getDoc(doc(db, 'users', uid));
-        if (userDoc.exists()) {
-          const userData = userDoc.data();
-          usersMap.set(uid, {
-            displayName: userData.displayName || 'Anonymous',
-            photoURL: userData.photoURL,
-          });
-        } else {
-          usersMap.set(uid, { displayName: 'Deleted User' });
-        }
-      });
-
-      await Promise.all(userPromises);
-
-      const enrichedComments = commentsData.map((comment) => {
-        const userData = usersMap.get(comment.userId);
-        return {
-          ...comment,
-          userName: userData?.displayName || comment.userName,
-          userPhoto: userData?.photoURL || comment.userPhoto,
-        };
-      });
+      // Hydrate all comments with fresh profile info using the centralized utility
+      const enrichedComments = await hydrateComments(commentsData);
 
       const topLevelComments = enrichedComments.filter((comment) => !comment.parentId);
       const organizedComments = topLevelComments.map((comment) => ({
@@ -317,7 +319,8 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
             const classicGenreItems: Novel[] = [];
 
             genreSnapshot.forEach((doc) => {
-              const data = { id: doc.id, ...doc.data() } as Novel;
+              const { chapters, ...rest } = doc.data() as any;
+              const data = { id: doc.id, ...rest } as Novel;
               if (!seenIds.has(data.id)) {
                 if (data.publicDomain) {
                   classicGenreItems.push(data);
@@ -343,7 +346,8 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
             const classicLatestItems: Novel[] = [];
 
             latestSnapshot.forEach((doc) => {
-              const data = { id: doc.id, ...doc.data() } as Novel;
+              const { chapters, ...rest } = doc.data() as any;
+              const data = { id: doc.id, ...rest } as Novel;
               if (!seenIds.has(data.id)) {
                 if (data.publicDomain) {
                   classicLatestItems.push(data);
@@ -372,24 +376,24 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
 
   const handleLike = async () => {
     if (!novel?.id || !currentUser) {
-      Alert.alert('Error', 'Please login to like novels');
+      showToast({ message: 'Please login to like novels', type: 'info' });
       return;
     }
 
     const previousNovel = novel;
     const previousLiked = liked;
     const newLikeStatus = !liked;
-    
+
     activeLikeRequests.current++;
 
     try {
       const novelRef = doc(db, 'novels', novel.id);
-      
+
       // Full optimistic update
       setLiked(newLikeStatus);
       setNovel(prev => {
         if (!prev) return null;
-        const newLikedBy = newLikeStatus 
+        const newLikedBy = newLikeStatus
           ? [...(prev.likedBy || []), currentUser.uid]
           : (prev.likedBy || []).filter(id => id !== currentUser.uid);
         return { ...prev, likes: newLikedBy.length, likedBy: newLikedBy };
@@ -404,20 +408,20 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
 
       // Verify with server ONLY if this is the last pending request
       activeLikeRequests.current--;
-      
+
       if (activeLikeRequests.current === 0) {
         const updatedNovelDoc = await getDoc(novelRef);
         if (updatedNovelDoc.exists() && activeLikeRequests.current === 0) {
           const serverData = { ...updatedNovelDoc.data(), id: novel.id } as Novel;
-          
+
           // Double verify server sync: if likes field doesn't match likedBy length, fix it
           if (serverData.likes !== (serverData.likedBy?.length || 0)) {
             await updateDoc(novelRef, { likes: serverData.likedBy?.length || 0 });
             serverData.likes = serverData.likedBy?.length || 0;
           }
-          
+
           setNovel(serverData);
-          
+
           // After successful update, invalidate relevant caches to ensure fresh data app-wide
           await invalidateCache(`novel_${novel.id}`);
           await invalidateByPrefix("home_");
@@ -431,13 +435,13 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
         setLiked(previousLiked);
         setNovel(previousNovel);
       }
-      Alert.alert('Error', 'Failed to update like status');
+      showToast({ message: 'Failed to update like status', type: 'error' });
     }
   };
 
   const handleFollowToggle = async () => {
     if (!currentUser) {
-      Alert.alert('Login Required', 'Please login to follow authors');
+      showToast({ message: 'Please login to follow authors', type: 'info' });
       return;
     }
     if (!novel?.authorId) return;
@@ -452,7 +456,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
 
     } catch (error) {
       console.error('Error toggling follow:', error);
-      Alert.alert('Error', 'Failed to update follow status');
+      showToast({ message: 'Failed to update follow status', type: 'error' });
       // Revert on error
       setIsFollowing(isFollowing);
     } finally {
@@ -492,7 +496,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
         // Send Push Notification
         await sendPushNotification(
           novel.authorId,
-          "New Comment! 💬",
+          "New Comment!",
           `${currentUser.displayName || "Someone"} commented on your novel "${novel.title}".`,
           { url: `novlnest://novel/${novel.id}` }
         )
@@ -501,10 +505,10 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
       setNewComment('');
       // Invalidate cache to update comment stats on return visits
       await invalidateCache(`novel_${novel.id}`);
-      Alert.alert('Success', 'Comment posted successfully!');
+      showToast({ message: 'Comment posted successfully!', type: 'success' });
     } catch (error) {
       console.error('Error submitting comment:', error);
-      Alert.alert('Error', 'Failed to post comment');
+      showToast({ message: 'Failed to post comment', type: 'error' });
     } finally {
       setSubmittingComment(false);
     }
@@ -548,7 +552,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
         // Send Push Notification
         await sendPushNotification(
           novel.authorId,
-          `${currentUser.displayName || "Someone"} 💬`,
+          `${currentUser.displayName || "Someone"}`,
           `Replied to a comment on your novel "${novel.title}"`,
           { url: `novlnest://novel/${novel.id}` }
         )
@@ -571,7 +575,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
         // Send Push Notification
         await sendPushNotification(
           parentCommentAuthorId,
-          `${currentUser.displayName || "Someone"} 💬`,
+          `${currentUser.displayName || "Someone"}`,
           `Replied to your comment in "${novel.title}"`,
           { url: `novlnest://novel/${novel.id}` }
         )
@@ -581,10 +585,10 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
       setReplyingTo(null);
       // Invalidate cache for fresh stats
       await invalidateCache(`novel_${novel.id}`);
-      Alert.alert('Success', 'Reply posted successfully!');
+      showToast({ message: 'Reply posted successfully!', type: 'success' });
     } catch (error) {
       console.error('Error submitting reply:', error);
-      Alert.alert('Error', 'Failed to post reply');
+      showToast({ message: 'Failed to post reply', type: 'error' });
     } finally {
       setSubmittingReply(false);
     }
@@ -593,10 +597,11 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
   const handleDeleteComment = async (commentId: string) => {
     if (!currentUser) return;
 
-    Alert.alert(
-      'Delete Comment',
-      'Are you sure you want to delete this comment? This action cannot be undone.',
-      [
+    showAlert({
+      title: 'Delete Comment',
+      message: 'Are you sure you want to delete this comment? This action cannot be undone.',
+      type: 'warning',
+      buttons: [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete',
@@ -609,22 +614,22 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
               if (novel) {
                 await invalidateCache(`novel_${novel.id}`);
               }
-              Alert.alert('Success', 'Comment deleted successfully!');
+              showToast({ message: 'Comment deleted successfully', type: 'success' });
             } catch (error) {
               console.error('Error deleting comment:', error);
-              Alert.alert('Error', 'Failed to delete comment');
+              showToast({ message: 'Failed to delete comment', type: 'error' });
             } finally {
               setDeletingComment(null);
             }
           },
         },
       ]
-    );
+    });
   };
 
   const handleCopyComment = async (text: string) => {
     await Clipboard.setStringAsync(text);
-    Alert.alert('Copied', 'Comment copied to clipboard');
+    showToast({ message: 'Comment copied to clipboard', type: 'success' });
   };
 
   const handleEditSubmit = async () => {
@@ -644,10 +649,10 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
       if (novel) {
         await invalidateCache(`novel_${novel.id}`);
       }
-      Alert.alert('Success', 'Comment updated successfully!');
+      showToast({ message: 'Comment updated successfully!', type: 'success' });
     } catch (error) {
       console.error('Error updating comment:', error);
-      Alert.alert('Error', 'Failed to update comment');
+      showToast({ message: 'Failed to update comment', type: 'error' });
     } finally {
       setSubmittingComment(false);
     }
@@ -656,14 +661,55 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
   const handleCommentLike = async (commentId: string, isLiked: boolean) => {
     if (!currentUser) return;
 
+    // Store previous state for potential reversal
+    const previousComments = [...comments];
+
+    // Define a recursive function to update the comment within the tree
+    const updateCommentInTree = (list: Comment[]): Comment[] => {
+      return list.map((c) => {
+        if (c.id === commentId) {
+          const newLikedBy = isLiked
+            ? (c.likedBy || []).filter((uid) => uid !== currentUser.uid)
+            : [...(c.likedBy || []), currentUser.uid];
+
+          return {
+            ...c,
+            likedBy: newLikedBy,
+            likes: newLikedBy.length,
+          };
+        }
+        if (c.replies && c.replies.length > 0) {
+          return {
+            ...c,
+            replies: updateCommentInTree(c.replies),
+          };
+        }
+        return c;
+      });
+    };
+
+    // Apply optimistic update immediately
+    setComments((prev) => updateCommentInTree(prev));
+
     try {
       const commentRef = doc(db, 'comments', commentId);
-      const commentDoc = await getDoc(commentRef);
 
-      if (!commentDoc.exists()) return;
+      // Find the comment data from our existing state instead of fetching it again
+      const findCommentById = (list: Comment[], id: string): Comment | null => {
+        for (const c of list) {
+          if (c.id === id) return c;
+          if (c.replies) {
+            const found = findCommentById(c.replies, id);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
 
-      const commentData = commentDoc.data();
-      const commentAuthorId = commentData.userId;
+      const targetComment = findCommentById(previousComments, commentId);
+      if (!targetComment) return;
+
+      const commentAuthorId = targetComment.userId;
 
       if (isLiked) {
         await updateDoc(commentRef, {
@@ -696,23 +742,26 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
               novelId: novel?.id,
               novelTitle: novel?.title,
               commentId: commentId,
-              commentContent: commentData.content,
+              commentContent: targetComment.content,
               createdAt: new Date().toISOString(),
               read: false,
             });
 
-            // Send Push Notification
-            await sendPushNotification(
+            // Send Push Notification in the background
+            sendPushNotification(
               commentAuthorId,
-              `${currentUser.displayName || 'Someone'} ❤️`,
+              `${currentUser.displayName || 'Someone'}`,
               `Liked your comment on "${novel?.title || 'a novel'}"`,
               { url: `novlnest://novel/${novel?.id}` }
-            );
+            ).catch(err => console.error("Error sending push notification:", err));
           }
         }
       }
     } catch (error) {
       console.error('Error updating comment like:', error);
+      // Revert to previous state if backend update fails
+      setComments(previousComments);
+      showToast({ message: 'Failed to update like status', type: 'error' });
     }
   };
 
@@ -753,15 +802,26 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
 
 
   const getFirebaseDownloadUrl = (url: string) => {
-    if (!url || !url.includes('firebasestorage')) {
+    if (!url) return url;
+
+    // If it's already a full URL (http/https), don't touch it
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      return url;
+    }
+
+    // If it doesn't contain firebasestorage and isn't a gs:// path, return as is
+    if (!url.includes('firebasestorage') && !url.startsWith('gs://')) {
       return url;
     }
 
     try {
-      const urlParts = url.split('/');
-      const bucketName = urlParts[3];
-      const filePath = urlParts.slice(4).join('/');
-      return `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodeURIComponent(filePath)}?alt=media`;
+      // Handle gs:// paths or internal references
+      const cleanedPath = url.replace('gs://novelnest-50ab1.appspot.app/', '');
+      const urlParts = cleanedPath.split('/');
+      const bucketName = 'novelnest-50ab1.firebasestorage.app'; // Use the correct bucket name
+
+      // If the path was just a storage path (e.g. "covers/image.jpg")
+      return `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodeURIComponent(cleanedPath)}?alt=media`;
     } catch (error) {
       console.log('Error converting Firebase URL:', error);
       return url;
@@ -882,7 +942,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
             >
               <Ionicons
                 name={comment.likedBy?.includes(currentUser?.uid || '') ? 'heart' : 'heart-outline'}
-                size={16}
+                size={24}
                 color={comment.likedBy?.includes(currentUser?.uid || '') ? '#EF4444' : '#9CA3AF'}
               />
               <Text style={styles.commentLikeCount}>{comment.likes || 0}</Text>
@@ -930,7 +990,16 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerButton}>
+        <TouchableOpacity
+          onPress={() => {
+            if (navigation.canGoBack()) {
+              navigation.goBack();
+            } else {
+              navigation.replace('MainTabs');
+            }
+          }}
+          style={styles.headerButton}
+        >
           <Ionicons name="arrow-back" size={24} color={colors.text} />
         </TouchableOpacity>
         <View style={styles.headerActions}>
@@ -940,14 +1009,18 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
         </View>
       </View>
 
-      <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.container}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 20) }}
+      >
         {/* Cover and Info */}
         <View style={styles.coverSection}>
           {novel.coverImage ? (
             <CachedImage
               uri={getFirebaseDownloadUrl(novel.coverImage)}
               style={styles.coverImage}
-              resizeMode="cover"
+              contentFit="cover"
               placeholderColor={colors.backgroundSecondary}
             />
           ) : (
@@ -1006,6 +1079,62 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
               {novel.status === 'completed' ? 'Completed' : 'Ongoing'}
             </Text>
           </View>
+
+          {/* Author Toolbox */}
+          {isAuthor && (
+            <View style={styles.authorToolbox}>
+              <View style={styles.authorToolboxHeader}>
+                <Ionicons name="construct-outline" size={16} color={colors.primary} />
+                <Text style={styles.authorToolboxTitle}>Author Dashboard</Text>
+              </View>
+              <View style={styles.authorToolboxContent}>
+                {novel.status !== 'completed' && (
+                  <TouchableOpacity
+                    style={styles.authorToolboxItem}
+                    onPress={() => navigation.navigate('AddChapters', { novelId: novel.id })}
+                  >
+                    <View style={[styles.toolboxIconContainer, { backgroundColor: colors.primary + '15' }]}>
+                      <Ionicons name="add-circle" size={24} color={colors.primary} />
+                    </View>
+                    <Text style={styles.authorToolboxText}>Add Chapter</Text>
+                  </TouchableOpacity>
+                )}
+
+                <TouchableOpacity
+                  style={styles.authorToolboxItem}
+                  onPress={() => navigation.navigate('ChaptersList', { novel: novel })}
+                >
+                  <View style={[styles.toolboxIconContainer, { backgroundColor: colors.primary + '15' }]}>
+                    <Ionicons name="list" size={24} color={colors.primary} />
+                  </View>
+                  <Text style={styles.authorToolboxText}>Manage</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.authorToolboxItem}
+                  onPress={() => navigation.navigate('CharacterManager', {
+                    novelId: novel.id,
+                    initialCharacters: novel.characters || []
+                  })}
+                >
+                  <View style={[styles.toolboxIconContainer, { backgroundColor: colors.primary + '15' }]}>
+                    <Ionicons name="people" size={24} color={colors.primary} />
+                  </View>
+                  <Text style={styles.authorToolboxText}>Characters</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.authorToolboxItem}
+                  onPress={() => navigation.navigate('PromoteScreen', { novelId: novel.id, type: 'novel' })}
+                >
+                  <View style={[styles.toolboxIconContainer, { backgroundColor: colors.primary + '15' }]}>
+                    <Ionicons name="megaphone" size={24} color={colors.primary} />
+                  </View>
+                  <Text style={styles.authorToolboxText}>Promote</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
 
           {/* Stats */}
           <View style={styles.statsRow}>
@@ -1093,6 +1222,43 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
             )}
           </View>
 
+          {/* Characters Section */}
+          {novel.characters && novel.characters.length > 0 && (
+            <View style={styles.charactersSection}>
+              <Text style={styles.sectionTitle}>Cast & Characters</Text>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.charactersList}
+              >
+                {novel.characters.map((char) => (
+                  <TouchableOpacity
+                    key={char.id}
+                    style={styles.characterAvatarWrapper}
+                    onPress={() => setSelectedCharacter(char)}
+                  >
+                    <View style={styles.premiumAvatarContainer}>
+                      {char.imageUrl ? (
+                        <CachedImage
+                          uri={getFirebaseDownloadUrl(char.imageUrl)}
+                          style={styles.premiumAvatar}
+                          contentFit="cover"
+                        />
+                      ) : (
+                        <View style={styles.premiumAvatarPlaceholder}>
+                          <Text style={styles.premiumAvatarInitials}>
+                            {char.name.charAt(0).toUpperCase()}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                    <Text style={styles.premiumCharacterName} numberOfLines={1}>{char.name}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+
           {/* Chapters */}
           <View style={styles.chaptersContainer}>
             <View style={styles.chaptersHeader}>
@@ -1100,7 +1266,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
               <TouchableOpacity
                 onPress={() => navigation.navigate('ChaptersList', { novelId: novel.id, novel })}
               >
-                <Text style={styles.viewAllText}>View all</Text>
+                <Text style={styles.viewAllText}>See more</Text>
               </TouchableOpacity>
             </View>
 
@@ -1145,10 +1311,32 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
               </TouchableOpacity>
             )}
 
+            {/* Cast of Characters */}
+            {novel.characters && novel.characters.length > 0 ? (
+              <TouchableOpacity
+                style={styles.chapterItem}
+                onPress={() => {
+                  navigation.navigate('NovelReader', {
+                    novelId: novel.id,
+                    chapterNumber: (novel.authorsNote ? 1 : 0) + (novel.prologue ? 1 : 0),
+                  });
+                }}
+              >
+                <View style={styles.chapterInfo}>
+                  <Text style={styles.chapterIcon}>👥</Text>
+                  <Text style={styles.chapterTitle}>Cast of Characters</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color="#6B7280" />
+              </TouchableOpacity>
+            ) : null}
+
             {/* Chapters - Show first 3 */}
             {novel.chapters?.slice(0, 3).map((chapter: any, index: number) => {
               const chapterNumber =
-                (novel.authorsNote ? 1 : 0) + (novel.prologue ? 1 : 0) + index;
+                (novel.authorsNote ? 1 : 0) +
+                (novel.prologue ? 1 : 0) +
+                ((novel.characters && novel.characters.length > 0) ? 1 : 0) +
+                index;
               return (
                 <TouchableOpacity
                   key={index}
@@ -1161,12 +1349,13 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
                   }
                   onLongPress={() => {
                     if (isAuthor) {
-                      Alert.alert(
-                        chapter.title,
-                        'Choose an action',
-                        [
+                      showAlert({
+                        title: chapter.title,
+                        message: 'Choose an action',
+                        type: 'info',
+                        buttons: [
                           {
-                            text: 'Edit Chapter',
+                            text: 'Edit',
                             onPress: () =>
                               navigation.navigate('EditChapter', {
                                 novelId: novel.id,
@@ -1174,13 +1363,14 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
                               }),
                           },
                           {
-                            text: 'Delete Chapter',
+                            text: 'Delete',
                             style: 'destructive',
                             onPress: () => {
-                              Alert.alert(
-                                'Confirm Deletion',
-                                'Are you sure you want to delete this chapter? This action cannot be undone.',
-                                [
+                              showAlert({
+                                title: 'Confirm Deletion',
+                                message: 'Are you sure you want to delete this chapter? This action cannot be undone.',
+                                type: 'error',
+                                buttons: [
                                   {
                                     text: 'Delete',
                                     style: 'destructive',
@@ -1193,22 +1383,22 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
                                           const updatedChapters = [...(novelData.chapters || [])];
                                           updatedChapters.splice(index, 1);
                                           await updateDoc(novelRef, { chapters: updatedChapters });
-                                          Alert.alert('Success', 'Chapter deleted successfully!');
+                                          showToast({ message: 'Chapter deleted successfully!', type: 'success' });
                                         }
                                       } catch (error) {
                                         console.error('Error deleting chapter:', error);
-                                        Alert.alert('Error', 'Failed to delete chapter. Please try again.');
+                                        showToast({ message: 'Failed to delete chapter. Please try again.', type: 'error' });
                                       }
                                     },
                                   },
                                   { text: 'Cancel', style: 'cancel' },
                                 ]
-                              );
+                              });
                             },
                           },
                           { text: 'Cancel', style: 'cancel' },
                         ]
-                      );
+                      });
                     }
                   }}
                 >
@@ -1235,12 +1425,13 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
                 }
                 onLongPress={() => {
                   if (isAuthor) {
-                    Alert.alert(
-                      'Manage Epilogue',
-                      'Choose an action for the epilogue',
-                      [
+                    showAlert({
+                      title: 'Manage Epilogue',
+                      message: 'Choose an action for the epilogue',
+                      type: 'info',
+                      buttons: [
                         {
-                          text: 'Edit Epilogue',
+                          text: 'Edit',
                           onPress: () => {
                             navigation.navigate('ChapterEditor', {
                               chapterNumber: 'Epilogue',
@@ -1252,23 +1443,24 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
                                     epilogue: epilogueData,
                                     updatedAt: new Date().toISOString(),
                                   });
-                                  Alert.alert('Success', 'Epilogue updated successfully!');
+                                  showToast({ message: 'Epilogue updated successfully!', type: 'success' });
                                 } catch (error) {
                                   console.error('Error updating epilogue:', error);
-                                  Alert.alert('Error', 'Failed to update epilogue');
+                                  showToast({ message: 'Failed to update epilogue', type: 'error' });
                                 }
                               }
                             });
                           },
                         },
                         {
-                          text: 'Delete Epilogue',
+                          text: 'Delete',
                           style: 'destructive',
                           onPress: () => {
-                            Alert.alert(
-                              'Delete Epilogue',
-                              'Are you sure you want to delete the epilogue?',
-                              [
+                            showAlert({
+                              title: 'Delete Epilogue',
+                              message: 'Are you sure you want to delete the epilogue?',
+                              type: 'error',
+                              buttons: [
                                 {
                                   text: 'Delete',
                                   style: 'destructive',
@@ -1278,21 +1470,21 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
                                         epilogue: deleteField(),
                                         status: 'ongoing',
                                       });
-                                      Alert.alert('Success', 'Epilogue deleted successfully!');
+                                      showToast({ message: 'Epilogue deleted successfully!', type: 'success' });
                                     } catch (error) {
                                       console.error('Error deleting epilogue:', error);
-                                      Alert.alert('Error', 'Failed to delete epilogue');
+                                      showToast({ message: 'Failed to delete epilogue', type: 'error' });
                                     }
                                   },
                                 },
                                 { text: 'Cancel', style: 'cancel' },
                               ]
-                            );
+                            });
                           },
                         },
                         { text: 'Cancel', style: 'cancel' },
                       ]
-                    );
+                    });
                   }
                 }}
               >
@@ -1328,7 +1520,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
                       <CachedImage
                         uri={getFirebaseDownloadUrl(item.coverSmallImage || item.coverImage || '')}
                         style={styles.relatedCover}
-                        resizeMode="cover"
+                        contentFit="cover"
                         placeholderColor={colors.backgroundSecondary}
                       />
                     ) : (
@@ -1452,7 +1644,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
                 style={styles.copyButton}
                 onPress={async () => {
                   await Clipboard.setStringAsync(authorData.supportLink ?? '');
-                  Alert.alert('Success', 'Payment details copied to clipboard!');
+                  showToast({ message: 'Payment details copied to clipboard!', type: 'success' });
                 }}
               >
                 <Ionicons name="copy-outline" size={20} color="#fff" />
@@ -1551,7 +1743,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
                     placeholderTextColor="#9CA3AF"
                     style={styles.commentsModalInput}
                     multiline
-                    maxLength={500}
+                    maxLength={1000}
                   />
                   <TouchableOpacity
                     onPress={() => {
@@ -1667,13 +1859,120 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
         </Modal>
       </Modal>
 
+      {/* Character Spotlight Modal */}
+      <Modal
+        visible={!!selectedCharacter}
+        transparent
+        animationType="none"
+        statusBarTranslucent
+        onRequestClose={() => setSelectedCharacter(null)}
+      >
+        <View style={styles.spotlightContainer}>
+          <Animated.View
+            style={[
+              styles.spotlightBackdrop,
+              {
+                opacity: spotlightAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, 1],
+                }),
+              }
+            ]}
+          >
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={() => setSelectedCharacter(null)}
+            />
+          </Animated.View>
 
+          <Animated.View
+            style={[
+              StyleSheet.absoluteFill,
+              {
+                opacity: spotlightAnim.interpolate({
+                  inputRange: [0, 0.5, 1],
+                  outputRange: [0, 0, 1],
+                }),
+              }
+            ]}
+          >
+            <Animated.Image
+              source={{ uri: getFirebaseDownloadUrl(selectedCharacter?.imageUrl) }}
+              style={[
+                StyleSheet.absoluteFill,
+                {
+                  transform: [
+                    {
+                      scale: scrollY.interpolate({
+                        inputRange: [-100, 0, 100],
+                        outputRange: [1.2, 1, 1.1],
+                        extrapolate: 'clamp',
+                      }),
+                    },
+                  ],
+                },
+              ]}
+              resizeMode="cover"
+            />
+
+            <View style={styles.spotlightFullScrim} />
+          </Animated.View>
+
+          <Animated.ScrollView
+            style={styles.spotlightScroll}
+            showsVerticalScrollIndicator={false}
+            onScroll={Animated.event(
+              [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+              { useNativeDriver: true }
+            )}
+            scrollEventThrottle={16}
+            contentContainerStyle={styles.spotlightFullContent}
+          >
+            <View style={styles.spotlightEmptyHeader} />
+
+            <Animated.View
+              style={[
+                styles.spotlightFloatingBio,
+                {
+                  transform: [{
+                    translateY: spotlightAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [100, 0],
+                    }),
+                  }],
+                }
+              ]}
+            >
+              <Text style={styles.spotlightFloatingName}>{selectedCharacter?.name}</Text>
+              <View style={styles.spotlightFloatingDivider} />
+
+              <Text style={styles.spotlightFloatingDescription}>
+                {selectedCharacter?.description || 'No description available for this character.'}
+              </Text>
+            </Animated.View>
+
+            <View style={{ height: 100 }} />
+          </Animated.ScrollView>
+
+          <Animated.View style={[
+            styles.spotlightCloseContainer,
+            { opacity: spotlightAnim }
+          ]}>
+            <TouchableOpacity
+              style={styles.spotlightCloseCircle}
+              onPress={() => setSelectedCharacter(null)}
+            >
+              <Ionicons name="close" size={24} color="#fff" />
+            </TouchableOpacity>
+          </Animated.View>
+        </View>
+      </Modal>
 
     </SafeAreaView >
   );
 };
 
-const getStyles = (themeColors: any) => StyleSheet.create({
+const getStyles = (themeColors: any, insets: any) => StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: themeColors.background,
@@ -1966,6 +2265,139 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     fontWeight: '600' as const,
     marginTop: 8,
   },
+  charactersSection: {
+    marginBottom: 32,
+    marginTop: 12,
+  },
+  manageLink: {
+    color: themeColors.primary,
+    fontSize: 14,
+    fontWeight: '600' as const,
+  },
+  charactersList: {
+    paddingHorizontal: 16,
+    gap: 20,
+  },
+  characterAvatarWrapper: {
+    alignItems: 'center' as const,
+    width: 75,
+  },
+  premiumAvatarContainer: {
+    width: 70,
+    height: 70,
+    borderRadius: 35,
+    padding: 3,
+    backgroundColor: themeColors.background,
+    borderWidth: 1.5,
+    borderColor: themeColors.primary + '40',
+    marginBottom: 8,
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+  },
+  premiumAvatar: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 32,
+  },
+  premiumAvatarPlaceholder: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 32,
+    backgroundColor: themeColors.primary + '15',
+    justifyContent: 'center' as const,
+    alignItems: 'center' as const,
+  },
+  premiumAvatarInitials: {
+    fontSize: 24,
+    fontWeight: '700' as const,
+    color: themeColors.primary,
+  },
+  premiumCharacterName: {
+    fontSize: 12,
+    fontWeight: '600' as const,
+    color: themeColors.text,
+    textAlign: 'center' as const,
+    letterSpacing: 0.2,
+  },
+  spotlightContainer: {
+    flex: 1,
+    backgroundColor: '#000',
+  },
+  spotlightBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#000',
+  },
+  parallaxHero: {
+    width: '100%',
+    height: SCREEN_WIDTH * 1.5,
+    position: 'absolute' as const,
+    top: 0,
+  },
+  spotlightScroll: {
+    flex: 1,
+  },
+  spotlightFullScrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  spotlightEmptyHeader: {
+    height: SCREEN_WIDTH * 1.2,
+  },
+  spotlightFullContent: {
+    paddingHorizontal: 24,
+  },
+  spotlightFloatingBio: {
+    alignItems: 'center' as const,
+    backgroundColor: 'transparent',
+  },
+  spotlightFloatingName: {
+    fontSize: 42,
+    fontWeight: '900' as const,
+    color: '#fff',
+    textAlign: 'center' as const,
+    letterSpacing: -1.5,
+    fontFamily: Platform.OS === 'ios' ? 'Avenir Next' : 'sans-serif-medium',
+    textShadowColor: 'rgba(0,0,0,0.5)',
+    textShadowOffset: { width: 0, height: 2 },
+    shadowRadius: 10,
+  },
+  spotlightFloatingDivider: {
+    width: 80,
+    height: 4,
+    backgroundColor: themeColors.primary,
+    marginVertical: 20,
+    borderRadius: 2,
+  },
+  spotlightFloatingDescription: {
+    fontSize: 20,
+    lineHeight: 32,
+    color: 'rgba(255,255,255,0.95)',
+    textAlign: 'center' as const,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    letterSpacing: 0.5,
+    textShadowColor: 'rgba(0,0,0,0.3)',
+    textShadowOffset: { width: 0, height: 1 },
+    shadowRadius: 5,
+  },
+  spotlightCloseContainer: {
+    position: 'absolute' as const,
+    top: 50,
+    right: 20,
+    zIndex: 100,
+  },
+  spotlightCloseCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center' as const,
+    alignItems: 'center' as const,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
   chaptersContainer: {
     marginBottom: 24,
   },
@@ -1994,7 +2426,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   },
   viewAllText: {
     color: themeColors.primary,
-    fontSize: 14,
+    fontSize: 17,
     fontWeight: '600' as const,
   },
   chapterItem: {
@@ -2446,7 +2878,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     backgroundColor: themeColors.surface,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    paddingBottom: Platform.OS === 'ios' ? 40 : 24,
+    paddingBottom: Math.max(insets.bottom, 24),
     paddingHorizontal: 16,
     alignItems: 'center',
   },
@@ -2496,6 +2928,51 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   commentTextPressed: {
     backgroundColor: themeColors.border,
     opacity: 0.8,
+  },
+  authorToolbox: {
+    backgroundColor: themeColors.card,
+    borderRadius: 16,
+    padding: 16,
+    marginTop: 16,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: themeColors.primary + '30',
+  },
+  authorToolboxHeader: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    marginBottom: 16,
+    gap: 8,
+  },
+  authorToolboxTitle: {
+    fontSize: 14,
+    fontWeight: '700' as const,
+    color: themeColors.text,
+    textTransform: 'uppercase' as const,
+    letterSpacing: 1,
+  },
+  authorToolboxContent: {
+    flexDirection: 'row' as const,
+    justifyContent: 'space-between' as const,
+    alignItems: 'flex-start' as const,
+  },
+  authorToolboxItem: {
+    alignItems: 'center' as const,
+    width: '23%',
+  },
+  toolboxIconContainer: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    justifyContent: 'center' as const,
+    alignItems: 'center' as const,
+    marginBottom: 8,
+  },
+  authorToolboxText: {
+    fontSize: 10,
+    fontWeight: '600' as const,
+    color: themeColors.text,
+    textAlign: 'center' as const,
   },
 });
 

@@ -15,11 +15,15 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useAlert } from '../../contexts/AlertContext';
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 const SettingsScreen = ({ navigation }: any) => {
   const { currentUser, logout, updateUserProfile, updateUserEmail, changePassword, deleteUserAccount, refreshUser } = useAuth();
   const { theme, colors, toggleTheme } = useTheme();
+  const { showAlert, showToast } = useAlert();
+  const insets = useSafeAreaInsets();
+  const styles = getStyles(colors, insets);
   const [profileUser, setProfileUser] = useState<any>(null);
 
   // Edit profile states
@@ -75,7 +79,7 @@ const SettingsScreen = ({ navigation }: any) => {
       setProfileUser(fetchedUser);
     } catch (err) {
       console.error('Error fetching user data:', err);
-      Alert.alert('Error', 'Failed to load profile data');
+      showToast({ message: 'Failed to load profile data', type: 'error' });
     }
   }, [currentUser]);
 
@@ -85,10 +89,11 @@ const SettingsScreen = ({ navigation }: any) => {
   }, [fetchUserData]);
 
   const handleLogout = () => {
-    Alert.alert(
-      'Logout',
-      'Are you sure you want to logout?',
-      [
+    showAlert({
+      title: 'Logout',
+      message: 'Are you sure you want to logout?',
+      type: 'warning',
+      buttons: [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Logout',
@@ -98,12 +103,12 @@ const SettingsScreen = ({ navigation }: any) => {
               await logout();
               // Navigation will be handled automatically by auth state change
             } catch (error) {
-              Alert.alert('Error', 'Failed to logout. Please try again.');
+              showToast({ message: 'Failed to logout. Please try again.', type: 'error' });
             }
           },
         },
       ]
-    );
+    });
   };
 
   const handleEditProfile = () => {
@@ -147,11 +152,11 @@ const SettingsScreen = ({ navigation }: any) => {
         editLocation
       );
 
-      Alert.alert('Success', 'Profile updated!');
+      showToast({ message: 'Profile updated!', type: 'success' });
       setShowEditProfileModal(false);
       fetchUserData();
     } catch (error) {
-      Alert.alert('Error', 'Failed to update profile');
+      showToast({ message: 'Failed to update profile', type: 'error' });
     } finally {
       setIsLoading(false);
     }
@@ -160,26 +165,30 @@ const SettingsScreen = ({ navigation }: any) => {
   const handleChangePassword = async () => {
     // 🚫 Apple users
     if (isAppleUser) {
-      Alert.alert(
-        'Not Allowed',
-        'Apple ID users cannot change password. Please manage your password via Apple ID.'
-      );
+      showAlert({
+        title: 'Not Allowed',
+        message: 'Apple ID users cannot change password. Please manage your password via Apple ID.',
+        type: 'info',
+        useNative: true
+      });
       return;
     }
 
     if (!newPassword || newPassword.length < 6) {
-      Alert.alert('Error', 'Password must be at least 6 characters');
+      showToast({ message: 'Password must be at least 6 characters', type: 'error' });
       return;
     }
     if (newPassword !== confirmNewPassword) {
-      Alert.alert('Error', 'Passwords do not match');
+      showToast({ message: 'Passwords do not match', type: 'error' });
       return;
     }
 
-    Alert.alert(
-      'Change Password',
-      'Are you sure you want to change your password?',
-      [
+    showAlert({
+      title: 'Change Password',
+      message: 'Are you sure you want to change your password?',
+      type: 'warning',
+      useNative: true,
+      buttons: [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Change',
@@ -188,52 +197,56 @@ const SettingsScreen = ({ navigation }: any) => {
             try {
               await changePassword(currentPassword, newPassword);
 
-              Alert.alert('Success', 'Password updated successfully');
+              showToast({ message: 'Password updated successfully', type: 'success' });
               setShowChangePasswordModal(false);
               setCurrentPassword('');
               setNewPassword('');
               setConfirmNewPassword('');
             } catch (error: any) {
               console.error('Password change error:', error);
-              Alert.alert('Error', error?.message || 'Failed to update password');
+              showToast({ message: error?.message || 'Failed to update password', type: 'error' });
             } finally {
               setIsLoading(false);
             }
           },
         },
       ]
-    );
+    });
   };
 
   const handleChangeEmail = async () => {
     // 🚫 Apple users
     if (isAppleUser) {
-      Alert.alert(
-        'Not Allowed',
-        'Apple ID users cannot change email. Please manage your email via Apple ID.'
-      );
+      showAlert({
+        title: 'Not Allowed',
+        message: 'Apple ID users cannot change email. Please manage your email via Apple ID.',
+        type: 'info',
+        useNative: true
+      });
       return;
     }
 
     if (!newEmail || !confirmEmail) {
-      Alert.alert('Error', 'Please enter your new email address');
+      showToast({ message: 'Please enter your new email address', type: 'error' });
       return;
     }
 
     if (newEmail !== confirmEmail) {
-      Alert.alert('Error', 'Email addresses do not match');
+      showToast({ message: 'Email addresses do not match', type: 'error' });
       return;
     }
 
     if (newEmail === currentUser?.email) {
-      Alert.alert('Error', 'Please enter a different email address');
+      showToast({ message: 'Please enter a different email address', type: 'error' });
       return;
     }
 
-    Alert.alert(
-      'Change Email',
-      'Are you sure you want to change your email address?',
-      [
+    showAlert({
+      title: 'Change Email',
+      message: 'Are you sure you want to change your email address?',
+      type: 'warning',
+      useNative: true,
+      buttons: [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Change',
@@ -243,7 +256,12 @@ const SettingsScreen = ({ navigation }: any) => {
               // Call updateUserEmail with new email
               await updateUserEmail(newEmail, confirmEmail, isGoogleUser ? undefined : emailPassword);
 
-              Alert.alert('Success', 'Verification email sent. Please check your new email address and click the verification link. The app will automatically update once verified.');
+              showAlert({
+                title: 'Success',
+                message: 'Verification email sent. Please check your new email address and click the verification link. The app will automatically update once verified.',
+                type: 'success',
+                useNative: true
+              });
               setShowChangeEmailModal(false);
               setNewEmail('');
               setConfirmEmail('');
@@ -253,26 +271,28 @@ const SettingsScreen = ({ navigation }: any) => {
               await refreshUser();
             } catch (error: any) {
               console.error('Email change error:', error);
-              Alert.alert('Error', error?.message || 'Failed to update email');
+              showToast({ message: error?.message || 'Failed to update email', type: 'error' });
             } finally {
               setIsLoading(false);
             }
           },
         },
       ]
-    );
+    });
   };
 
   const handleDeleteAccount = async () => {
     if (!isGoogleUser && !isAppleUser && !deletePassword) {
-      Alert.alert('Error', 'Password is required to delete account');
+      showToast({ message: 'Password is required to delete account', type: 'error' });
       return;
     }
 
-    Alert.alert(
-      'Delete Account',
-      'This will permanently delete your account and all your data. This action cannot be undone. Are you sure?',
-      [
+    showAlert({
+      title: 'Delete Account',
+      message: 'This will permanently delete your account and all your data. This action cannot be undone. Are you sure?',
+      type: 'warning',
+      useNative: true,
+      buttons: [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete',
@@ -281,18 +301,17 @@ const SettingsScreen = ({ navigation }: any) => {
             setIsLoading(true);
             try {
               await deleteUserAccount(isGoogleUser || isAppleUser ? undefined : deletePassword);
-
-              Alert.alert('Success', 'Account deleted successfully');
+              showToast({ message: 'Account deleted successfully', type: 'success' });
             } catch (error: any) {
               console.error('Account deletion error:', error);
-              Alert.alert('Error', error?.message || 'Failed to delete account');
+              showToast({ message: error?.message || 'Failed to delete account', type: 'error' });
             } finally {
               setIsLoading(false);
             }
           },
         },
       ]
-    );
+    });
   };
 
   const SettingItem = ({
@@ -359,11 +378,14 @@ const SettingsScreen = ({ navigation }: any) => {
     );
   };
 
-  const insets = useSafeAreaInsets()
+  // const insets = useSafeAreaInsets()
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <ScrollView showsVerticalScrollIndicator={false}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 20) }}
+      >
         {/* Account Section */}
         <SectionHeader title="ACCOUNT" />
         <View style={[styles.section, { backgroundColor: colors.surface }]}>
@@ -407,7 +429,10 @@ const SettingsScreen = ({ navigation }: any) => {
                 </TouchableOpacity>
               </View>
             </View>
-            <ScrollView style={styles.modalContent}>
+            <ScrollView
+              style={styles.modalContent}
+              contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 20) }}
+            >
               <View style={styles.formGroup}>
                 <Text style={[styles.label, { color: colors.textSecondary }]}>Display Name</Text>
                 <TextInput
@@ -576,7 +601,10 @@ const SettingsScreen = ({ navigation }: any) => {
               </View>
             </View>
 
-            <ScrollView style={styles.modalContent}>
+            <ScrollView
+              style={styles.modalContent}
+              contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 20) }}
+            >
               {isGoogleUser && (
                 <View style={styles.infoBox}>
                   <Ionicons name="information-circle" size={20} color="#8B5CF6" />
@@ -685,7 +713,10 @@ const SettingsScreen = ({ navigation }: any) => {
                 </TouchableOpacity>
               </View>
             </View>
-            <ScrollView style={styles.modalContent}>
+            <ScrollView
+              style={styles.modalContent}
+              contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 20) }}
+            >
 
               {isGoogleUser && (
                 <View style={styles.infoBox}>
@@ -792,7 +823,10 @@ const SettingsScreen = ({ navigation }: any) => {
                 </TouchableOpacity>
               </View>
             </View>
-            <ScrollView style={styles.modalContent}>
+            <ScrollView
+              style={styles.modalContent}
+              contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 20) }}
+            >
               <View style={[styles.infoBox, styles.dangerInfoBox]}>
                 <Ionicons name="warning" size={24} color="#EF4444" />
                 <Text style={[styles.infoText, styles.dangerInfoText]}>
@@ -870,16 +904,16 @@ const SettingsScreen = ({ navigation }: any) => {
                 onValueChange={async (value) => {
                   try {
                     await updateUserProfile(
-                      undefined, 
-                      undefined, 
-                      undefined, 
-                      undefined, 
-                      undefined, 
-                      undefined, 
+                      undefined,
+                      undefined,
+                      undefined,
+                      undefined,
+                      undefined,
+                      undefined,
                       value
                     );
                   } catch (e) {
-                    Alert.alert('Error', 'Failed to update notification settings');
+                    showToast({ message: 'Failed to update notification settings', type: 'error' });
                   }
                 }}
                 trackColor={{ false: '#4B5563', true: colors.primary }}
@@ -908,7 +942,7 @@ const SettingsScreen = ({ navigation }: any) => {
             icon="eye-off-outline"
             title="Blocked Users"
             subtitle="Manage blocked users"
-            onPress={() => Alert.alert('Coming Soon', 'Block list will be available soon.')}
+            onPress={() => showToast({ message: 'Coming Soon: Block list will be available soon.', type: 'info' })}
           />
         </View>
 
@@ -961,227 +995,231 @@ const SettingsScreen = ({ navigation }: any) => {
   );
 };
 
-const getStyles = (colors: any) => StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  modalWrapper: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  modalContainer: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  safeAreaHeader: {
-    backgroundColor: colors.background,
-  },
-  modalHeader: {
-    flexDirection: 'row' as const,
-    justifyContent: 'space-between' as const,
-    alignItems: 'center' as const,
-    paddingBottom: 16,
-    paddingHorizontal: 16,
-    paddingTop: Platform.OS === 'ios' ? 12 : 0,
-    backgroundColor: colors.background,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-  },
-  modalTitle: {
-    fontSize: 25,
-    fontWeight: 'bold' as const,
-    color: colors.text,
-    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
-  },
-  modalContent: {
-    flex: 1,
-    padding: 16,
-  },
-  formGroup: {
-    marginBottom: 16,
-  },
-  label: {
-    fontSize: 14,
-    fontWeight: '600' as const,
-    color: colors.textSecondary,
-    marginBottom: 8,
-    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
-  },
-  input: {
-    backgroundColor: colors.surfaceSecondary,
-    borderRadius: 8,
-    padding: 12,
-    color: colors.text,
-    fontSize: 14,
-    borderWidth: 1,
-    borderColor: colors.border,
-    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
-  },
-  textArea: {
-    minHeight: 80,
-    textAlignVertical: 'top' as const,
-  },
-  charCount: {
-    fontSize: 12,
-    color: colors.textSecondary,
-    marginTop: 4,
-    textAlign: 'right' as const,
-    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
-  },
-  pickerContainer: {
-    flexDirection: 'row' as const,
-    gap: 8,
-  },
-  pickerButton: {
-    flex: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 8,
-    backgroundColor: colors.surfaceSecondary,
-    alignItems: 'center' as const,
-    borderWidth: 2,
-    borderColor: colors.border,
-  },
-  pickerButtonActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-  pickerText: {
-    fontSize: 14,
-    fontWeight: '600' as const,
-    color: colors.textSecondary,
-    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
-  },
-  pickerTextActive: {
-    color: '#fff',
-  },
-  saveButton: {
-    backgroundColor: colors.primary,
-    paddingVertical: 14,
-    borderRadius: 8,
-    alignItems: 'center' as const,
-    marginTop: 8,
-    marginBottom: 32,
-  },
-  saveButtonText: {
-    fontSize: 16,
-    fontWeight: '600' as const,
-    color: '#fff',
-  },
-  buttonDisabled: {
-    opacity: 0.6,
-  },
-  infoBox: {
-    flexDirection: 'row' as const,
-    alignItems: 'flex-start' as const,
-    backgroundColor: colors.surfaceSecondary,
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 16,
-    gap: 12,
-  },
-  infoText: {
-    flex: 1,
-    fontSize: 13,
-    color: colors.textSecondary,
-    lineHeight: 18,
-  },
-  dangerModalHeader: {
-    backgroundColor: colors.error,
-  },
-  dangerInfoBox: {
-    backgroundColor: `${colors.error}20`,
-    borderWidth: 1,
-    borderColor: colors.error,
-  },
-  dangerInfoText: {
-    color: colors.error,
-  },
-  dangerButton: {
-    backgroundColor: colors.error,
-    paddingVertical: 14,
-    borderRadius: 8,
-    alignItems: 'center' as const,
-    marginTop: 8,
-    marginBottom: 32,
-  },
-  dangerButtonText: {
-    fontSize: 16,
-    fontWeight: '600' as const,
-    color: '#fff',
-  },
-  sectionHeader: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: colors.textSecondary,
-    paddingHorizontal: 16,
-    paddingTop: 24,
-    paddingBottom: 8,
-    letterSpacing: 0.5,
-    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
-  },
-  section: {
-    backgroundColor: colors.surface,
-    marginHorizontal: 16,
-    borderRadius: 12,
-    overflow: 'hidden',
-  },
-  settingItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-  },
-  settingLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  iconContainer: {
-    width: 36,
-    height: 36,
-    borderRadius: 8,
-    backgroundColor: colors.surfaceSecondary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  dangerIconContainer: {
-    backgroundColor: `${colors.error}20`,
-  },
-  settingText: {
-    flex: 1,
-  },
-  settingTitle: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: colors.text,
-    marginBottom: 2,
-    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
-  },
-  settingSubtitle: {
-    fontSize: 13,
-    color: colors.textSecondary,
-    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
-  },
-  dangerItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-  },
-  dangerText: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: colors.error,
-    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
-  },
-});
+const getStyles = (colors: any, insets: any) =>
+  StyleSheet.create({
+    container: {
+      flex: 1,
+      backgroundColor: colors.background,
+    },
+    scrollContent: {
+      paddingBottom: Math.max(insets.bottom, 40),
+    },
+    modalWrapper: {
+      flex: 1,
+      backgroundColor: colors.background,
+    },
+    modalContainer: {
+      flex: 1,
+      backgroundColor: colors.background,
+    },
+    safeAreaHeader: {
+      backgroundColor: colors.background,
+    },
+    modalHeader: {
+      flexDirection: 'row' as const,
+      justifyContent: 'space-between' as const,
+      alignItems: 'center' as const,
+      paddingBottom: 16,
+      paddingHorizontal: 16,
+      paddingTop: Platform.OS === 'ios' ? 12 : 0,
+      backgroundColor: colors.background,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+    },
+    modalTitle: {
+      fontSize: 25,
+      fontWeight: 'bold' as const,
+      color: colors.text,
+      fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    },
+    modalContent: {
+      flex: 1,
+      padding: 16,
+    },
+    formGroup: {
+      marginBottom: 16,
+    },
+    label: {
+      fontSize: 14,
+      fontWeight: '600' as const,
+      color: colors.textSecondary,
+      marginBottom: 8,
+      fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    },
+    input: {
+      backgroundColor: colors.surfaceSecondary,
+      borderRadius: 8,
+      padding: 12,
+      color: colors.text,
+      fontSize: 14,
+      borderWidth: 1,
+      borderColor: colors.border,
+      fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    },
+    textArea: {
+      minHeight: 80,
+      textAlignVertical: 'top' as const,
+    },
+    charCount: {
+      fontSize: 12,
+      color: colors.textSecondary,
+      marginTop: 4,
+      textAlign: 'right' as const,
+      fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    },
+    pickerContainer: {
+      flexDirection: 'row' as const,
+      gap: 8,
+    },
+    pickerButton: {
+      flex: 1,
+      paddingVertical: 12,
+      paddingHorizontal: 16,
+      borderRadius: 8,
+      backgroundColor: colors.surfaceSecondary,
+      alignItems: 'center' as const,
+      borderWidth: 2,
+      borderColor: colors.border,
+    },
+    pickerButtonActive: {
+      backgroundColor: colors.primary,
+      borderColor: colors.primary,
+    },
+    pickerText: {
+      fontSize: 14,
+      fontWeight: '600' as const,
+      color: colors.textSecondary,
+      fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    },
+    pickerTextActive: {
+      color: '#fff',
+    },
+    saveButton: {
+      backgroundColor: colors.primary,
+      paddingVertical: 14,
+      borderRadius: 8,
+      alignItems: 'center' as const,
+      marginTop: 8,
+      marginBottom: 32,
+    },
+    saveButtonText: {
+      fontSize: 16,
+      fontWeight: '600' as const,
+      color: '#fff',
+    },
+    buttonDisabled: {
+      opacity: 0.6,
+    },
+    infoBox: {
+      flexDirection: 'row' as const,
+      alignItems: 'flex-start' as const,
+      backgroundColor: colors.surfaceSecondary,
+      padding: 12,
+      borderRadius: 8,
+      marginBottom: 16,
+      gap: 12,
+    },
+    infoText: {
+      flex: 1,
+      fontSize: 13,
+      color: colors.textSecondary,
+      lineHeight: 18,
+    },
+    dangerModalHeader: {
+      backgroundColor: colors.error,
+    },
+    dangerInfoBox: {
+      backgroundColor: `${colors.error}20`,
+      borderWidth: 1,
+      borderColor: colors.error,
+    },
+    dangerInfoText: {
+      color: colors.error,
+    },
+    dangerButton: {
+      backgroundColor: colors.error,
+      paddingVertical: 14,
+      borderRadius: 8,
+      alignItems: 'center' as const,
+      marginTop: 8,
+      marginBottom: 32,
+    },
+    dangerButtonText: {
+      fontSize: 16,
+      fontWeight: '600' as const,
+      color: '#fff',
+    },
+    sectionHeader: {
+      fontSize: 13,
+      fontWeight: '600',
+      color: colors.textSecondary,
+      paddingHorizontal: 16,
+      paddingTop: 24,
+      paddingBottom: 8,
+      letterSpacing: 0.5,
+      fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    },
+    section: {
+      backgroundColor: colors.surface,
+      marginHorizontal: 16,
+      borderRadius: 12,
+      overflow: 'hidden',
+    },
+    settingItem: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      padding: 16,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+    },
+    settingLeft: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      flex: 1,
+    },
+    iconContainer: {
+      width: 36,
+      height: 36,
+      borderRadius: 8,
+      backgroundColor: colors.surfaceSecondary,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginRight: 12,
+    },
+    dangerIconContainer: {
+      backgroundColor: `${colors.error}20`,
+    },
+    settingText: {
+      flex: 1,
+    },
+    settingTitle: {
+      fontSize: 16,
+      fontWeight: '500',
+      color: colors.text,
+      marginBottom: 2,
+      fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    },
+    settingSubtitle: {
+      fontSize: 13,
+      color: colors.textSecondary,
+      fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    },
+    dangerItem: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      padding: 16,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+    },
+    dangerText: {
+      fontSize: 16,
+      fontWeight: '500',
+      color: colors.error,
+      fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    },
+  });
 
 const styles = getStyles({
   background: '#111827',
@@ -1192,6 +1230,6 @@ const styles = getStyles({
   border: '#374151',
   primary: '#8B5CF6',
   error: '#EF4444',
-});
+}, { bottom: 0, top: 0, left: 0, right: 0 });
 
 export default SettingsScreen;

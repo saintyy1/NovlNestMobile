@@ -9,7 +9,6 @@ import {
   Image,
   ActivityIndicator,
   Platform,
-  Alert,
 } from 'react-native';
 import CachedImage from '../../components/CachedImage';
 import ClassicsBadge from '../../components/ClassicsBadge';
@@ -25,7 +24,10 @@ import { spacing, typography } from '../../theme';
 import { sendPromotionEndedNotification } from "../../services/notificationServices";
 import { getReadingProgress, ReadingProgress, deleteReadingProgress } from '../../services/readingProgressService';
 import { useAuth } from '../../contexts/AuthContext';
+import { useAlert } from '../../contexts/AlertContext';
 import { withCache, CACHE_TTL } from '../../utils/cache';
+import { recoverCrashedSession } from '../../services/readingAnalyticsService';
+import { ReadingActivityDashboard } from '../../components/ReadingActivityDashboard';
 
 interface BannerSlide {
   id: string
@@ -36,6 +38,15 @@ interface BannerSlide {
   alt?: string
 }
 
+// Helper to check if a user is within the 24-hour verification grace period
+const isGracePeriodActive = (createdAt: string | undefined): boolean => {
+  if (!createdAt) return true
+  const createdDate = new Date(createdAt)
+  const now = new Date()
+  const diffInMs = now.getTime() - createdDate.getTime()
+  return diffInMs < 24 * 60 * 60 * 1000
+}
+
 export const HomeScreen = ({ navigation }: any) => {
   const { colors } = useTheme();
   const [promotedNovels, setPromotedNovels] = useState<Novel[]>([]);
@@ -43,16 +54,28 @@ export const HomeScreen = ({ navigation }: any) => {
   const [trendingPoems, setTrendingPoems] = useState<Poem[]>([]);
   const [newReleases, setNewReleases] = useState<Novel[]>([]);
   const [timelessStories, setTimelessStories] = useState<Novel[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loadingTrending, setLoadingTrending] = useState(true);
+  const [loadingNewReleases, setLoadingNewReleases] = useState(true);
+  const [loadingTimeless, setLoadingTimeless] = useState(true);
+  const [loadingPoems, setLoadingPoems] = useState(true);
+  const [loadingPromoted, setLoadingPromoted] = useState(true);
+  const [loadingBanners, setLoadingBanners] = useState(true);
+
+  const loading = loadingTrending || loadingNewReleases || loadingTimeless || loadingPoems || loadingPromoted || loadingBanners;
+
   const [imageErrors, setImageErrors] = useState<Record<string, boolean>>({});
-  const [banners, setBanners] = useState<BannerSlide[]>([])
-  const [loadingBanners, setLoadingBanners] = useState(true)
+  const [banners, setBanners] = useState<BannerSlide[]>([]);
   const [readingProgress, setReadingProgress] = useState<ReadingProgress[]>([]);
-  const { currentUser } = useAuth();
+  const { currentUser, sendEmailVerificationLink, refreshUser } = useAuth();
+  const { showAlert, showToast } = useAlert();
+  const [isSendingVerification, setIsSendingVerification] = useState(false);
 
   const styles = getStyles(colors);
 
   useEffect(() => {
+    // Recover any unfinished reading sessions from previous crashes
+    recoverCrashedSession();
+
     const fetchBanners = async () => {
       try {
         const bannersData = await withCache('home_banners', async () => {
@@ -67,7 +90,7 @@ export const HomeScreen = ({ navigation }: any) => {
             ...doc.data(),
           })) as BannerSlide[]
         }, CACHE_TTL.FEED)
-        
+
         setBanners(bannersData)
       } catch (error: any) {
         if (error.code !== 'permission-denied') console.error('Error fetching banners:', error)
@@ -95,7 +118,7 @@ export const HomeScreen = ({ navigation }: any) => {
     const unsubscribe = onSnapshot(q, async (snapshot) => {
       const finishedIds = currentUser.finishedReads || [];
       const rawProgress = snapshot.docs.map(doc => ({ ...doc.data() } as ReadingProgress));
-      
+
       const filteredProgress = rawProgress.filter(p => !finishedIds.includes(p.novelId));
 
       if (filteredProgress.length === 0) {
@@ -122,7 +145,7 @@ export const HomeScreen = ({ navigation }: any) => {
         const missingIds = novelIds.filter(id => !existingNovelIds.has(id));
         for (const missingId of missingIds) {
           // Fire and forget deletion
-          deleteReadingProgress(currentUser.uid, missingId).catch(err => 
+          deleteReadingProgress(currentUser.uid, missingId).catch(err =>
             console.error('Error auto-cleaning progress:', err)
           );
         }
@@ -221,7 +244,7 @@ export const HomeScreen = ({ navigation }: any) => {
               if (!data.promotionEndNotificationSent) {
                 try {
                   await sendPromotionEndedNotification(data.authorId, docSnap.id, data.title);
-                } catch (error) {}
+                } catch (error) { }
               }
               await updateDoc(docSnap.ref, {
                 isPromoted: false,
@@ -235,11 +258,16 @@ export const HomeScreen = ({ navigation }: any) => {
               dataList.push({ id: docSnap.id, ...data } as Novel);
             }
           }
-          return dataList;
+          return dataList.map(item => {
+            const { chapters, ...rest } = item as any;
+            return rest as Novel;
+          });
         }, CACHE_TTL.FEED);
         setPromotedNovels(promotionalData);
       } catch (error: any) {
         if (error.code !== 'permission-denied') console.error('Error fetching promoted:', error);
+      } finally {
+        setLoadingPromoted(false);
       }
     };
     fetchPromoted();
@@ -263,11 +291,16 @@ export const HomeScreen = ({ navigation }: any) => {
               novels.push(novelData);
             }
           });
-          return novels.slice(0, 7);
+          return novels.slice(0, 7).map(item => {
+            const { chapters, ...rest } = item as any;
+            return rest as Novel;
+          });
         }, CACHE_TTL.FEED);
         setTrendingNovels(trendingData);
       } catch (error: any) {
         if (error.code !== 'permission-denied') console.error('Error fetching trending novels:', error);
+      } finally {
+        setLoadingTrending(false);
       }
     };
     fetchTrending();
@@ -280,11 +313,16 @@ export const HomeScreen = ({ navigation }: any) => {
           const novelsRef = collection(db, 'novels');
           const q = query(novelsRef, where('published', '==', true), where('publicDomain', '==', false), orderBy('createdAt', 'desc'), limit(7));
           const snapshot = await getDocs(q);
-          return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Novel));
+          return snapshot.docs.map(doc => {
+            const { chapters, ...rest } = doc.data() as any;
+            return { id: doc.id, ...rest } as Novel;
+          });
         }, CACHE_TTL.FEED);
         setNewReleases(newReleasesData);
       } catch (error: any) {
         if (error.code !== 'permission-denied') console.error('Error fetching new releases:', error);
+      } finally {
+        setLoadingNewReleases(false);
       }
     };
     fetchNewReleases();
@@ -298,11 +336,16 @@ export const HomeScreen = ({ navigation }: any) => {
           const novelsRef = collection(db, 'novels');
           const q = query(novelsRef, where('published', '==', true), where('publicDomain', '==', true), orderBy('createdAt', 'desc'), limit(7));
           const snapshot = await getDocs(q);
-          return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Novel));
+          return snapshot.docs.map(doc => {
+            const { chapters, ...rest } = doc.data() as any;
+            return { id: doc.id, ...rest } as Novel;
+          });
         }, CACHE_TTL.FEED);
         setTimelessStories(timelessData);
       } catch (error: any) {
         if (error.code !== 'permission-denied') console.error('Error fetching timeless stories:', error);
+      } finally {
+        setLoadingTimeless(false);
       }
     };
     fetchTimeless();
@@ -327,7 +370,6 @@ export const HomeScreen = ({ navigation }: any) => {
               title: data.title || 'Untitled',
               poetName: data.poetName || 'Unknown',
               description: data.description || '',
-              content: data.content || '',
               genres: data.genres || [],
               poetId: data.poetId || '',
               published: data.published || false,
@@ -344,7 +386,7 @@ export const HomeScreen = ({ navigation }: any) => {
       } catch (error: any) {
         if (error.code !== 'permission-denied') console.error('Error fetching trending poems:', error);
       } finally {
-        setLoading(false);
+        setLoadingPoems(false);
       }
     };
     fetchPoems();
@@ -379,7 +421,7 @@ export const HomeScreen = ({ navigation }: any) => {
               uri={getFirebaseDownloadUrl(novel.coverSmallImage || novel.coverImage || '')}
               style={styles.novelCover}
               onError={() => handleImageError(novel.id)}
-              resizeMode="cover"
+              contentFit="cover"
               placeholderColor={colors.backgroundSecondary}
             />
           ) : (
@@ -428,7 +470,7 @@ export const HomeScreen = ({ navigation }: any) => {
               uri={getFirebaseDownloadUrl(poem.coverSmallImage || poem.coverImage || '')}
               style={styles.novelCover}
               onError={() => handleImageError(poem.id)}
-              resizeMode="cover"
+              contentFit="cover"
             />
           ) : (
             <View style={[styles.novelCover, { backgroundColor: getGenreColor(poem.genres) }]}>
@@ -462,10 +504,11 @@ export const HomeScreen = ({ navigation }: any) => {
   const handleRemoveProgress = (novelId: string, novelTitle: string) => {
     if (!currentUser) return;
 
-    Alert.alert(
-      'Remove from Continue Reading',
-      `Are you sure you want to remove "${novelTitle}" from your reading list?`,
-      [
+    showAlert({
+      title: 'Remove from Continue Reading',
+      message: `Are you sure you want to remove "${novelTitle}" from your reading list?`,
+      type: 'warning',
+      buttons: [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Remove',
@@ -473,13 +516,14 @@ export const HomeScreen = ({ navigation }: any) => {
           onPress: async () => {
             try {
               await deleteReadingProgress(currentUser.uid, novelId);
+              showToast({ message: 'Removed from list', type: 'success' });
             } catch (error) {
               console.error('Error removing progress:', error);
             }
           },
         },
       ]
-    );
+    });
   };
 
   const renderProgressCard = (progress: ReadingProgress) => {
@@ -502,7 +546,7 @@ export const HomeScreen = ({ navigation }: any) => {
             uri={getFirebaseDownloadUrl(progress.novelCover || '')}
             style={styles.novelCover}
             onError={() => handleImageError(progress.novelId)}
-            resizeMode="cover"
+            contentFit="cover"
           />
         ) : (
           <View style={[styles.novelCover, { backgroundColor: colors.backgroundSecondary }]}>
@@ -530,12 +574,64 @@ export const HomeScreen = ({ navigation }: any) => {
   return (
     <ScrollView style={[styles.container, { backgroundColor: colors.background }]} showsVerticalScrollIndicator={false}>
 
+      {/* Verification Banner */}
+      {currentUser && !currentUser.emailVerified && isGracePeriodActive(currentUser.createdAt) && (
+        <View style={[styles.bannerContainer, { backgroundColor: colors.secondary + '15', borderBottomColor: colors.border }]}>
+          <Ionicons name="mail-unread-outline" size={18} color={colors.secondary} />
+          <Text style={[styles.bannerText, { color: colors.text }]}>
+            Verify your email within 24 hours to keep access.
+          </Text>
+          <View style={styles.bannerButtons}>
+            <TouchableOpacity
+              onPress={async () => {
+                setIsSendingVerification(true);
+                try {
+                  await sendEmailVerificationLink();
+                  showToast({ message: "Verification email sent! Check your inbox.", type: "success" });
+                } catch (error: any) {
+                  showToast({ message: error.message || "Failed to send email.", type: "error" });
+                } finally {
+                  setIsSendingVerification(false);
+                }
+              }}
+              disabled={isSendingVerification}
+              style={[styles.bannerButton, { backgroundColor: colors.secondary }]}
+            >
+              {isSendingVerification ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Text style={styles.bannerButtonText}>Resend</Text>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={async () => {
+                setIsSendingVerification(true);
+                try {
+                  await refreshUser();
+                  // No need for alert if it works, the banner will just disappear
+                } catch (error: any) {
+                  showToast({ message: "Failed to refresh status. Please try again.", type: "error" });
+                } finally {
+                  setIsSendingVerification(false);
+                }
+              }}
+              disabled={isSendingVerification}
+              style={[styles.bannerButton, { backgroundColor: colors.primary, marginLeft: 8 }]}
+            >
+              <Text style={styles.bannerButtonText}>Refresh</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
       {/* Hero Banner Section */}
-      {loadingBanners ? (
-        <ActivityIndicator size="large" />
-      ) : (
+      {banners.length > 0 && (
         <HeroBanner slides={banners} autoSlideInterval={5000} />
       )}
+
+      {/* Reading Activity Dashboard */}
+      <ReadingActivityDashboard />
 
       {promotedNovels.length > 0 && (
         <View style={styles.section}>
@@ -676,7 +772,6 @@ export const HomeScreen = ({ navigation }: any) => {
           </View>
         </ScrollView>
       </View>
-
       <View style={styles.bottomSpacing} />
     </ScrollView>
   );
@@ -819,5 +914,35 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     color: themeColors.textSecondary,
     opacity: 0.75,
     textAlign: 'center',
+    display: 'flex',
+  },
+  // Verification Banner Styles
+  bannerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+  },
+  bannerButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  bannerText: {
+    flex: 1,
+    fontSize: 13,
+    marginHorizontal: 10,
+    lineHeight: 18,
+    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+  },
+  bannerButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  bannerButtonText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700',
   },
 });

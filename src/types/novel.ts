@@ -1,3 +1,10 @@
+export interface Character {
+  id: string;
+  name: string;
+  description: string;
+  imageUrl?: string | null;
+}
+
 export type ChatMessage = {
   id: string
   sender: string
@@ -17,7 +24,10 @@ export interface Novel {
     title: string
     content: string
     chatMessages?: ChatMessage[]
+    createdAt?: string
+    updatedAt?: string
   }[]
+  characters?: Character[];
   authorId: string
   authorName: string
   isPromoted: boolean
