@@ -25,6 +25,8 @@ import {
   where,
   getDocs,
   addDoc,
+  increment,
+  setDoc,
 } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { Novel } from '../../types/novel';
@@ -33,6 +35,7 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { spacing } from '../../theme';
 import { sendPushNotification, broadcastNotification } from '../../services/PushNotificationService';
 import { useAlert } from '../../contexts/AlertContext';
+import { getFriendlyErrorMessage } from '../../utils/errorHandlers';
 
 interface Chapter {
   title: string;
@@ -93,7 +96,8 @@ const AddChaptersScreen = ({ route, navigation }: any) => {
   };
 
   const getChapterNumber = (index: number) => {
-    return (novel?.chapters?.length || 0) + index + 1;
+    const currentCount = novel?.chapterCount ?? 0;
+    return currentCount + index + 1;
   };
 
   const removeChapter = (index: number) => {
@@ -147,11 +151,34 @@ const AddChaptersScreen = ({ route, navigation }: any) => {
       setSubmitting(true);
       setError('');
 
-      // Update the novel with new chapters
-      await updateDoc(doc(db, 'novels', novelId), {
-        chapters: arrayUnion(...validChapters),
+      // 1. Update the novel metadata (count and titles for TOC)
+      const novelRef = doc(db, 'novels', novelId);
+      const currentChapterCount = novel.chapterCount ?? 0;
+      
+      const newTitles = validChapters.map(ch => ch.title);
+      const legacyTitles = novel.chapterTitles || [];
+      const updatedTitles = [...legacyTitles, ...newTitles];
+
+      await updateDoc(novelRef, {
+        chapterCount: increment(validChapters.length),
+        chapterTitles: updatedTitles,
         updatedAt: new Date().toISOString(),
       });
+
+      // 2. Add each chapter to the sub-collection
+      const batchPromises = validChapters.map((chapter, index) => {
+        const chapterIdx = currentChapterCount + index;
+        const chapterRef = doc(db, 'novels', novelId, 'chapters', chapterIdx.toString());
+        return setDoc(chapterRef, {
+          ...chapter,
+          order: chapterIdx,
+          chapterLikes: 0,
+          chapterLikedBy: [],
+          comments: [],
+        }, { merge: true });
+      });
+
+      await Promise.all(batchPromises);
 
       // Invalidate novel cache and relevant prefixes
       await invalidateCache(`novel_${novelId}`);
@@ -175,7 +202,7 @@ const AddChaptersScreen = ({ route, navigation }: any) => {
           {
             title: `${novel.title} 📖`,
             body: `New chapter: ${validChapters[0]?.title || 'untitled'}`,
-            data: { url: `novlnest://novel/${novelId}/read?chapter=${novel.chapters.length}` }
+            data: { url: `novlnest://novel/${novelId}/read?chapter=${currentChapterCount}` }
           }
         );
         console.log(`Successfully initiated broadcast for novel: ${novelId}`);
@@ -198,11 +225,11 @@ const AddChaptersScreen = ({ route, navigation }: any) => {
       // Reset form
       setNewChapters([]);
     } catch (err) {
-      console.error('Error adding chapters:', err);
-      setError('Failed to add chapters. Please try again.');
+      const friendlyError = getFriendlyErrorMessage(err, 'add_chapter');
+      setError(friendlyError);
       showAlert({
         title: 'Error',
-        message: 'Failed to add chapters. Please try again.',
+        message: friendlyError,
         type: 'error'
       });
     } finally {
@@ -287,7 +314,7 @@ const AddChaptersScreen = ({ route, navigation }: any) => {
               </Text>
               <Text style={styles.novelAuthor}>By {novel?.authorName}</Text>
               <Text style={styles.novelChapters}>
-                Current chapters: {novel?.chapters?.length || 0}
+                Current chapters: {novel?.chapterCount || 0}
               </Text>
             </View>
           </View>

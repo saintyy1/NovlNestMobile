@@ -42,7 +42,11 @@ export const useReadingSession = (
     if (!userId || !bookId) return;
 
     const initSession = async () => {
+      // Reset refs for the new session
+      accumulatedTimeRef.current = 0;
+      isCompletedRef.current = false;
       currentIntervalStartRef.current = Date.now();
+      
       await startReadingSession(userId, bookId, bookTitle, chapterId, contentType);
       setIsActive(true);
       startHeartbeat();

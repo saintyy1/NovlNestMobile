@@ -155,8 +155,14 @@ const SettingsScreen = ({ navigation }: any) => {
       showToast({ message: 'Profile updated!', type: 'success' });
       setShowEditProfileModal(false);
       fetchUserData();
-    } catch (error) {
-      showToast({ message: 'Failed to update profile', type: 'error' });
+    } catch (error: any) {
+      console.error('Update profile error:', error);
+      showAlert({
+        title: 'Update Failed',
+        message: error.message || 'Failed to update profile. Please try again.',
+        type: 'error',
+        useNative: true
+      });
     } finally {
       setIsLoading(false);
     }

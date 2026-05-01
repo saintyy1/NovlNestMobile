@@ -35,6 +35,7 @@ import {
   updateDoc,
   addDoc,
   deleteDoc,
+  writeBatch,
   onSnapshot,
   documentId,
   getCountFromServer,
@@ -371,12 +372,12 @@ const ProfileScreen = ({ route, navigation }: any) => {
     if (isUploadingPhoto) return;
 
     const buttons: any[] = [
-      { text: 'Upload New Photo', onPress: handleImagePick },
+      { text: 'Upload', onPress: handleImagePick },
     ];
 
     if (profileUser?.photoURL) {
       buttons.push({
-        text: 'Remove Current Photo',
+        text: 'Remove',
         onPress: handleRemovePhoto,
         style: 'destructive',
       });
@@ -388,7 +389,6 @@ const ProfileScreen = ({ route, navigation }: any) => {
       title: 'Profile Photo',
       message: 'Would you like to update or remove your profile photo?',
       type: 'info',
-      useNative: true,
       buttons: buttons
     });
   };
@@ -460,7 +460,6 @@ const ProfileScreen = ({ route, navigation }: any) => {
       title: 'Delete Announcement',
       message: 'Are you sure you want to delete this announcement?',
       type: 'warning',
-      useNative: true,
       buttons: [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -658,7 +657,6 @@ const ProfileScreen = ({ route, navigation }: any) => {
       title: 'Delete Novel',
       message: `Are you sure you want to delete "${novel.title}"? This action cannot be undone.`,
       type: 'warning',
-      useNative: true,
       buttons: [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -666,7 +664,69 @@ const ProfileScreen = ({ route, navigation }: any) => {
           style: 'destructive',
           onPress: async () => {
             try {
-              await deleteDoc(doc(db, 'novels', novel.id));
+              const novelRef = doc(db, 'novels', novel.id);
+              const chaptersRef = collection(db, 'novels', novel.id, 'chapters');
+              const chaptersSnapshot = await getDocs(chaptersRef);
+
+              // 1. Parallel Delete all documents (Chapters and their associated comments)
+              await Promise.all(chaptersSnapshot.docs.map(async (chapterDoc) => {
+                const commentsRef = collection(db, 'novels', novel.id, 'chapters', chapterDoc.id, 'comments');
+                const commentsSnapshot = await getDocs(commentsRef);
+
+                const batch = writeBatch(db);
+                commentsSnapshot.docs.forEach((commentDoc) => {
+                  batch.delete(commentDoc.ref);
+                });
+                batch.delete(chapterDoc.ref);
+                return batch.commit();
+              }));
+
+              // 2. Delete novel-level comments
+              const novelCommentsQuery = query(collection(db, 'comments'), where('novelId', '==', novel.id));
+              const novelCommentsSnapshot = await getDocs(novelCommentsQuery);
+              const commentBatch = writeBatch(db);
+              novelCommentsSnapshot.docs.forEach(cDoc => commentBatch.delete(cDoc.ref));
+              await commentBatch.commit();
+
+              // 3. Collect all storage URLs to delete
+              const storageUrls: string[] = [];
+              if (novel.coverImage) storageUrls.push(novel.coverImage);
+              if (novel.coverSmallImage) storageUrls.push(novel.coverSmallImage);
+
+              // Character images
+              if (novel.characters && novel.characters.length > 0) {
+                novel.characters.forEach((char: any) => {
+                  if (char.imageUrl) storageUrls.push(char.imageUrl);
+                });
+              }
+
+              // Chapter images (inline)
+              chaptersSnapshot.docs.forEach((chapterDoc) => {
+                const content = chapterDoc.data().content || "";
+                const imageRegex = /\[IMAGE:(.*?)\]/g;
+                let match;
+                while ((match = imageRegex.exec(content)) !== null) {
+                  storageUrls.push(match[1]);
+                }
+              });
+
+              // 4. Finally delete the novel document
+              await deleteDoc(novelRef);
+
+              // 5. Delete all storage files (Background)
+              Promise.allSettled(
+                storageUrls
+                  .filter(url => url && url.includes('firebasestorage.googleapis.com'))
+                  .map(async (url) => {
+                    try {
+                      const fileRef = ref(storage, url);
+                      await deleteObject(fileRef);
+                    } catch (e) {
+                      console.error("Failed to delete storage file:", url, e);
+                    }
+                  })
+              );
+
               // Invalidate caches
               await invalidateCache(`novel_${novel.id}`);
               await invalidateByPrefix("profile_");
@@ -734,7 +794,6 @@ const ProfileScreen = ({ route, navigation }: any) => {
       title: 'Delete Poem',
       message: `Are you sure you want to delete "${poem.title}"? This action cannot be undone.`,
       type: 'warning',
-      useNative: true,
       buttons: [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -743,6 +802,35 @@ const ProfileScreen = ({ route, navigation }: any) => {
           onPress: async () => {
             try {
               await deleteDoc(doc(db, 'poems', poem.id));
+
+              // Delete poem comments
+              const poemCommentsQuery = query(collection(db, 'poemComments'), where('poemId', '==', poem.id));
+              const poemCommentsSnapshot = await getDocs(poemCommentsQuery);
+              const commentBatch = writeBatch(db);
+              poemCommentsSnapshot.docs.forEach(cDoc => commentBatch.delete(cDoc.ref));
+              await commentBatch.commit();
+
+              // 1. Collect all storage URLs to delete
+              const storageUrls: string[] = [];
+
+              // Poem covers
+              if (poem.coverImage) storageUrls.push(poem.coverImage);
+              if (poem.coverSmallImage) storageUrls.push(poem.coverSmallImage);
+
+              // Delete all storage files (Background)
+              Promise.allSettled(
+                storageUrls
+                  .filter(url => url && url.includes('firebasestorage.googleapis.com'))
+                  .map(async (url) => {
+                    try {
+                      const fileRef = ref(storage, url);
+                      await deleteObject(fileRef);
+                    } catch (e) {
+                      console.error("Failed to delete storage file:", url, e);
+                    }
+                  })
+              );
+
               // Invalidate caches
               await invalidateCache(`poem_${poem.id}`);
               await invalidateByPrefix("profile_");

@@ -10,6 +10,7 @@ export type RootStackParamList = {
   PrivacyPolicy: undefined;
   TermsOfService: undefined;
   ReadingInsights: undefined;
+  BookReadingInsights: { bookStats: any[] };
   Support: undefined;
   MyTickets: undefined;
   NovelOverview: { id: string };

@@ -20,8 +20,13 @@ import {
     doc,
     getDoc,
     updateDoc,
+    deleteDoc,
     deleteField,
+    increment,
+    writeBatch,
+    setDoc,
 } from 'firebase/firestore';
+import { broadcastNotification } from '../../services/PushNotificationService';
 import { get } from 'react-native/Libraries/TurboModule/TurboModuleRegistry';
 
 interface Chapter {
@@ -37,7 +42,7 @@ const ChaptersListScreen = ({ route, navigation }: any) => {
     const insets = useSafeAreaInsets();
 
     const [novel, setNovel] = React.useState<Novel>(initialNovel);
-    const [loading, setLoading] = React.useState(!initialNovel?.chapters && initialNovel?.id);
+    const [loading, setLoading] = React.useState(!initialNovel?.chapterTitles && initialNovel?.id);
 
     const styles = getStyles(colors);
 
@@ -45,8 +50,8 @@ const ChaptersListScreen = ({ route, navigation }: any) => {
         const fetchFullNovel = async () => {
             if (!initialNovel?.id) return;
 
-            // Check if we already have the chapters
-            if (initialNovel.chapters && initialNovel.chapters.length > 0) {
+            // Check if we already have the chapter titles
+            if (initialNovel.chapterTitles && initialNovel.chapterTitles.length > 0) {
                 setLoading(false);
                 return;
             }
@@ -71,10 +76,11 @@ const ChaptersListScreen = ({ route, navigation }: any) => {
 
     const getTotalParts = () => {
         if (!novel) return 0;
+        const chaptersCount = novel.chapterCount ?? 0;
         return (
             (novel.authorsNote ? 1 : 0) +
             (novel.prologue ? 1 : 0) +
-            (novel.chapters?.length || 0) +
+            chaptersCount +
             (novel.epilogue ? 1 : 0)
         );
     };
@@ -101,7 +107,8 @@ const ChaptersListScreen = ({ route, navigation }: any) => {
         }
 
         if (type === 'epilogue') {
-            return hasNote + hasPrologue + hasCharacters + (novel.chapters?.length || 0);
+            const chaptersCount = novel.chapterCount ?? 0;
+            return hasNote + hasPrologue + hasCharacters + chaptersCount;
         }
 
         return 0;
@@ -377,7 +384,6 @@ const ChaptersListScreen = ({ route, navigation }: any) => {
                                     </View>
                                     <View style={styles.chapterTextContainer}>
                                         <Text style={styles.chapterTitle}>Cast of Characters</Text>
-                                        <Text style={styles.chapterSubtitle}>{novel.characters?.length} characters</Text>
                                     </View>
                                 </View>
                                 <Ionicons name="chevron-forward" size={20} color="#6B7280" />
@@ -385,96 +391,129 @@ const ChaptersListScreen = ({ route, navigation }: any) => {
                         ) : null}
 
                         {/* Regular Chapters */}
-                        {novel.chapters?.map((chapter: Chapter, index: number) => (
-                            <TouchableOpacity
-                                key={index}
-                                style={styles.chapterItem}
-                                onPress={() =>
-                                    navigation.navigate('NovelReader', {
-                                        novelId: novel.id,
-                                        chapterNumber: getChapterNumber('chapter', index),
-                                    })
-                                }
+                        {(() => {
+                            const chaptersCount = novel.chapterCount ?? 0;
+                            const titles = novel.chapterTitles || [];
 
-                                onLongPress={() => {
-                                    const isAuthor = novel.authorId === currentUser?.uid;
-                                    if (isAuthor) {
-                                        showAlert({
-                                            title: chapter.title,
-                                            message: 'Choose an action',
-                                            type: 'info',
-                                            buttons: [
-                                                {
-                                                    text: 'Edit',
-                                                    onPress: () =>
-                                                        navigation.navigate('EditChapter', {
-                                                            novelId: novel.id,
-                                                            chapterIndex: index,
-                                                        }),
-                                                },
-                                                {
-                                                    text: 'Delete',
-                                                    style: 'destructive',
-                                                    onPress: () => {
-                                                        showAlert({
-                                                            title: 'Confirm Deletion',
-                                                            message: 'Are you sure you want to delete this chapter? This action cannot be undone.',
-                                                            type: 'warning',
-                                                            buttons: [
-                                                                {
-                                                                    text: 'Delete',
-                                                                    style: 'destructive',
-                                                                    onPress: async () => {
-                                                                        try {
-                                                                            const novelRef = doc(db, 'novels', novel.id);
-                                                                            const novelDoc = await getDoc(novelRef);
-                                                                            if (novelDoc.exists()) {
-                                                                                const novelData = novelDoc.data() as Novel;
-                                                                                const updatedChapters = [...(novelData.chapters || [])];
-                                                                                updatedChapters.splice(index, 1);
-                                                                                await updateDoc(novelRef, { chapters: updatedChapters });
-
-                                                                                // Update local state
-                                                                                setNovel(prev => ({ ...prev, chapters: updatedChapters }));
-
-                                                                                // Invalidate novel and all chapters (since indices shifted)
-                                                                                await invalidateCache(`novel_${novel.id}`);
-                                                                                await invalidateByPrefix(`chapter_${novel.id}`);
-                                                                                await invalidateByPrefix("home_");
-                                                                                await invalidateByPrefix("browse_");
-                                                                                await invalidateByPrefix("profile_");
-
-                                                                                showToast({ message: 'Chapter deleted!', type: 'success' });
-                                                                            }
-                                                                        } catch (error) {
-                                                                            console.error('Error deleting chapter:', error);
-                                                                            showToast({ message: 'Failed to delete chapter. Please try again.', type: 'error' });
-                                                                        }
-                                                                    },
-                                                                },
-                                                                { text: 'Cancel', style: 'cancel' },
-                                                            ]
-                                                        });
-                                                    },
-                                                },
-                                                { text: 'Cancel', style: 'cancel' },
-                                            ]
-                                        });
+                            return Array.from({ length: chaptersCount }).map((_, index) => (
+                                <TouchableOpacity
+                                    key={index}
+                                    style={styles.chapterItem}
+                                    onPress={() =>
+                                        navigation.navigate('NovelReader', {
+                                            novelId: novel.id,
+                                            chapterNumber: getChapterNumber('chapter', index),
+                                        })
                                     }
-                                }}
-                            >
-                                <View style={styles.chapterInfo}>
-                                    <View style={styles.chapterNumberContainer}>
-                                        <Text style={styles.chapterNumber}>{index + 1}</Text>
+                                    onLongPress={() => {
+                                        const isAuthor = novel.authorId === currentUser?.uid;
+                                        if (isAuthor) {
+                                            showAlert({
+                                                title: titles[index] || `Chapter ${index + 1}`,
+                                                message: 'Choose an action',
+                                                type: 'info',
+                                                buttons: [
+                                                    {
+                                                        text: 'Edit',
+                                                        onPress: () =>
+                                                            navigation.navigate('EditChapter', {
+                                                                novelId: novel.id,
+                                                                chapterIndex: index,
+                                                            }),
+                                                    },
+                                                    {
+                                                        text: 'Delete',
+                                                        style: 'destructive',
+                                                        onPress: () => {
+                                                            showAlert({
+                                                                title: 'Confirm Deletion',
+                                                                message: 'Are you sure you want to delete this chapter? This action cannot be undone.',
+                                                                type: 'warning',
+                                                                buttons: [
+                                                                    {
+                                                                        text: 'Delete',
+                                                                        style: 'destructive',
+                                                                        onPress: async () => {
+                                                                            try {
+                                                                                const novelRef = doc(db, 'novels', novel.id);
+                                                                                const novelDoc = await getDoc(novelRef);
+                                                                                if (novelDoc.exists()) {
+                                                                                    const novelData = novelDoc.data() as Novel;
+
+                                                                                    // 1. Update Novel Metadata
+                                                                                    if (novelData.chapterTitles) {
+                                                                                        const updatedTitles = [...novelData.chapterTitles];
+                                                                                        updatedTitles.splice(index, 1);
+                                                                                        await updateDoc(novelRef, {
+                                                                                            chapterTitles: updatedTitles,
+                                                                                            chapterCount: increment(-1),
+                                                                                            updatedAt: new Date().toISOString()
+                                                                                        });
+                                                                                    }
+
+                                                                                    // 2. Re-index Subcollection Documents
+                                                                                    // We need to move chapters [index+1...count-1] down to [index...count-2]
+                                                                                    const batch = writeBatch(db);
+                                                                                    const count = novelData.chapterCount || 0;
+
+                                                                                    // Sequential move to avoid conflicts if we were using a single batch,
+                                                                                    // but Firestore doc IDs are distinct, so we can just read then write.
+                                                                                    for (let i = index + 1; i < count; i++) {
+                                                                                        const oldRef = doc(db, 'novels', novel.id, 'chapters', i.toString());
+                                                                                        const newRef = doc(db, 'novels', novel.id, 'chapters', (i - 1).toString());
+                                                                                        const oldDoc = await getDoc(oldRef);
+                                                                                        if (oldDoc.exists()) {
+                                                                                            batch.set(newRef, { ...oldDoc.data(), order: i - 1 });
+                                                                                        }
+                                                                                    }
+
+                                                                                    // Delete the last document (which is now a duplicate of the second-to-last, or the one we deleted)
+                                                                                    const lastRef = doc(db, 'novels', novel.id, 'chapters', (count - 1).toString());
+                                                                                    batch.delete(lastRef);
+
+                                                                                    await batch.commit();
+
+                                                                                    setNovel(prev => {
+                                                                                        const next = { ...prev };
+                                                                                        if (next.chapterTitles) next.chapterTitles.splice(index, 1);
+                                                                                        if (next.chapterCount) next.chapterCount -= 1;
+                                                                                        return next;
+                                                                                    });
+
+                                                                                    await invalidateCache(`novel_${novel.id}`);
+                                                                                    await invalidateByPrefix(`chapter_${novel.id}`);
+                                                                                    showToast({ message: 'Chapter deleted!', type: 'success' });
+                                                                                }
+                                                                            } catch (error) {
+                                                                                console.error('Error deleting chapter:', error);
+                                                                                showToast({ message: 'Failed to delete chapter.', type: 'error' });
+                                                                            }
+                                                                        },
+                                                                    },
+                                                                    { text: 'Cancel', style: 'cancel' },
+                                                                ]
+                                                            });
+                                                        },
+                                                    },
+                                                    { text: 'Cancel', style: 'cancel' },
+                                                ]
+                                            });
+                                        }
+                                    }}
+                                >
+                                    <View style={styles.chapterInfo}>
+                                        <View style={styles.chapterNumberContainer}>
+                                            <Text style={styles.chapterNumber}>{index + 1}</Text>
+                                        </View>
+                                        <View style={styles.chapterTextContainer}>
+                                            <Text style={styles.chapterTitle}>{titles[index] || `Chapter ${index + 1}`}</Text>
+                                            <Text style={styles.chapterSubtitle}>Chapter {index + 1}</Text>
+                                        </View>
                                     </View>
-                                    <View style={styles.chapterTextContainer}>
-                                        <Text style={styles.chapterTitle}>{chapter.title}</Text>
-                                        <Text style={styles.chapterSubtitle}>Chapter {index + 1}</Text>
-                                    </View>
-                                </View>
-                                <Ionicons name="chevron-forward" size={20} color="#6B7280" />
-                            </TouchableOpacity>
-                        ))}
+                                    <Ionicons name="chevron-forward" size={20} color="#6B7280" />
+                                </TouchableOpacity>
+                            ));
+                        })()}
 
                         {/* Epilogue */}
                         {novel.epilogue && (
@@ -503,13 +542,26 @@ const ChaptersListScreen = ({ route, navigation }: any) => {
                                                             initialContent: novel.epilogue?.content || '',
                                                             onSave: async (epilogueData: { title: string; content: string }) => {
                                                                 try {
-                                                                    await updateDoc(doc(db, 'novels', novel.id), {
+                                                                    const isNewEpilogue = !novel.epilogue;
+                                                                    const wasAlreadyCompleted = novel.status === 'completed';
+
+                                                                    const updateData: any = {
                                                                         epilogue: epilogueData,
                                                                         updatedAt: new Date().toISOString(),
-                                                                    });
+                                                                    };
+
+                                                                    if (!wasAlreadyCompleted) {
+                                                                        updateData.status = 'completed';
+                                                                    }
+
+                                                                    await updateDoc(doc(db, 'novels', novel.id), updateData);
 
                                                                     // Update local state
-                                                                    setNovel(prev => ({ ...prev, epilogue: epilogueData }));
+                                                                    setNovel(prev => ({
+                                                                        ...prev,
+                                                                        epilogue: epilogueData,
+                                                                        status: updateData.status || prev.status
+                                                                    }));
 
                                                                     // Invalidate novel and epilogue cache
                                                                     await invalidateCache(`novel_${novel.id}`);
@@ -518,7 +570,49 @@ const ChaptersListScreen = ({ route, navigation }: any) => {
                                                                     await invalidateByPrefix("browse_");
                                                                     await invalidateByPrefix("profile_");
 
-                                                                    showToast({ message: 'Epilogue updated!', type: 'success' });
+                                                                    showToast({ message: isNewEpilogue ? 'Epilogue added and novel completed!' : 'Epilogue updated!', type: 'success' });
+
+                                                                    // Send Notifications
+                                                                    if (isNewEpilogue) {
+                                                                        const authorName = currentUser?.displayName || 'The author';
+
+                                                                        // 1. Epilogue Notification
+                                                                        await broadcastNotification(
+                                                                            { type: 'library_users', id: novel.id },
+                                                                            {
+                                                                                fromUserId: currentUser?.uid,
+                                                                                fromUserName: authorName,
+                                                                                type: 'new_chapter',
+                                                                                novelId: novel.id,
+                                                                                novelTitle: novel.title,
+                                                                                chapterTitle: epilogueData.title || 'Epilogue',
+                                                                            },
+                                                                            {
+                                                                                title: "The Grand Finale 🎭",
+                                                                                body: `${authorName} just added an epilogue to '${novel.title}'. The journey is finally complete!`,
+                                                                                data: { url: `novlnest://novel/${novel.id}/read?chapter=${novel.chapterCount || 0}` }
+                                                                            }
+                                                                        );
+
+                                                                        // 2. Completion Notification
+                                                                        if (!wasAlreadyCompleted) {
+                                                                            await broadcastNotification(
+                                                                                { type: 'library_users', id: novel.id },
+                                                                                {
+                                                                                    fromUserId: currentUser?.uid,
+                                                                                    fromUserName: authorName,
+                                                                                    type: 'novel_finished',
+                                                                                    novelId: novel.id,
+                                                                                    novelTitle: novel.title,
+                                                                                },
+                                                                                {
+                                                                                    title: "Mission Accomplished! 🏆",
+                                                                                    body: `'${novel.title}' is now officially finished. Congratulations to ${authorName} on this incredible story!`,
+                                                                                    data: { url: `novlnest://novel/${novel.id}` }
+                                                                                }
+                                                                            );
+                                                                        }
+                                                                    }
                                                                 } catch (error) {
                                                                     console.error('Error updating epilogue:', error);
                                                                     showToast({ message: 'Failed to update epilogue', type: 'error' });

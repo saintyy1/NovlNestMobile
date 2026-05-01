@@ -22,7 +22,7 @@ import CachedImage from '../../components/CachedImage';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import { db, storage } from '../../firebase/config';
-import { collection, doc, setDoc } from 'firebase/firestore';
+import { collection, doc, setDoc, increment } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { compressForCover, generateSmallCover } from '../../utils/imageUtils';
 import { useAuth } from '../../contexts/AuthContext';
@@ -34,8 +34,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getDrafts, saveDraft, deleteDraft, DraftData } from '../../utils/draftStorage';
 import { useDraftAutoSave } from '../../hooks/useDraftAutoSave';
-import { InlineChatEditor, type ChatMessage } from '../../components/InlineChatEditor';
 import { trackContentCreate } from '../../utils/Analytics-utils';
+import { getFriendlyErrorMessage } from '../../utils/errorHandlers';
 
 
 type SubmitType = null | 'novel' | 'poem';
@@ -53,7 +53,6 @@ const POEM_GENRES = [
 interface Chapter {
   title: string;
   content: string;
-  chatMessages?: ChatMessage[];
 }
 
 interface Character {
@@ -462,7 +461,6 @@ export const SubmitScreen = () => {
         const importedChapters: Chapter[] = data.chapters.map((ch: any) => ({
           title: ch.title || 'Untitled Chapter',
           content: ch.content || '',
-          chatMessages: [],
         }));
 
         setChapters(importedChapters);
@@ -617,7 +615,8 @@ export const SubmitScreen = () => {
           prologue: prologue || null,
           genres,
           hasGraphicContent,
-          chapters,
+          chapterCount: chapters.length,
+          chapterTitles: chapters.map(ch => ch.title),
           characters: finalCharacters,
           authorId: currentUser?.uid,
           authorName: currentUser?.displayName,
@@ -632,6 +631,22 @@ export const SubmitScreen = () => {
           views: 0,
           publicDomain: false,
         });
+
+        // 2. Save chapters to sub-collection
+        const chapterPromises = chapters.map((chapter, index) => {
+          const chapterRef = doc(db, 'novels', docRef.id, 'chapters', index.toString());
+          return setDoc(chapterRef, {
+            ...chapter,
+            order: index,
+            chapterLikes: 0,
+            chapterLikedBy: [],
+            comments: [],
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          });
+        });
+
+        await Promise.all(chapterPromises);
 
         // Track novel creation for analytics
         trackContentCreate({
@@ -708,8 +723,13 @@ export const SubmitScreen = () => {
       });
 
     } catch (error) {
-      console.error('Error submitting:', error);
-      setError(`Failed to submit ${submitType}. Please try again.`);
+      const friendlyError = getFriendlyErrorMessage(error, 'submit_work');
+      setError(friendlyError);
+      showAlert({
+        title: 'Submission Failed',
+        message: friendlyError,
+        type: 'error'
+      });
     } finally {
       setLoading(false);
     }
@@ -1225,10 +1245,10 @@ export const SubmitScreen = () => {
                         navigation.navigate('ChapterEditor', {
                           chapterNumber,
                           onSave: (newChapter: any) => {
-                            setChapters(prev => [...prev, { ...newChapter, chatMessages: [] }]);
+                            setChapters(prev => [...prev, { ...newChapter }]);
                           },
                           onAutoSave: (newChapter: any) => {
-                            setChapters(prev => [...prev, { ...newChapter, chatMessages: [] }]);
+                            setChapters(prev => [...prev, { ...newChapter }]);
                             DeviceEventEmitter.emit('draftSaveStatus', 'Draft updated');
                             setTimeout(() => DeviceEventEmitter.emit('draftSaveStatus', null), 2000);
                           }

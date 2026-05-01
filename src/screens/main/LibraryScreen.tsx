@@ -113,7 +113,8 @@ export const LibraryScreen = ({ navigation }: any) => {
 
       novelDocs.forEach((novelDoc) => {
         if (novelDoc.exists()) {
-          const novel = { id: novelDoc.id, ...novelDoc.data() } as Novel;
+          const { chapters, ...rest } = novelDoc.data() as any;
+          const novel = { id: novelDoc.id, ...rest } as Novel;
           if (likedNovelIds.includes(novel.id)) {
             fetchedLikedNovels.push(novel);
           }

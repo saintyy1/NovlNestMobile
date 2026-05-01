@@ -64,3 +64,23 @@ export const cancelStreakReminder = async () => {
     console.error('[LocalNotification] Error cancelling streak reminder:', error);
   }
 };
+/**
+ * Sends an immediate local notification for a milestone completion.
+ */
+export const sendMilestoneNotification = async (name: string, description: string) => {
+  try {
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: `Milestone Unlocked: ${name}! 🏆`,
+        body: description,
+        data: { url: 'novlnest://insights' },
+        sound: true,
+        priority: Notifications.AndroidNotificationPriority.HIGH,
+      },
+      trigger: null, // Send immediately
+    });
+    console.log(`[LocalNotification] Milestone notification sent: ${name}`);
+  } catch (error) {
+    console.error('[LocalNotification] Error sending milestone notification:', error);
+  }
+};

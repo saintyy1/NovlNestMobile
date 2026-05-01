@@ -41,10 +41,10 @@ import AsyncStorage from "@react-native-async-storage/async-storage"
 import { auth, db, actionCodeSettings } from "../firebase/config"
 import { sendPushNotification } from "../services/PushNotificationService"
 import { deleteReadingProgress } from "../services/readingProgressService"
-import { 
-  invalidateCache, 
-  invalidateByPrefix, 
-  invalidateProfileCache, 
+import {
+  invalidateCache,
+  invalidateByPrefix,
+  invalidateProfileCache,
   invalidateUserPreviewCache,
   invalidateHomeCache,
   invalidateBrowseCache,
@@ -72,6 +72,7 @@ export interface ExtendedUser extends User {
   emailVisible?: boolean
   pushToken?: string
   pushNotificationsEnabled?: boolean
+  displayNameLower?: string
 }
 
 interface AuthContextType {
@@ -268,7 +269,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const userDoc = await getDoc(doc(db, "users", user.uid))
       if (userDoc.exists()) {
         const data = userDoc.data()
-        
+
         // Sync email verification status from Firebase Auth to Firestore if needed
         if (data.isVerified === false && user.emailVerified === true) {
           try {
@@ -290,6 +291,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           updatedAt: data.updatedAt,
           photoURL: data.photoURL || user.photoURL,
           displayName: data.displayName || user.displayName || user.email?.split("@")[0] || "User",
+          displayNameLower: data.displayNameLower,
           bio: data.bio || "",
           followers: data.followers || [],
           following: data.following || [],
@@ -304,6 +306,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           pushToken: data.pushToken,
           pushNotificationsEnabled: data.pushNotificationsEnabled,
         } as ExtendedUser
+
         setCurrentUser(extendedUser)
         setFirebaseUser(user)
         setIsAdmin(data.isAdmin === true)
@@ -314,6 +317,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           uid: user.uid,
           email: user.email,
           displayName: user.displayName || user.email?.split("@")[0] || "User",
+          displayNameLower: (user.displayName || user.email?.split("@")[0] || "User").toLowerCase().replace(/\s+/g, " ").trim(),
           photoURL: user.photoURL,
           isAdmin: false,
           emailVisible: false,
@@ -337,6 +341,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const extendedUser = {
           ...user,
           displayName: user.displayName || user.email?.split("@")[0] || "User",
+          displayNameLower: (user.displayName || user.email?.split("@")[0] || "User").toLowerCase().replace(/\s+/g, " ").trim(),
           photoURL: user.photoURL,
           isAdmin: false,
           emailVisible: false,
@@ -389,11 +394,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         photoURL: photoBase64,
         updatedAt: new Date().toISOString(),
       })
-      
+
       // 🚀 Invalidate caches
       await invalidateProfileCache(currentUser.uid)
       await invalidateUserPreviewCache(currentUser.uid)
-      
+
       setCurrentUser((prev) => (prev ? { ...prev, photoURL: photoBase64 } : null))
     } catch (error) {
       console.error("Error updating user photo:", error)
@@ -413,11 +418,55 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!currentUser || !firebaseUser) throw new Error("No user logged in")
     const previousUser = { ...currentUser };
 
+    // 1. Validation & Uniqueness check if displayName is changing
+    if (displayName !== undefined && displayName !== currentUser.displayName) {
+      if (!displayName || displayName.trim().length === 0) {
+        throw new Error("Display name is required")
+      }
+
+      const trimmedDisplayName = displayName.trim()
+
+      if (trimmedDisplayName.length < 3) {
+        throw new Error("Display name must be at least 3 characters long")
+      }
+
+      if (trimmedDisplayName.length > 25) {
+        throw new Error("Display name must be less than 25 characters long")
+      }
+
+      const validNamePattern = /^[a-zA-Z0-9\s\-']+$/
+      if (!validNamePattern.test(trimmedDisplayName)) {
+        throw new Error("Display name can only contain letters, numbers, spaces, hyphens, and apostrophes")
+      }
+
+      const normalizedDisplayName = trimmedDisplayName.toLowerCase().replace(/\s+/g, " ").trim()
+
+      // 🔍 Efficiently check if username exists (Case-insensitive)
+      const nameQuery = query(
+        collection(db, "users"),
+        where("displayNameLower", "==", normalizedDisplayName)
+      )
+
+      const nameSnapshot = await getDocs(nameQuery)
+
+      if (!nameSnapshot.empty) {
+        // Double check it's not just the current user
+        const isTakenByOther = nameSnapshot.docs.some(doc => doc.id !== currentUser.uid)
+        if (isTakenByOther) {
+          throw new Error("This display name is already taken")
+        }
+      }
+    }
+
     try {
       const updates: any = {
         updatedAt: new Date().toISOString(),
       };
-      if (displayName !== undefined) updates.displayName = displayName;
+
+      if (displayName !== undefined) {
+        updates.displayName = displayName.trim();
+        updates.displayNameLower = displayName.trim().toLowerCase().replace(/\s+/g, " ").trim();
+      }
       if (bio !== undefined) updates.bio = bio;
       if (instagramUrl !== undefined) updates.instagramUrl = instagramUrl;
       if (twitterUrl !== undefined) updates.twitterUrl = twitterUrl;
@@ -427,20 +476,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       // 🚀 Optimistic update
       setCurrentUser((prev) =>
-        prev ? { 
-          ...prev, 
+        prev ? {
+          ...prev,
           displayName: displayName !== undefined ? displayName : prev.displayName,
           bio: bio !== undefined ? bio : prev.bio,
           instagramUrl: instagramUrl !== undefined ? instagramUrl : prev.instagramUrl,
           twitterUrl: twitterUrl !== undefined ? twitterUrl : prev.twitterUrl,
           supportLink: supportLink !== undefined ? supportLink : prev.supportLink,
           location: location !== undefined ? location : prev.location,
-          pushNotificationsEnabled: pushNotificationsEnabled !== undefined ? pushNotificationsEnabled : (prev.pushNotificationsEnabled ?? true) 
+          pushNotificationsEnabled: pushNotificationsEnabled !== undefined ? pushNotificationsEnabled : (prev.pushNotificationsEnabled ?? true)
         } : null
       )
 
       await updateDoc(doc(db, "users", currentUser.uid), updates)
-      
+
       // 🚀 Invalidate caches for current user
       await invalidateProfileCache(currentUser.uid)
       await invalidateUserPreviewCache(currentUser.uid)
@@ -448,7 +497,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (displayName !== undefined && firebaseUser.displayName !== displayName) {
         await updateProfile(firebaseUser, { displayName })
       }
-      
+
       if (displayName !== undefined && previousUser.displayName !== displayName) {
         const novelsRef = collection(db, "novels")
         const q = query(novelsRef, where("authorId", "==", currentUser.uid))
@@ -852,11 +901,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setCurrentUser((prev) =>
         prev
           ? {
-              ...prev,
-              library: add 
-                ? (prev.library?.includes(novelId) ? prev.library : [...(prev.library || []), novelId])
-                : (prev.library || []).filter((id) => id !== novelId),
-            }
+            ...prev,
+            library: add
+              ? (prev.library?.includes(novelId) ? prev.library : [...(prev.library || []), novelId])
+              : (prev.library || []).filter((id) => id !== novelId),
+          }
           : null
       )
 
@@ -953,7 +1002,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           library: arrayRemove(novelId),
           updatedAt: new Date().toISOString(),
         })
-        
+
         // Remove from continue reading section
         await deleteReadingProgress(currentUser.uid, novelId);
         setCurrentUser((prev) =>
@@ -1089,22 +1138,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const normalizedDisplayName = trimmedDisplayName.toLowerCase().replace(/\s+/g, " ").trim()
 
-    const allUsersSnapshot = await getDocs(collection(db, "users"))
-    const displayNameExists = allUsersSnapshot.docs.some((doc) => {
-      const existingName = doc.data().displayName
-      if (!existingName) return false
-      const normalizedExistingName = existingName.toLowerCase().replace(/\s+/g, " ").trim()
-      return normalizedExistingName === normalizedDisplayName
-    })
+    const nameQuery = query(
+      collection(db, "users"),
+      where("displayNameLower", "==", normalizedDisplayName)
+    )
+    const nameSnapshot = await getDocs(nameQuery)
 
-    if (displayNameExists) {
+    if (!nameSnapshot.empty) {
       throw new Error("This display name is already taken. Try another one.")
     }
 
     // Validate email domain
     const allowedDomains = ["gmail.com", "outlook.com", "hotmail.com", "yahoo.com", "icloud.com", "aol.com", "zoho.com", "protonmail.com"]
     const emailDomain = email.split("@")[1]?.toLowerCase()
-    
+
     if (!emailDomain || !allowedDomains.includes(emailDomain)) {
       throw new Error(`Registration restricted to standard email providers. Allowed domains: ${allowedDomains.join(", ")}`)
     }
@@ -1143,7 +1190,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       isVerified: false,
     }
     await setDoc(doc(db, "users", user.uid), newUserData)
-    
+
     // NO LONGER logging out immediately - allowing grace period
     await fetchUserData(user)
   }
@@ -1193,6 +1240,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           uid: user.uid,
           email: user.email,
           displayName: user.displayName || user.email?.split("@")[0] || "User",
+          displayNameLower: (user.displayName || user.email?.split("@")[0] || "User").toLowerCase().replace(/\s+/g, " ").trim(),
           photoURL: user.photoURL,
           isAdmin: false,
           emailVisible: false,
@@ -1213,10 +1261,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           isVerified: false, // Force social users to verify (anti-bot)
         }
         await setDoc(doc(db, "users", user.uid), newUserData)
-        
+
         // Send verification email
         await sendEmailVerification(user, actionCodeSettings)
-        
+
         // NO LONGER signing out for new social users - allowing grace period
         await fetchUserData(user)
       } else {
@@ -1226,7 +1274,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           await signOut(auth)
           throw new Error("ACCOUNT_DISABLED")
         }
-        
+
         if (data.isVerified === false) {
           // Double check with Firebase Auth
           if (user.emailVerified) {
@@ -1240,13 +1288,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             throw new Error("ACCOUNT_UNVERIFIED")
           }
         }
-        
+
         isSystemAuthAction = false // Allow listener to catch successful login
         await fetchUserData(user)
       }
     } catch (error) {
       console.error("Error signing in with social credential:", error)
-      await signOut(auth).catch(() => {}) // Ensure signed out
+      await signOut(auth).catch(() => { }) // Ensure signed out
       throw error
     } finally {
       setTimeout(() => {
@@ -1448,12 +1496,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (user) {
         setFirebaseUser(user)
         await fetchUserData(user)
-        
+
         // Listen to live updates of the user document
         unsubscribeSnapshot = onSnapshot(doc(db, "users", user.uid), (docResp) => {
           if (docResp.exists()) {
             const data = docResp.data();
-            
+
             // Auto logout if disabled or UNVERIFIED (and grace period expired)
             if (data.isActive === false || (data.isVerified === false && !isGracePeriodActive(data.createdAt))) {
               console.log("Account status invalid or grace period expired. Logging out...");

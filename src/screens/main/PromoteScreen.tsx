@@ -421,7 +421,7 @@ export const PromoteScreen = ({ navigation }: any) => {
                   <View style={styles.bookStats}>
                     <View style={styles.statItem}>
                       <Text style={styles.statValue}>
-                        {Array.isArray(book.chapters) ? book.chapters.length : 0}
+                        {book.chapterCount || 0}
                       </Text>
                       <Text style={styles.statLabel}>Chapters</Text>
                     </View>

@@ -5,12 +5,6 @@ export interface Character {
   imageUrl?: string | null;
 }
 
-export type ChatMessage = {
-  id: string
-  sender: string
-  content: string
-}
-
 export interface Novel {
   id: string
   title: string
@@ -20,13 +14,14 @@ export interface Novel {
   hasGraphicContent: boolean
   authorsNote?: string
   prologue?: string
-  chapters: {
+  chapters?: {
     title: string
     content: string
-    chatMessages?: ChatMessage[]
     createdAt?: string
     updatedAt?: string
   }[]
+  chapterCount?: number
+  chapterTitles?: string[]
   characters?: Character[];
   authorId: string
   authorName: string

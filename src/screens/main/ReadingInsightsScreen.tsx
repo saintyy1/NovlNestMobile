@@ -17,6 +17,7 @@ import { getUserReadingStats } from '../../services/readingAnalyticsService';
 import { scheduleStreakReminder } from '../../services/localNotificationService';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
+import CachedImage from '../../components/CachedImage';
 
 const { width } = Dimensions.get('window');
 
@@ -110,6 +111,18 @@ export const ReadingInsightsScreen = ({ navigation }: any) => {
       }).start();
     }
   }, [currentUser?.uid, loadAnim, progressAnim]);
+
+  const maxMinutes = stats?.bookStats?.length > 0
+    ? Math.max(...stats.bookStats.map((b: any) => b.minutes))
+    : 1;
+
+  const formatDuration = (mins: number) => {
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    if (h > 0 && m > 0) return `${h} h ${m} m`;
+    if (h > 0) return `${h} h`;
+    return `${m} m`;
+  };
 
   useEffect(() => {
     fetchStats();
@@ -244,6 +257,60 @@ export const ReadingInsightsScreen = ({ navigation }: any) => {
             })}
           </ScrollView>
 
+          {/* Reading Breakdown Section */}
+          {stats.bookStats && stats.bookStats.length > 0 && (
+            <View style={styles.breakdownSection}>
+              <View style={styles.sectionHeader}>
+                <Text style={[styles.editorialTitle, { color: colors.text }]}>Reading by Book</Text>
+                <TouchableOpacity
+                  onPress={() => navigation.navigate('BookReadingInsights', { bookStats: stats.bookStats })}
+                >
+                  <Text style={[styles.seeAllText, { color: ACCENT_ORANGE }]}>See All</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.miniBreakdownList}>
+                {stats.bookStats.slice(0, 2).map((item: any, index: number) => {
+                  const ratio = item.minutes / maxMinutes;
+                  // Scale the bar to a max of 40% of screen width for the preview
+                  const barWidth = ratio * (width * 0.4);
+                  const barColor = index === 0 ? '#B8A484' : '#1F69A5';
+
+                  return (
+                    <View key={item.bookId} style={styles.miniBookRow}>
+                      <View style={[styles.miniProgressBar, { width: barWidth, backgroundColor: barColor }]} />
+                      <View style={styles.miniRowContent}>
+                        <View style={styles.miniCoverContainer}>
+                          {item.coverImage ? (
+                            <CachedImage uri={item.coverImage} style={styles.miniCover} />
+                          ) : (
+                            <View style={[styles.miniCover, { backgroundColor: colors.border, justifyContent: 'center', alignItems: 'center' }]}>
+                              <Ionicons name="book-outline" size={12} color={colors.textSecondary} />
+                            </View>
+                          )}
+                        </View>
+                        <View style={styles.miniDetails}>
+                          <Text style={[styles.miniTitle, { color: colors.text }]} numberOfLines={1}>{item.bookTitle}</Text>
+                          <Text style={[styles.miniDuration, { color: colors.textSecondary }]}>{formatDuration(item.minutes)}</Text>
+                        </View>
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+
+              <TouchableOpacity
+                style={styles.breakdownFooter}
+                onPress={() => navigation.navigate('BookReadingInsights', { bookStats: stats.bookStats })}
+              >
+                <Text style={[styles.breakdownFooterText, { color: ACCENT_ORANGE }]}>
+                  Explore full breakdown
+                </Text>
+                <Ionicons name="arrow-forward" size={16} color={ACCENT_ORANGE} />
+              </TouchableOpacity>
+            </View>
+          )}
+
           {/* Minimalist Peak Chart */}
           <View style={styles.chartWrapper}>
             <View style={styles.chartHeaderMinimal}>
@@ -333,8 +400,6 @@ export const ReadingInsightsScreen = ({ navigation }: any) => {
             </View>
           </View>
 
-
-
           {/* Minimalist Notion-style Log */}
           {stats.historicalWeeks && stats.historicalWeeks.length > 0 && (
             <View style={styles.editorialHistory}>
@@ -350,6 +415,16 @@ export const ReadingInsightsScreen = ({ navigation }: any) => {
                   </Text>
                 </View>
               ))}
+
+              {stats.historicalWeeks.length > 3 && (
+                <TouchableOpacity
+                  style={styles.seeMoreButton}
+                  onPress={() => setShowHistoryModal(true)}
+                >
+                  <Text style={[styles.seeMoreButtonText, { color: ACCENT_ORANGE }]}>See older records</Text>
+                  <Ionicons name="arrow-forward" size={16} color={ACCENT_ORANGE} />
+                </TouchableOpacity>
+              )}
             </View>
           )}
 
@@ -597,7 +672,7 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   chartWrapper: {
-    marginTop: 20,
+    marginTop: 10,
     marginBottom: 40,
     paddingHorizontal: 10,
   },
@@ -690,6 +765,85 @@ const styles = StyleSheet.create({
   notionValue: {
     fontSize: 15,
     fontWeight: '700',
+  },
+  seeMoreButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    marginTop: 8,
+    gap: 8,
+  },
+  seeMoreButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  breakdownSection: {
+    paddingTop: 10,
+    paddingHorizontal: 10,
+    marginBottom: 40,
+  },
+  seeAllText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  breakdownFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    marginTop: 8,
+    gap: 8,
+  },
+  breakdownFooterText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  miniBreakdownList: {
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  miniBookRow: {
+    flexDirection: 'row',
+    height: 48,
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  miniProgressBar: {
+    height: '100%',
+    borderTopRightRadius: 2,
+    borderBottomRightRadius: 2,
+    opacity: 0.6,
+  },
+  miniRowContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginLeft: 8,
+    flex: 1,
+  },
+  miniCoverContainer: {
+    width: 32,
+    height: 44,
+    borderRadius: 4,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(0,0,0,0.1)',
+  },
+  miniCover: {
+    width: '100%',
+    height: '100%',
+  },
+  miniDetails: {
+    marginLeft: 10,
+    flex: 1,
+  },
+  miniTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  miniDuration: {
+    fontSize: 11,
+    fontWeight: '500',
+    opacity: 0.7,
   },
   modalContainer: {
     flex: 1,

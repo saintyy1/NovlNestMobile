@@ -44,6 +44,7 @@ import {
   getDocs,
   limit,
 } from 'firebase/firestore';
+import { broadcastNotification } from '../../services/PushNotificationService';
 import { db } from '../../firebase/config';
 import { Novel } from '../../types/novel';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -116,6 +117,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
   const [editContent, setEditContent] = useState('');
   const [showOptionsModal, setShowOptionsModal] = useState(false);
   const [selectedCommentForOptions, setSelectedCommentForOptions] = useState<Comment | null>(null);
+  const [expandedComments, setExpandedComments] = useState<Set<string>>(new Set());
 
   const showCommentOptions = (comment: Comment) => {
     setSelectedCommentForOptions(comment);
@@ -172,7 +174,8 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
       const novelData = await withCache(`novel_${novelId}`, async () => {
         const novelDoc = await getDoc(novelDocRef);
         if (novelDoc.exists()) {
-          return { id: novelDoc.id, ...novelDoc.data() } as Novel;
+          const { chapters, ...rest } = novelDoc.data() as any;
+          return { id: novelDoc.id, ...rest } as Novel;
         }
         throw new Error('Novel not found');
       }, CACHE_TTL.CONTENT);
@@ -264,7 +267,8 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
     const commentsQuery = query(
       collection(db, 'comments'),
       where('novelId', '==', novelId),
-      orderBy('createdAt', 'desc')
+      orderBy('createdAt', 'desc'),
+      limit(80)
     );
 
     const unsubscribe = onSnapshot(commentsQuery, async (snapshot) => {
@@ -856,108 +860,144 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
     navigation.navigate('Profile', { userId });
   };
 
-  const renderComment = (comment: Comment, isReply: boolean = false) => (
-    <View
-      key={comment.id}
-      style={isReply ? styles.replyItem : styles.commentItem}
-      ref={(ref) => { commentRefs.current[comment.id] = ref; }}
-    >
-      <View style={styles.commentContainer}>
-        {/* Left Side: Avatar */}
-        <TouchableOpacity onPress={() => handleProfileNavigation(comment.userId)}>
-          {comment.userPhoto ? (
-            <CachedImage uri={comment.userPhoto} style={styles.commentAvatar} />
-          ) : (
-            <View style={styles.commentAvatarPlaceholder}>
-              <Text style={styles.commentAvatarText}>{getUserInitials(comment.userName)}</Text>
-            </View>
-          )}
-        </TouchableOpacity>
+  const toggleReplies = (commentId: string) => {
+    setExpandedComments(prev => {
+      const next = new Set(prev);
+      if (next.has(commentId)) {
+        next.delete(commentId);
+      } else {
+        next.add(commentId);
+      }
+      return next;
+    });
+  };
 
-        {/* Middle/Right: Main Content Area */}
-        <View style={styles.commentContentWrapper}>
-          <View style={styles.commentMainArea}>
-            {/* Header: Name/Tags */}
-            <View style={styles.commentHeader}>
-              {isReply && comment.parentId ? (
-                <View style={styles.replyHeader}>
+  const renderComment = (comment: Comment, isReply: boolean = false) => {
+    const isExpanded = expandedComments.has(comment.id);
+    return (
+      <View
+        key={comment.id}
+        style={isReply ? styles.replyItem : styles.commentItem}
+        ref={(ref) => { commentRefs.current[comment.id] = ref; }}
+      >
+        <View style={styles.commentContainer}>
+          {/* Left Side: Avatar */}
+          <TouchableOpacity onPress={() => handleProfileNavigation(comment.userId)}>
+            {comment.userPhoto ? (
+              <CachedImage uri={comment.userPhoto} style={styles.commentAvatar} />
+            ) : (
+              <View style={styles.commentAvatarPlaceholder}>
+                <Text style={styles.commentAvatarText}>{getUserInitials(comment.userName)}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+
+          {/* Middle/Right: Main Content Area */}
+          <View style={styles.commentContentWrapper}>
+            <View style={styles.commentMainArea}>
+              {/* Header: Name/Tags */}
+              <View style={styles.commentHeader}>
+                {isReply && comment.parentId ? (
+                  <View style={styles.replyHeader}>
+                    <TouchableOpacity onPress={() => handleProfileNavigation(comment.userId)}>
+                      <Text style={styles.commentUserName}>{comment.userName}</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.replyArrow}> {'>'} </Text>
+                    {(() => {
+                      const parent = getParentCommentData(comment.parentId);
+                      return parent ? (
+                        <TouchableOpacity onPress={() => handleProfileNavigation(parent.userId)}>
+                          <Text style={styles.commentUserName}>{parent.userName}</Text>
+                        </TouchableOpacity>
+                      ) : null;
+                    })()}
+                  </View>
+                ) : (
                   <TouchableOpacity onPress={() => handleProfileNavigation(comment.userId)}>
                     <Text style={styles.commentUserName}>{comment.userName}</Text>
                   </TouchableOpacity>
-                  <Text style={styles.replyArrow}> {'>'} </Text>
-                  {(() => {
-                    const parent = getParentCommentData(comment.parentId);
-                    return parent ? (
-                      <TouchableOpacity onPress={() => handleProfileNavigation(parent.userId)}>
-                        <Text style={styles.commentUserName}>{parent.userName}</Text>
-                      </TouchableOpacity>
-                    ) : null;
-                  })()}
-                </View>
-              ) : (
-                <TouchableOpacity onPress={() => handleProfileNavigation(comment.userId)}>
-                  <Text style={styles.commentUserName}>{comment.userName}</Text>
+                )}
+                {comment.userId === novel?.authorId && (
+                  <View style={styles.authorBadge}>
+                    <Text style={styles.authorBadgeText}>Author</Text>
+                  </View>
+                )}
+              </View>
+
+              {/* Comment Text with Long Press */}
+              <Pressable
+                onLongPress={() => showCommentOptions(comment)}
+                delayLongPress={300}
+                style={({ pressed }) => [
+                  styles.commentTextContainer,
+                  pressed && styles.commentTextPressed
+                ]}
+              >
+                <Text style={styles.commentText}>{comment.content}</Text>
+              </Pressable>
+
+              {/* Action Row */}
+              <View style={styles.commentActionsRow}>
+                <Text style={styles.commentDate}>{formatDate(comment.createdAt)}</Text>
+
+                <TouchableOpacity onPress={() => {
+                  setReplyingTo(comment.id);
+                  setReplyingToUser(comment.userName);
+                  setShowCommentsModal(true);
+                  setTimeout(() => replyInputRef.current?.focus(), 100);
+                }}>
+                  <Text style={styles.commentActionText}>Reply</Text>
                 </TouchableOpacity>
-              )}
-              {comment.userId === novel?.authorId && (
-                <View style={styles.authorBadge}>
-                  <Text style={styles.authorBadgeText}>Author</Text>
-                </View>
+              </View>
+
+              {/* View Replies Button */}
+              {!isReply && comment.replies && comment.replies.length > 0 && (
+                <TouchableOpacity
+                  style={styles.viewRepliesButton}
+                  onPress={() => toggleReplies(comment.id)}
+                >
+                  <View style={styles.viewRepliesContent}>
+                    <View style={[styles.repliesIndicatorLine, { backgroundColor: colors.border }]} />
+                    <Text style={[styles.viewRepliesText, { color: colors.textSecondary }]}>
+                      {isExpanded ? 'Hide replies' : `View ${comment.replies.length} ${comment.replies.length === 1 ? 'reply' : 'replies'}`}
+                    </Text>
+                    <Ionicons
+                      name={isExpanded ? "chevron-up" : "chevron-down"}
+                      size={14}
+                      color={colors.textSecondary}
+                      style={{ marginLeft: 4 }}
+                    />
+                  </View>
+                </TouchableOpacity>
               )}
             </View>
 
-            {/* Comment Text with Long Press */}
-            <Pressable
-              onLongPress={() => showCommentOptions(comment)}
-              delayLongPress={300}
-              style={({ pressed }) => [
-                styles.commentTextContainer,
-                pressed && styles.commentTextPressed
-              ]}
-            >
-              <Text style={styles.commentText}>{comment.content}</Text>
-            </Pressable>
-
-            {/* Action Row */}
-            <View style={styles.commentActionsRow}>
-              <Text style={styles.commentDate}>{formatDate(comment.createdAt)}</Text>
-
-              <TouchableOpacity onPress={() => {
-                setReplyingTo(comment.id);
-                setReplyingToUser(comment.userName);
-                setShowCommentsModal(true);
-                setTimeout(() => replyInputRef.current?.focus(), 100);
-              }}>
-                <Text style={styles.commentActionText}>Reply</Text>
+            {/* Far Right: Like Button */}
+            <View style={styles.commentLikeContainer}>
+              <TouchableOpacity
+                onPress={() => handleCommentLike(comment.id, comment.likedBy?.includes(currentUser?.uid || ''))}
+                disabled={!currentUser}
+                style={styles.commentLikeAction}
+              >
+                <Ionicons
+                  name={comment.likedBy?.includes(currentUser?.uid || '') ? 'heart' : 'heart-outline'}
+                  size={24}
+                  color={comment.likedBy?.includes(currentUser?.uid || '') ? '#EF4444' : '#9CA3AF'}
+                />
+                <Text style={styles.commentLikeCount}>{comment.likes || 0}</Text>
               </TouchableOpacity>
             </View>
           </View>
+        </View>
 
-          {/* Far Right: Like Button */}
-          <View style={styles.commentLikeContainer}>
-            <TouchableOpacity
-              onPress={() => handleCommentLike(comment.id, comment.likedBy?.includes(currentUser?.uid || ''))}
-              disabled={!currentUser}
-              style={styles.commentLikeAction}
-            >
-              <Ionicons
-                name={comment.likedBy?.includes(currentUser?.uid || '') ? 'heart' : 'heart-outline'}
-                size={24}
-                color={comment.likedBy?.includes(currentUser?.uid || '') ? '#EF4444' : '#9CA3AF'}
-              />
-              <Text style={styles.commentLikeCount}>{comment.likes || 0}</Text>
-            </TouchableOpacity>
+        {comment.replies && comment.replies.length > 0 && isExpanded && (
+          <View style={styles.repliesContainer}>
+            {comment.replies.map((reply) => renderComment(reply, true))}
           </View>
-        </View>
+        )}
       </View>
-
-      {comment.replies && comment.replies.length > 0 && (
-        <View style={styles.repliesContainer}>
-          {comment.replies.map((reply) => renderComment(reply, true))}
-        </View>
-      )}
-    </View>
-  );
+    );
+  };
 
   if (loading) {
     return (
@@ -984,7 +1024,9 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
   }
 
   const isAuthor = currentUser && novel.authorId === currentUser.uid;
-  const totalParts = (novel.authorsNote ? 1 : 0) + (novel.prologue ? 1 : 0) + (novel.chapters?.length || 0) + (novel.epilogue ? 1 : 0);
+  const chaptersCount = novel.chapterCount ?? 0;
+  const hasCharacters = (novel.characters && novel.characters.length > 0) ? 1 : 0;
+  const totalParts = (novel.authorsNote ? 1 : 0) + (novel.prologue ? 1 : 0) + hasCharacters + chaptersCount + (novel.epilogue ? 1 : 0);
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
@@ -1271,7 +1313,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
             </View>
 
             {/* Author hint for long press */}
-            {isAuthor && novel.chapters && novel.chapters.length > 0 && (
+            {(isAuthor && (novel.chapterCount ?? 0) > 0) && (
               <View style={styles.authorHint}>
                 <Ionicons name="information-circle-outline" size={14} color={colors.primary} />
                 <Text style={styles.authorHintText}>Long press on a chapter to edit or delete it</Text>
@@ -1331,87 +1373,43 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
             ) : null}
 
             {/* Chapters - Show first 3 */}
-            {novel.chapters?.slice(0, 3).map((chapter: any, index: number) => {
-              const chapterNumber =
-                (novel.authorsNote ? 1 : 0) +
-                (novel.prologue ? 1 : 0) +
-                ((novel.characters && novel.characters.length > 0) ? 1 : 0) +
-                index;
-              return (
-                <TouchableOpacity
-                  key={index}
-                  style={styles.chapterItem}
-                  onPress={() =>
-                    navigation.navigate('NovelReader', {
-                      novelId: novel.id,
-                      chapterNumber: chapterNumber,
-                    })
-                  }
-                  onLongPress={() => {
-                    if (isAuthor) {
-                      showAlert({
-                        title: chapter.title,
-                        message: 'Choose an action',
-                        type: 'info',
-                        buttons: [
-                          {
-                            text: 'Edit',
-                            onPress: () =>
-                              navigation.navigate('EditChapter', {
-                                novelId: novel.id,
-                                chapterIndex: index,
-                              }),
-                          },
-                          {
-                            text: 'Delete',
-                            style: 'destructive',
-                            onPress: () => {
-                              showAlert({
-                                title: 'Confirm Deletion',
-                                message: 'Are you sure you want to delete this chapter? This action cannot be undone.',
-                                type: 'error',
-                                buttons: [
-                                  {
-                                    text: 'Delete',
-                                    style: 'destructive',
-                                    onPress: async () => {
-                                      try {
-                                        const novelRef = doc(db, 'novels', novel.id);
-                                        const novelDoc = await getDoc(novelRef);
-                                        if (novelDoc.exists()) {
-                                          const novelData = novelDoc.data() as Novel;
-                                          const updatedChapters = [...(novelData.chapters || [])];
-                                          updatedChapters.splice(index, 1);
-                                          await updateDoc(novelRef, { chapters: updatedChapters });
-                                          showToast({ message: 'Chapter deleted successfully!', type: 'success' });
-                                        }
-                                      } catch (error) {
-                                        console.error('Error deleting chapter:', error);
-                                        showToast({ message: 'Failed to delete chapter. Please try again.', type: 'error' });
-                                      }
-                                    },
-                                  },
-                                  { text: 'Cancel', style: 'cancel' },
-                                ]
-                              });
-                            },
-                          },
-                          { text: 'Cancel', style: 'cancel' },
-                        ]
-                      });
+            {(() => {
+              const chaptersCount = novel.chapterCount ?? 0;
+              const titles = novel.chapterTitles || [];
+              const baseIdx = (novel.authorsNote ? 1 : 0) + (novel.prologue ? 1 : 0) + ((novel.characters && novel.characters.length > 0) ? 1 : 0);
+
+              return Array.from({ length: Math.min(3, chaptersCount) }).map((_, index) => {
+                const chapterNumber = baseIdx + index;
+                return (
+                  <TouchableOpacity
+                    key={index}
+                    style={styles.chapterItem}
+                    onPress={() =>
+                      navigation.navigate('NovelReader', {
+                        novelId: novel.id,
+                        chapterNumber: chapterNumber,
+                      })
                     }
-                  }}
-                >
-                  <View style={styles.chapterInfo}>
-                    <Text style={styles.chapterNumber}>{index + 1}</Text>
-                    <Text style={styles.chapterTitle} numberOfLines={1}>
-                      {chapter.title}
-                    </Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={20} color="#6B7280" />
-                </TouchableOpacity>
-              );
-            })}
+                    onLongPress={() => {
+                      if (isAuthor) {
+                        navigation.navigate('EditChapter', {
+                          novelId: novel.id,
+                          chapterIndex: index,
+                        });
+                      }
+                    }}
+                  >
+                    <View style={styles.chapterInfo}>
+                      <View style={styles.chapterNumberCircle}>
+                        <Text style={styles.chapterNumberText}>{index + 1}</Text>
+                      </View>
+                      <Text style={styles.chapterTitle}>{titles[index] || `Chapter ${index + 1}`}</Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={20} color="#6B7280" />
+                  </TouchableOpacity>
+                );
+              });
+            })()}
 
             {/* Epilogue */}
             {novel.epilogue && (
@@ -1439,11 +1437,70 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
                               initialContent: novel.epilogue?.content || '',
                               onSave: async (epilogueData: { title: string; content: string }) => {
                                 try {
-                                  await updateDoc(doc(db, 'novels', novel.id), {
+                                  const isNewEpilogue = !novel.epilogue;
+                                  const wasAlreadyCompleted = novel.status === 'completed';
+
+                                  const updateData: any = {
                                     epilogue: epilogueData,
                                     updatedAt: new Date().toISOString(),
-                                  });
-                                  showToast({ message: 'Epilogue updated successfully!', type: 'success' });
+                                  };
+
+                                  if (!wasAlreadyCompleted) {
+                                    updateData.status = 'completed';
+                                  }
+
+                                  await updateDoc(doc(db, 'novels', novel.id), updateData);
+
+                                  // Update local state
+                                  setNovel(prev => prev ? ({
+                                    ...prev,
+                                    epilogue: epilogueData,
+                                    status: updateData.status || prev.status
+                                  }) : null);
+
+                                  showToast({ message: isNewEpilogue ? 'Epilogue added and novel completed!' : 'Epilogue updated successfully!', type: 'success' });
+
+                                  // Send Notifications
+                                  if (isNewEpilogue) {
+                                    const authorName = currentUser?.displayName || 'The author';
+
+                                    // 1. Epilogue Notification
+                                    await broadcastNotification(
+                                      { type: 'library_users', id: novel.id },
+                                      {
+                                        fromUserId: currentUser?.uid,
+                                        fromUserName: authorName,
+                                        type: 'new_chapter',
+                                        novelId: novel.id,
+                                        novelTitle: novel.title,
+                                        chapterTitle: epilogueData.title || 'Epilogue',
+                                      },
+                                      {
+                                        title: "The Grand Finale 🎭",
+                                        body: `${authorName} just added an epilogue to '${novel.title}'. The journey is finally complete!`,
+                                        data: { url: `novlnest://novel/${novel.id}/read?chapter=${novel.chapterCount || 0}` }
+                                      }
+                                    );
+
+                                    // 2. Completion Notification
+                                    if (!wasAlreadyCompleted) {
+                                      await broadcastNotification(
+                                        { type: 'library_users', id: novel.id },
+                                        {
+                                          fromUserId: currentUser?.uid,
+                                          fromUserName: authorName,
+                                          type: 'novel_finished',
+                                          novelId: novel.id,
+                                          novelTitle: novel.title,
+                                        },
+                                        {
+                                          title: "Mission Accomplished! 🏆",
+                                          body: `'${novel.title}' is now officially finished. Congratulations to ${authorName} on this incredible story!`,
+                                          data: { url: `novlnest://novel/${novel.id}` }
+                                        }
+                                      );
+                                    }
+                                  }
                                 } catch (error) {
                                   console.error('Error updating epilogue:', error);
                                   showToast({ message: 'Failed to update epilogue', type: 'error' });
@@ -2450,11 +2507,18 @@ const getStyles = (themeColors: any, insets: any) => StyleSheet.create({
   chapterIcon: {
     fontSize: 20,
   },
-  chapterNumber: {
-    fontSize: 16,
-    fontWeight: '600' as const,
+  chapterNumberCircle: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: themeColors.primary + '15',
+    justifyContent: 'center' as const,
+    alignItems: 'center' as const,
+  },
+  chapterNumberText: {
+    fontSize: 12,
+    fontWeight: 'bold' as const,
     color: themeColors.primary,
-    width: 30,
   },
   chapterTitle: {
     fontSize: 15,
@@ -2693,6 +2757,23 @@ const getStyles = (themeColors: any, insets: any) => StyleSheet.create({
     alignItems: 'center' as const,
     gap: 16,
     marginTop: 4,
+  },
+  viewRepliesButton: {
+    marginTop: 12,
+    alignSelf: 'flex-start',
+  },
+  viewRepliesContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  repliesIndicatorLine: {
+    width: 30,
+    height: 1,
+    marginRight: 10,
+  },
+  viewRepliesText: {
+    fontSize: 14,
+    fontWeight: '700',
   },
   commentActionText: {
     color: themeColors.textSecondary,

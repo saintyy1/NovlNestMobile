@@ -36,6 +36,7 @@ import PaymentCallbackScreen from './src/screens/main/PaymentCallbackScreen';
 import EmailActionScreen from './src/screens/main/EmailActionScreen';
 import ChapterEditorScreen from './src/screens/main/ChapterEditorScreen';
 import { ReadingInsightsScreen } from './src/screens/main/ReadingInsightsScreen';
+import { BookReadingInsightsScreen } from './src/screens/main/BookReadingInsightsScreen';
 import { initializeAnalytics, trackScreenView, setUserId, cleanupAnalytics } from './src/utils/Analytics-utils';
 import { checkAppVersion, AppConfig } from './src/utils/VersionCheck-utils';
 import { Ionicons } from '@expo/vector-icons';
@@ -318,6 +319,13 @@ function AppContent() {
             }}
           />
           <Stack.Screen
+            name="BookReadingInsights"
+            component={BookReadingInsightsScreen}
+            options={{
+              headerShown: false,
+            }}
+          />
+          <Stack.Screen
             name="PrivacyPolicy"
             component={PrivacyPolicyScreen}
             options={{
@@ -539,6 +547,7 @@ export default function App() {
         Profile: 'profile/:userId',
         Notifications: 'notifications',
         Settings: 'settings',
+        ReadingInsights: 'insights',
         PaymentCallback: 'PaymentCallback',
         PromoteScreen: 'promote',
       },

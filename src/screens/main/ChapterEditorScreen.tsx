@@ -22,7 +22,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAlert } from '../../contexts/AlertContext';
-import { InlineChatEditor, type ChatMessage } from '../../components/InlineChatEditor';
 import { spacing } from '../../theme';
 import ChapterBlockEditor from '../../components/ChapterBlockEditor';
 import * as ImagePicker from 'expo-image-picker';
@@ -89,28 +88,21 @@ export const ChapterEditorScreen: React.FC<ChapterEditorScreenProps> = ({ naviga
 
     try {
       setIsUploading(true);
-      
+
       const { novelId, chapterIdx, novel } = route.params;
-      
+
       if (novelId && novel && chapterIdx !== undefined) {
-        const updatedChapters = [...(novel.chapters || [])];
-        const existingChapter = updatedChapters[chapterIdx] || {};
-        
         const newChapterData = {
-          ...existingChapter,
           title: title.trim(),
           content: content.trim(),
           updatedAt: new Date().toISOString(),
         };
-        
-        updatedChapters[chapterIdx] = newChapterData;
 
         const { doc, updateDoc, setDoc } = require('firebase/firestore');
         const { db } = require('../../firebase/config');
-        
-        // Update main novel document (array)
+
+        // Update main novel document (metadata only)
         await updateDoc(doc(db, 'novels', novelId), {
-          chapters: updatedChapters,
           updatedAt: new Date().toISOString(),
         });
 
@@ -133,12 +125,6 @@ export const ChapterEditorScreen: React.FC<ChapterEditorScreenProps> = ({ naviga
     } finally {
       setIsUploading(false);
     }
-  };
-
-  const insertChatIntoContent = (messages: ChatMessage[]) => {
-    const chatData = `[CHAT_START]${JSON.stringify(messages)}[CHAT_END]`;
-    const newContent = content + (content ? '\n\n' : '') + chatData;
-    setContent(newContent);
   };
 
   useEffect(() => {
@@ -255,9 +241,6 @@ export const ChapterEditorScreen: React.FC<ChapterEditorScreenProps> = ({ naviga
                   selectionColor={colors.primary + '40'}
                 />
                 <View style={styles.titleUnderline} />
-              </View>
-              <View style={styles.minimalToolbar}>
-                <InlineChatEditor onAddChat={insertChatIntoContent} />
               </View>
             </>
           ) : null}

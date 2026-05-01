@@ -14,12 +14,21 @@ import CachedImage from '../../components/CachedImage';
 import { withCache, CACHE_TTL, invalidateCache, invalidateByPrefix } from '../../utils/cache';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { doc, getDoc, updateDoc, setDoc, getDocFromServer } from 'firebase/firestore';
+import {
+  doc,
+  getDoc,
+  updateDoc,
+  setDoc,
+  getDocFromServer,
+  addDoc,
+  increment,
+} from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAlert } from '../../contexts/AlertContext';
 import { spacing } from '../../theme';
+import { getFriendlyErrorMessage } from '../../utils/errorHandlers';
 
 interface Novel {
   id: string;
@@ -27,7 +36,9 @@ interface Novel {
   authorName: string;
   authorId: string;
   coverImage?: string;
-  chapters: Chapter[];
+  chapters?: Chapter[];
+  chapterCount?: number;
+  chapterTitles?: string[];
 }
 
 interface Chapter {
@@ -99,16 +110,25 @@ const EditChapterScreen = ({ route, navigation }: any) => {
         }
 
         // Check if chapter index is valid
-        if (chapterIdx < 0 || chapterIdx >= novelData.chapters.length) {
+        const chaptersCount = novelData.chapterCount ?? 0;
+        if (chapterIdx < 0 || chapterIdx >= chaptersCount) {
           setError('Chapter not found.');
           setLoading(false);
           return;
         }
 
-        const chapterData = novelData.chapters[chapterIdx];
         setNovel(novelData);
-        setChapter({ ...chapterData });
-        setOriginalChapter({ ...chapterData });
+
+        // Fetch from sub-collection
+        const chapterRef = doc(db, 'novels', novelId, 'chapters', chapterIdx.toString());
+        const chapterDoc = await getDoc(chapterRef);
+        if (chapterDoc.exists()) {
+          const chapterData = chapterDoc.data() as Chapter;
+          setChapter({ ...chapterData });
+          setOriginalChapter({ ...chapterData });
+        } else {
+          setError('Chapter content not found.');
+        }
       } else {
         setError('Novel not found.');
       }
@@ -140,21 +160,24 @@ const EditChapterScreen = ({ route, navigation }: any) => {
       setSaving(true);
       setError('');
 
-      // Create updated chapters array
-      const updatedChapters = [...novel.chapters];
-      const existingChapter = updatedChapters[chapterIdx];
-      updatedChapters[chapterIdx] = {
-        ...existingChapter,
+      // 1. Update the chapter in the sub-collection
+      const chapterRef = doc(db, 'novels', novelId, 'chapters', chapterIdx.toString());
+      await setDoc(chapterRef, {
         title: chapter.title.trim(),
         content: chapter.content.trim(),
         updatedAt: new Date().toISOString(),
+      }, { merge: true });
+
+      // 2. Update the novel metadata (chapterTitles for TOC and Legacy array if exists)
+      const updateData: any = {
+        updatedAt: new Date().toISOString(),
       };
 
-      // Update the novel with modified chapter array
-      await updateDoc(doc(db, 'novels', novelId), {
-        chapters: updatedChapters,
-        updatedAt: new Date().toISOString(),
-      });
+      const updatedTitles = [...(novel.chapterTitles || [])];
+      updatedTitles[chapterIdx] = chapter.title.trim();
+      updateData.chapterTitles = updatedTitles;
+
+      await updateDoc(doc(db, 'novels', novelId), updateData);
 
       // Invalidate relevant caches
       await invalidateCache(`novel_${novelId}`);
@@ -173,8 +196,8 @@ const EditChapterScreen = ({ route, navigation }: any) => {
         type: 'success',
       });
     } catch (err) {
-      console.error('Error updating chapter:', err);
-      showToast({ message: 'Failed to update chapter. Please try again.', type: 'error' });
+      const friendlyError = getFriendlyErrorMessage(err, 'edit_chapter');
+      showToast({ message: friendlyError, type: 'error' });
     } finally {
       setSaving(false);
     }
@@ -290,7 +313,7 @@ const EditChapterScreen = ({ route, navigation }: any) => {
               </Text>
               <Text style={styles.novelAuthor}>By {novel?.authorName}</Text>
               <Text style={styles.novelChapters}>
-                Total chapters: {novel?.chapters?.length || 0}
+                Total chapters: {novel?.chapterCount || 0}
               </Text>
             </View>
           </View>

@@ -8,11 +8,17 @@ import {
   getDocs,
   orderBy,
   Timestamp,
+  getDoc,
+  doc,
+  documentId,
+  limit,
 } from 'firebase/firestore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { cancelStreakReminder } from './localNotificationService';
+import { cancelStreakReminder, sendMilestoneNotification } from './localNotificationService';
+import { getFriendlyErrorMessage } from '../utils/errorHandlers';
 
 const LOCAL_SESSION_KEY = '@reading_session_active';
+const NOTIFIED_MILESTONES_KEY = '@notified_milestones_';
 
 export interface ReadingSession {
   userId: string;
@@ -41,6 +47,9 @@ const MIN_SESSION_DURATION = 10; // Ignore sessions shorter than 10s
 const MIN_COMPLETION_DURATION = 30; // Min 30s to count as "completed"
 
 let activeLocalSession: LocalSessionData | null = null;
+
+// Performance Cache: bookId -> coverImage
+const bookMetadataCache = new Map<string, string | null>();
 
 /**
  * Start a new reading session
@@ -134,8 +143,50 @@ export const endReadingSession = async (isCompleted: boolean = false, finalDurat
     
     // 4. Cancel any pending streak reminder for today since we've read
     await cancelStreakReminder();
+
+    // 5. Check for new milestones
+    await checkAndNotifyMilestones(sessionToSave.userId);
   } catch (error) {
     console.error('[Analytics] Error saving session to Firestore:', error);
+  }
+};
+
+/**
+ * Check for new milestones and notify the user
+ */
+export const checkAndNotifyMilestones = async (userId: string) => {
+  try {
+    const stats = await getUserReadingStats(userId);
+    if (!stats) return;
+
+    const storageKey = `${NOTIFIED_MILESTONES_KEY}${userId}`;
+    const notifiedData = await AsyncStorage.getItem(storageKey);
+    let notifiedIds: string[] = notifiedData ? JSON.parse(notifiedData) : [];
+
+    const ACHIEVEMENTS = [
+      { id: 'spark', name: 'Spark Ignited', threshold: 2, type: 'streak', desc: 'You’ve reached a 2-day reading streak!' },
+      { id: 'fire', name: 'On Fire', threshold: 7, type: 'streak', desc: 'Amazing! You’ve reached a 7-day reading streak!' },
+      { id: 'unstoppable', name: 'Unstoppable', threshold: 30, type: 'streak', desc: 'Legendary! 30 days of consistent reading!' },
+      { id: 'explorer', name: 'Explorer', threshold: 3, type: 'books', desc: 'You’ve explored 3 different books or poems!' },
+    ];
+
+    let updated = false;
+
+    for (const ach of ACHIEVEMENTS) {
+      const isEarned = ach.type === 'streak' ? stats.bestStreak >= ach.threshold : stats.uniqueBooksCount >= ach.threshold;
+      
+      if (isEarned && !notifiedIds.includes(ach.id)) {
+        await sendMilestoneNotification(ach.name, ach.desc);
+        notifiedIds.push(ach.id);
+        updated = true;
+      }
+    }
+
+    if (updated) {
+      await AsyncStorage.setItem(storageKey, JSON.stringify(notifiedIds));
+    }
+  } catch (error) {
+    console.error('[Analytics] Error checking milestones:', error);
   }
 };
 
@@ -169,6 +220,9 @@ export const recoverCrashedSession = async () => {
         createdAt: serverTimestamp(),
       });
       console.log('[Analytics] Recovered session saved to Firestore');
+
+      // Check for milestones after recovery
+      await checkAndNotifyMilestones(session.userId);
     }
 
     await AsyncStorage.removeItem(LOCAL_SESSION_KEY);
@@ -188,7 +242,8 @@ export const getUserReadingStats = async (userId: string) => {
     const q = query(
       sessionsRef,
       where('userId', '==', userId),
-      orderBy('createdAt', 'desc')
+      orderBy('createdAt', 'desc'),
+      limit(500)
     );
 
     const snapshot = await getDocs(q);
@@ -283,6 +338,9 @@ export const getUserReadingStats = async (userId: string) => {
     // 11. Historical Core Weeks
     const weeklyData = calculateHistoricalWeeks(sessions);
 
+    // 12. Book Breakdown
+    const bookStats = await calculateBookBreakdown(sessions);
+
     return {
       totalMinutes: Math.ceil(totalSeconds / 60),
       todayMinutes: Math.ceil(todaySeconds / 60),
@@ -303,9 +361,11 @@ export const getUserReadingStats = async (userId: string) => {
       currentCalendarWeekMinutes: weeklyData.currentCalendarWeekMinutes,
       currentWeekLabel: weeklyData.currentWeekLabel,
       historicalWeeks: weeklyData.historicalWeeks,
+      bookStats,
     };
   } catch (error) {
-    console.error('[Analytics] Error calculating stats:', error);
+    const friendlyError = getFriendlyErrorMessage(error, 'get_stats');
+    console.error('[Analytics] Error calculating stats:', friendlyError, error);
     return {
       totalMinutes: 0,
       todayMinutes: 0,
@@ -589,4 +649,80 @@ const calculateHistoricalWeeks = (sessions: ReadingSession[]) => {
     currentWeekLabel: `${formatDateShort(currentSunday)} - ${formatDateShort(new Date(currentSunday.getTime() + 6 * 24 * 60 * 60 * 1000))}`,
     historicalWeeks
   };
+};
+
+/**
+ * Helper to calculate per-book reading statistics
+ */
+const calculateBookBreakdown = async (sessions: ReadingSession[]) => {
+  if (sessions.length === 0) return [];
+
+  const bookMap = new Map<string, any>();
+  
+  sessions.forEach(s => {
+    if (!bookMap.has(s.bookId)) {
+      bookMap.set(s.bookId, {
+        bookId: s.bookId,
+        bookTitle: s.bookTitle,
+        seconds: 0,
+        lastRead: s.startTime instanceof Timestamp ? s.startTime.toDate() : new Date(s.startTime),
+        contentType: s.contentType
+      });
+    }
+    
+    const stat = bookMap.get(s.bookId);
+    stat.seconds += s.durationSeconds;
+    
+    const sessionDate = s.startTime instanceof Timestamp ? s.startTime.toDate() : new Date(s.startTime);
+    if (sessionDate > stat.lastRead) {
+      stat.lastRead = sessionDate;
+    }
+  });
+
+  const bookIds = Array.from(bookMap.keys());
+  const missingIds = bookIds.filter(id => !bookMetadataCache.has(id));
+
+  if (missingIds.length > 0) {
+    // Fetch missing covers in batches of 10
+    const fetchPromises = [];
+    for (let i = 0; i < missingIds.length; i += 10) {
+      const batchIds = missingIds.slice(i, i + 10);
+      
+      const fetchBatch = async (ids: string[]) => {
+        const [novelSnap, poemSnap] = await Promise.all([
+          getDocs(query(collection(db, 'novels'), where(documentId(), 'in', ids))),
+          getDocs(query(collection(db, 'poems'), where(documentId(), 'in', ids)))
+        ]);
+
+        novelSnap.forEach(doc => {
+          const { chapters, ...rest } = doc.data() as any;
+          bookMetadataCache.set(doc.id, rest.coverImage || '');
+        });
+        poemSnap.forEach(doc => {
+          if (!bookMetadataCache.has(doc.id)) {
+            bookMetadataCache.set(doc.id, doc.data().coverImage || '');
+          }
+        });
+
+        // Mark any still missing as null to avoid re-fetching
+        ids.forEach(id => {
+          if (!bookMetadataCache.has(id)) {
+            bookMetadataCache.set(id, null);
+          }
+        });
+      };
+
+      fetchPromises.push(fetchBatch(batchIds));
+    }
+    
+    await Promise.all(fetchPromises);
+  }
+
+  return Array.from(bookMap.values())
+    .map(b => ({
+      ...b,
+      minutes: Math.ceil(b.seconds / 60),
+      coverImage: bookMetadataCache.get(b.bookId) || null
+    }))
+    .sort((a, b) => b.minutes - a.minutes);
 };

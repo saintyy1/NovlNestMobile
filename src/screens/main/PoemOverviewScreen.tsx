@@ -113,6 +113,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
   const [editContent, setEditContent] = useState('');
   const [showOptionsModal, setShowOptionsModal] = useState(false);
   const [selectedCommentForOptions, setSelectedCommentForOptions] = useState<Comment | null>(null);
+  const [expandedComments, setExpandedComments] = useState<Set<string>>(new Set());
 
   const showCommentOptions = (comment: Comment) => {
     setSelectedCommentForOptions(comment);
@@ -246,7 +247,8 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
     const commentsQuery = query(
       collection(db, 'poemComments'),
       where('poemId', '==', poemId),
-      orderBy('createdAt', 'desc')
+      orderBy('createdAt', 'desc'),
+      limit(80)
     );
 
     const unsubscribe = onSnapshot(commentsQuery, async (snapshot) => {
@@ -836,108 +838,144 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
     navigation.navigate('Profile', { userId });
   };
 
-  const renderComment = (comment: Comment, isReply: boolean = false) => (
-    <View
-      key={comment.id}
-      style={isReply ? styles.replyItem : styles.commentItem}
-      ref={(ref) => { commentRefs.current[comment.id] = ref; }}
-    >
-      <View style={styles.commentContainer}>
-        {/* Left Side: Avatar */}
-        <TouchableOpacity onPress={() => handleProfileNavigation(comment.userId)}>
-          {comment.userPhoto ? (
-            <CachedImage uri={comment.userPhoto} style={styles.commentAvatar} />
-          ) : (
-            <View style={styles.commentAvatarPlaceholder}>
-              <Text style={styles.commentAvatarText}>{getUserInitials(comment.userName)}</Text>
-            </View>
-          )}
-        </TouchableOpacity>
+  const toggleReplies = (commentId: string) => {
+    setExpandedComments(prev => {
+      const next = new Set(prev);
+      if (next.has(commentId)) {
+        next.delete(commentId);
+      } else {
+        next.add(commentId);
+      }
+      return next;
+    });
+  };
 
-        {/* Middle/Right: Main Content Area */}
-        <View style={styles.commentContentWrapper}>
-          <View style={styles.commentMainArea}>
-            {/* Header: Name/Tags */}
-            <View style={styles.commentHeader}>
-              {isReply && comment.parentId ? (
-                <View style={styles.replyHeader}>
+  const renderComment = (comment: Comment, isReply: boolean = false) => {
+    const isExpanded = expandedComments.has(comment.id);
+    return (
+      <View
+        key={comment.id}
+        style={isReply ? styles.replyItem : styles.commentItem}
+        ref={(ref) => { commentRefs.current[comment.id] = ref; }}
+      >
+        <View style={styles.commentContainer}>
+          {/* Left Side: Avatar */}
+          <TouchableOpacity onPress={() => handleProfileNavigation(comment.userId)}>
+            {comment.userPhoto ? (
+              <CachedImage uri={comment.userPhoto} style={styles.commentAvatar} />
+            ) : (
+              <View style={styles.commentAvatarPlaceholder}>
+                <Text style={styles.commentAvatarText}>{getUserInitials(comment.userName)}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+
+          {/* Middle/Right: Main Content Area */}
+          <View style={styles.commentContentWrapper}>
+            <View style={styles.commentMainArea}>
+              {/* Header: Name/Tags */}
+              <View style={styles.commentHeader}>
+                {isReply && comment.parentId ? (
+                  <View style={styles.replyHeader}>
+                    <TouchableOpacity onPress={() => handleProfileNavigation(comment.userId)}>
+                      <Text style={styles.commentUserName}>{comment.userName}</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.replyArrow}> {'>'} </Text>
+                    {(() => {
+                      const parent = getParentCommentData(comment.parentId);
+                      return parent ? (
+                        <TouchableOpacity onPress={() => handleProfileNavigation(parent.userId)}>
+                          <Text style={styles.commentUserName}>{parent.userName}</Text>
+                        </TouchableOpacity>
+                      ) : null;
+                    })()}
+                  </View>
+                ) : (
                   <TouchableOpacity onPress={() => handleProfileNavigation(comment.userId)}>
                     <Text style={styles.commentUserName}>{comment.userName}</Text>
                   </TouchableOpacity>
-                  <Text style={styles.replyArrow}> {'>'} </Text>
-                  {(() => {
-                    const parent = getParentCommentData(comment.parentId);
-                    return parent ? (
-                      <TouchableOpacity onPress={() => handleProfileNavigation(parent.userId)}>
-                        <Text style={styles.commentUserName}>{parent.userName}</Text>
-                      </TouchableOpacity>
-                    ) : null;
-                  })()}
-                </View>
-              ) : (
-                <TouchableOpacity onPress={() => handleProfileNavigation(comment.userId)}>
-                  <Text style={styles.commentUserName}>{comment.userName}</Text>
+                )}
+                {comment.userId === poem?.poetId && (
+                  <View style={styles.authorBadge}>
+                    <Text style={styles.authorBadgeText}>Author</Text>
+                  </View>
+                )}
+              </View>
+
+              {/* Comment Text with Long Press */}
+              <Pressable
+                onLongPress={() => showCommentOptions(comment)}
+                delayLongPress={300}
+                style={({ pressed }) => [
+                  styles.commentTextContainer,
+                  pressed && styles.commentTextPressed
+                ]}
+              >
+                <Text style={styles.commentText}>{comment.content}</Text>
+              </Pressable>
+
+              {/* Action Row */}
+              <View style={styles.commentActionsRow}>
+                <Text style={styles.commentDate}>{formatDate(comment.createdAt)}</Text>
+
+                <TouchableOpacity onPress={() => {
+                  setReplyingTo(comment.id);
+                  setReplyingToUser(comment.userName);
+                  setShowCommentsModal(true);
+                  setTimeout(() => replyInputRef.current?.focus(), 100);
+                }}>
+                  <Text style={styles.commentActionText}>Reply</Text>
                 </TouchableOpacity>
-              )}
-              {comment.userId === poem?.poetId && (
-                <View style={styles.authorBadge}>
-                  <Text style={styles.authorBadgeText}>Author</Text>
-                </View>
+              </View>
+
+              {/* View Replies Button */}
+              {!isReply && comment.replies && comment.replies.length > 0 && (
+                <TouchableOpacity
+                  style={styles.viewRepliesButton}
+                  onPress={() => toggleReplies(comment.id)}
+                >
+                  <View style={styles.viewRepliesContent}>
+                    <View style={[styles.repliesIndicatorLine, { backgroundColor: colors.border }]} />
+                    <Text style={[styles.viewRepliesText, { color: colors.textSecondary }]}>
+                      {isExpanded ? 'Hide replies' : `View ${comment.replies.length} ${comment.replies.length === 1 ? 'reply' : 'replies'}`}
+                    </Text>
+                    <Ionicons
+                      name={isExpanded ? "chevron-up" : "chevron-down"}
+                      size={14}
+                      color={colors.textSecondary}
+                      style={{ marginLeft: 4 }}
+                    />
+                  </View>
+                </TouchableOpacity>
               )}
             </View>
 
-            {/* Comment Text with Long Press */}
-            <Pressable
-              onLongPress={() => showCommentOptions(comment)}
-              delayLongPress={300}
-              style={({ pressed }) => [
-                styles.commentTextContainer,
-                pressed && styles.commentTextPressed
-              ]}
-            >
-              <Text style={styles.commentText}>{comment.content}</Text>
-            </Pressable>
-
-            {/* Action Row */}
-            <View style={styles.commentActionsRow}>
-              <Text style={styles.commentDate}>{formatDate(comment.createdAt)}</Text>
-
-              <TouchableOpacity onPress={() => {
-                setReplyingTo(comment.id);
-                setReplyingToUser(comment.userName);
-                setShowCommentsModal(true);
-                setTimeout(() => replyInputRef.current?.focus(), 100);
-              }}>
-                <Text style={styles.commentActionText}>Reply</Text>
+            {/* Far Right: Like Button */}
+            <View style={styles.commentLikeContainer}>
+              <TouchableOpacity
+                onPress={() => handleCommentLike(comment.id, comment.likedBy?.includes(currentUser?.uid || ''))}
+                disabled={!currentUser}
+                style={styles.commentLikeAction}
+              >
+                <Ionicons
+                  name={comment.likedBy?.includes(currentUser?.uid || '') ? 'heart' : 'heart-outline'}
+                  size={24}
+                  color={comment.likedBy?.includes(currentUser?.uid || '') ? '#EF4444' : '#9CA3AF'}
+                />
+                <Text style={styles.commentLikeCount}>{comment.likes || 0}</Text>
               </TouchableOpacity>
             </View>
           </View>
+        </View>
 
-          {/* Far Right: Like Button */}
-          <View style={styles.commentLikeContainer}>
-            <TouchableOpacity
-              onPress={() => handleCommentLike(comment.id, comment.likedBy?.includes(currentUser?.uid || ''))}
-              disabled={!currentUser}
-              style={styles.commentLikeAction}
-            >
-              <Ionicons
-                name={comment.likedBy?.includes(currentUser?.uid || '') ? 'heart' : 'heart-outline'}
-                size={24}
-                color={comment.likedBy?.includes(currentUser?.uid || '') ? '#EF4444' : '#9CA3AF'}
-              />
-              <Text style={styles.commentLikeCount}>{comment.likes || 0}</Text>
-            </TouchableOpacity>
+        {comment.replies && comment.replies.length > 0 && isExpanded && (
+          <View style={styles.repliesContainer}>
+            {comment.replies.map((reply) => renderComment(reply, true))}
           </View>
-        </View>
+        )}
       </View>
-
-      {comment.replies && comment.replies.length > 0 && (
-        <View style={styles.repliesContainer}>
-          {comment.replies.map((reply) => renderComment(reply, true))}
-        </View>
-      )}
-    </View>
-  );
+    );
+  };
 
   return (
     <>
@@ -2057,6 +2095,23 @@ const getStyles = (themeColors: any, insets: any) => StyleSheet.create({
     alignItems: 'center' as const,
     gap: 16,
     marginTop: 4,
+  },
+  viewRepliesButton: {
+    marginTop: 12,
+    alignSelf: 'flex-start',
+  },
+  viewRepliesContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  repliesIndicatorLine: {
+    width: 30,
+    height: 1,
+    marginRight: 10,
+  },
+  viewRepliesText: {
+    fontSize: 14,
+    fontWeight: '700',
   },
   commentActionText: {
     color: themeColors.textSecondary,

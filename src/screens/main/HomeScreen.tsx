@@ -536,7 +536,7 @@ export const HomeScreen = ({ navigation }: any) => {
         onPress={() => {
           navigation.navigate('NovelReader', {
             novelId: progress.novelId,
-            chapterIndex: progress.chapterIndex,
+            chapterNumber: progress.chapterIndex,
           });
         }}
         onLongPress={() => handleRemoveProgress(progress.novelId, progress.novelTitle)}

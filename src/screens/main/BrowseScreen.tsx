@@ -10,6 +10,7 @@ import {
   Image,
   ActivityIndicator,
   Platform,
+  FlatList,
 } from 'react-native';
 import CachedImage from '../../components/CachedImage';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -33,6 +34,7 @@ import { trackSearch } from '../../utils/Analytics-utils';
 import { withCache, CACHE_TTL } from '../../utils/cache';
 
 const NOVEL_GENRES = [
+  'All',
   'Fantasy',
   'Romance',
   'Mystery',
@@ -49,6 +51,7 @@ const NOVEL_GENRES = [
 ];
 
 const POEM_GENRES = [
+  'All',
   'Romantic',
   'Nature',
   'Free Verse',
@@ -80,7 +83,9 @@ export const BrowseScreen = () => {
   const [poems, setPoems] = useState<Poem[]>([]);
   const [loading, setLoading] = useState(false);
   const [isClassics, setIsClassics] = useState(false);
+  const [isGenresExpanded, setIsGenresExpanded] = useState(false);
   const [imageErrors, setImageErrors] = useState<Record<string, boolean>>({});
+  const genreListRef = useRef<FlatList>(null);
 
   const styles = getStyles(colors);
 
@@ -139,7 +144,7 @@ export const BrowseScreen = () => {
 
   // Reset filters when browse type changes
   useEffect(() => {
-    setSelectedGenre(browseType === 'poems' ? 'Romantic' : 'Fantasy');
+    setSelectedGenre('All');
     setSearchQuery('');
     setSelectedFilter('Trending');
   }, [browseType]);
@@ -157,7 +162,9 @@ export const BrowseScreen = () => {
         queryConstraints.push(where('publicDomain', '==', true));
       }
 
-      queryConstraints.push(where('genres', 'array-contains', selectedGenre));
+      if (selectedGenre !== 'All') {
+        queryConstraints.push(where('genres', 'array-contains', selectedGenre));
+      }
 
       switch (selectedFilter) {
         case 'Trending':
@@ -265,18 +272,30 @@ export const BrowseScreen = () => {
   }, [browseType, isClassics, selectedGenre, selectedFilter, searchQuery]);
 
   const getFirebaseDownloadUrl = (url: string) => {
-    if (!url || !url.includes('firebasestorage')) {
+    if (!url) return url;
+    
+    // If it's already a direct download URL, return it
+    if (url.includes('firebasestorage.googleapis.com') && url.includes('alt=media')) {
       return url;
     }
 
-    try {
-      const urlParts = url.split('/');
-      const bucketName = urlParts[3];
-      const filePath = urlParts.slice(4).join('/');
-      return `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodeURIComponent(filePath)}?alt=media`;
-    } catch (error) {
-      return url;
+    // Handle storage.googleapis.com or gs:// links
+    if (url.includes('storage.googleapis.com') || url.startsWith('gs://')) {
+      try {
+        const urlParts = url.replace('gs://', '').split('/');
+        // For storage.googleapis.com/bucket/path, bucket is parts[2]
+        // For bucket/path, bucket is parts[0]
+        const isGoogleApi = url.includes('storage.googleapis.com');
+        const bucketName = isGoogleApi ? urlParts[3] : urlParts[0];
+        const filePath = isGoogleApi ? urlParts.slice(4).join('/') : urlParts.slice(1).join('/');
+        
+        return `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodeURIComponent(filePath)}?alt=media`;
+      } catch (error) {
+        return url;
+      }
     }
+    
+    return url;
   };
 
   const getGenreColor = (genres: string[]) => {
@@ -564,25 +583,86 @@ export const BrowseScreen = () => {
         {/* Genre Filter */}
         <View style={styles.filterSection}>
           <Text style={styles.sectionTitle}>Genres</Text>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.genreScroll}
-          >
-            {genres.map((genre) => (
-              <TouchableOpacity
-                key={genre}
-                style={[styles.genreTag, selectedGenre === genre && styles.genreTagActive]}
-                onPress={() => {
-                  setSelectedGenre(genre);
-                }}
+
+          {isGenresExpanded ? (
+            <View style={styles.genreExpandedContainer}>
+              <View style={styles.genreGrid}>
+                {genres.map((genre) => (
+                  <TouchableOpacity
+                    key={genre}
+                    style={[
+                      styles.genreGridItem, 
+                      selectedGenre === genre && styles.genreTagActive
+                    ]}
+                    onPress={() => {
+                      setSelectedGenre(genre);
+                      setIsGenresExpanded(false);
+                      // Scroll horizontal list to the selected genre
+                      const index = genres.indexOf(genre);
+                      if (index !== -1) {
+                        setTimeout(() => {
+                          genreListRef.current?.scrollToIndex({
+                            index,
+                            animated: true,
+                            viewPosition: 0 // Align to the left for "exact" focus
+                          });
+                        }, 100);
+                      }
+                    }}
+                  >
+                    <Text style={[
+                      styles.genreTagText, 
+                      selectedGenre === genre && styles.genreTagTextActive
+                    ]}>
+                      {genre}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <TouchableOpacity 
+                onPress={() => setIsGenresExpanded(false)}
+                style={styles.expandButtonAbsolute}
               >
-                <Text style={[styles.genreTagText, selectedGenre === genre && styles.genreTagTextActive]}>
-                  {genre}
-                </Text>
+                <Ionicons name="chevron-up" size={24} color={colors.primary} />
               </TouchableOpacity>
-            ))}
-          </ScrollView>
+            </View>
+          ) : (
+            <View style={styles.genreScrollContainer}>
+              <FlatList
+                ref={genreListRef}
+                data={genres}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.genreScroll}
+                keyExtractor={(item) => item}
+                initialNumToRender={genres.length}
+                onScrollToIndexFailed={(info) => {
+                  genreListRef.current?.scrollToOffset({ 
+                    offset: info.averageItemLength * info.index, 
+                    animated: true 
+                  });
+                }}
+                renderItem={({ item: genre }) => (
+                  <TouchableOpacity
+                    style={[styles.genreTag, selectedGenre === genre && styles.genreTagActive]}
+                    onPress={() => {
+                      setSelectedGenre(genre);
+                    }}
+                  >
+                    <Text style={[styles.genreTagText, selectedGenre === genre && styles.genreTagTextActive]}>
+                      {genre}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              />
+              <TouchableOpacity 
+                onPress={() => setIsGenresExpanded(true)}
+                style={styles.expandButtonInline}
+              >
+                <Ionicons name="chevron-down" size={24} color={colors.primary} />
+              </TouchableOpacity>
+            </View>
+          )}
         </View>
 
         {isClassics && (
@@ -798,6 +878,53 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   genreScroll: {
     paddingHorizontal: spacing.sm,
     gap: spacing.sm,
+    paddingBottom: spacing.xs,
+    paddingRight: 50, // Space for the arrow
+  },
+  genreScrollContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    position: 'relative',
+  },
+  genreExpandedContainer: {
+    position: 'relative',
+  },
+  expandButtonInline: {
+    position: 'absolute',
+    right: 0,
+    backgroundColor: themeColors.background,
+    height: '100%',
+    width: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    // Add a slight gradient-like shadow effect if possible, or just solid
+    shadowColor: themeColors.background,
+    shadowOffset: { width: -10, height: 0 },
+    shadowOpacity: 1,
+    shadowRadius: 5,
+    elevation: 5,
+  },
+  expandButtonAbsolute: {
+    position: 'absolute',
+    top: -40,
+    right: 0,
+    padding: spacing.xs,
+  },
+  genreGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.sm,
+    paddingTop: spacing.xs,
+  },
+  genreGridItem: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs + 2,
+    borderRadius: 20,
+    backgroundColor: themeColors.backgroundSecondary,
+    borderWidth: 1,
+    borderColor: themeColors.border,
+    marginBottom: spacing.xs,
   },
   genreTag: {
     paddingHorizontal: spacing.md,

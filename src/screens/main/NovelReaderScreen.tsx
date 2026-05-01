@@ -20,6 +20,7 @@ import {
   Share as RNShare,
   Pressable,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import CachedImage from '../../components/CachedImage';
@@ -36,6 +37,12 @@ import {
   setDoc,
   addDoc,
   collection,
+  writeBatch,
+  deleteField,
+  query,
+  orderBy,
+  getDocs,
+  limit,
 } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import type { Novel } from '../../types/novel';
@@ -117,10 +124,16 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     return 0;
   };
 
-  const initialChapter = chapterIndex !== undefined ? parseChapter(chapterIndex) :
-    (chapterNumber !== undefined ? parseChapter(chapterNumber) :
-      (chapter !== undefined ? parseChapter(chapter) : 0));
+  const hasRelativeParam = chapterIndex !== undefined || chapter !== undefined;
+  const relativeValue = chapterIndex !== undefined ? parseChapter(chapterIndex) : (chapter !== undefined ? parseChapter(chapter) : 0);
+
+  const initialChapter = chapterNumber !== undefined ? parseChapter(chapterNumber) :
+    (hasRelativeParam ? relativeValue : 0);
+
   const [currentChapter, setCurrentChapter] = useState<number>(initialChapter);
+  const [pendingRelativeIndex, setPendingRelativeIndex] = useState<number | null>(
+    (chapterNumber === undefined && hasRelativeParam) ? relativeValue : null
+  );
   const [showComments, setShowComments] = useState(false);
   const [chapterLiked, setChapterLiked] = useState(false);
   const [chapterLikes, setChapterLikes] = useState(0);
@@ -136,9 +149,11 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
   const [editContent, setEditContent] = useState('');
   const [showOptionsModal, setShowOptionsModal] = useState(false);
   const [selectedCommentForOptions, setSelectedCommentForOptions] = useState<Comment | null>(null);
+  const [expandedComments, setExpandedComments] = useState<Set<string>>(new Set());
   const [showReaderSettings, setShowReaderSettings] = useState(false);
   const [showChapterList, setShowChapterList] = useState(false);
   const [isUIHidden, setIsUIHidden] = useState(false);
+  const [activeChapterContent, setActiveChapterContent] = useState<{ title: string, content: string, index: number } | null>(null);
   const [contentHeight, setContentHeight] = useState(0);
 
   const uiOpacity = useRef(new Animated.Value(1)).current;
@@ -154,13 +169,52 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
   const [isAtEnd, setIsAtEnd] = useState(false);
   const flatListRef = useRef<FlatList>(null);
   const [requestedPage, setRequestedPage] = useState(0);
+  const [isMigrating, setIsMigrating] = useState(false);
+
+  const migrateLegacyComments = async (novelId: string, chapterId: string, legacyComments: any[]) => {
+    if (!legacyComments || legacyComments.length === 0 || isMigrating) return;
+
+    try {
+      setIsMigrating(true);
+      console.log(`[Migration] Moving ${legacyComments.length} comments to subcollection for chapter ${chapterId}`);
+
+      const commentsSubRef = collection(db, 'novels', novelId, 'chapters', chapterId, 'comments');
+      const batch = writeBatch(db);
+
+      legacyComments.forEach((comment) => {
+        const commentDocRef = doc(commentsSubRef, comment.id);
+        batch.set(commentDocRef, {
+          ...comment,
+          migrated: true,
+          migratedAt: new Date().toISOString(),
+        });
+      });
+
+      // Clear legacy array and set initial count
+      const chapterRef = doc(db, 'novels', novelId, 'chapters', chapterId);
+      batch.update(chapterRef, {
+        comments: deleteField(),
+        commentCount: legacyComments.length
+      });
+
+      await batch.commit();
+      console.log('[Migration] Success');
+
+      // Invalidate cache so next fetch sees clean subcollection
+      await invalidateCache(`engagement_${novelId}_${chapterId}`);
+    } catch (error) {
+      console.error('[Migration] Failed:', error);
+    } finally {
+      setIsMigrating(false);
+    }
+  };
 
   const styles = getStyles(colors, insets, fontSize);
   const [showNextChapterHint, setShowNextChapterHint] = useState(false);
 
   // Precision Cache for paged content
   const pagedCache = useRef<Record<string, any[][]>>({});
-  
+
   // Clear cache on layout changes
   useEffect(() => {
     pagedCache.current = {};
@@ -217,17 +271,31 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
       currentIndex++;
     }
 
+    const chaptersCount = novel.chapterCount ?? 0;
     const chapterIndex = readingOrderIndex - currentIndex;
-    if (chapterIndex >= 0 && chapterIndex < novel.chapters.length) {
+
+    if (chapterIndex >= 0 && chapterIndex < chaptersCount) {
+
+      // If we have activeChapterContent (New architecture, loaded async)
+      if (activeChapterContent && activeChapterContent.index === readingOrderIndex) {
+        return {
+          type: 'chapter',
+          chapterIndex: chapterIndex,
+          content: activeChapterContent.content,
+          title: activeChapterContent.title,
+        };
+      }
+
+      // Placeholder while loading
       return {
         type: 'chapter',
         chapterIndex: chapterIndex,
-        content: novel.chapters[chapterIndex]?.content || '',
-        title: novel.chapters[chapterIndex]?.title || `Chapter ${chapterIndex + 1}`,
+        content: '',
+        title: novel.chapterTitles ? novel.chapterTitles[chapterIndex] : `Chapter ${chapterIndex + 1}`,
       };
     }
 
-    currentIndex += novel.chapters.length;
+    currentIndex += novel.chapterCount ?? 0;
 
     if (novel.epilogue) {
       if (readingOrderIndex === currentIndex) {
@@ -241,9 +309,17 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     }
 
     return { type: 'none', chapterIndex: -1, content: '', title: '' };
-  }, [novel]);
+  }, [novel, activeChapterContent, currentChapter]);
 
   const currentContentInfo = getContentInfo(currentChapter);
+
+  const getChapterDocId = () => {
+    if (currentContentInfo.type === 'authors-note') return 'authorsNote';
+    if (currentContentInfo.type === 'prologue') return 'prologue';
+    if (currentContentInfo.type === 'characters') return 'characters';
+    if (currentContentInfo.type === 'epilogue') return 'epilogue';
+    return currentContentInfo.chapterIndex.toString();
+  };
 
   // Extract content blocks (paragraphs, chats, images) from content
   const extractChatBlocks = (content: string): Array<{ type: 'paragraph' | 'chat' | 'image', data: any }> => {
@@ -263,16 +339,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
       }
 
       const matchText = match[0];
-      if (matchText.startsWith('[CHAT_START]')) {
-        // Chat block
-        try {
-          const chatJson = matchText.replace(/\[CHAT_START\]|\[CHAT_END\]/g, '');
-          const messages = JSON.parse(chatJson);
-          result.push({ type: 'chat', data: messages });
-        } catch (e) {
-          result.push({ type: 'paragraph', data: matchText });
-        }
-      } else if (matchText.startsWith('[IMAGE:')) {
+      if (matchText.startsWith('[IMAGE:')) {
         // Image block
         const imageUrl = matchText.replace(/\[IMAGE:|\]/g, '');
         result.push({ type: 'image', data: imageUrl });
@@ -337,12 +404,12 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
   const getPagedContent = (chapterIdx: number) => {
     if (!novel) return [];
-    
-    const cacheKey = `${novel.id}_${chapterIdx}_${fontSize}_${insets.top}_${insets.bottom}`;
+
+    const cacheKey = `${novel.id}_${chapterIdx}_${fontSize}_${insets.top}_${insets.bottom}_${novel.updatedAt}`;
     if (pagedCache.current[cacheKey]) return pagedCache.current[cacheKey];
 
     const contentInfo = getContentInfo(chapterIdx);
-    
+
     // Explicit handle for Cast of Characters
     if (contentInfo.type === 'characters') {
       const charPages = [[{ type: 'characters_list' }]];
@@ -353,12 +420,12 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     if (!contentInfo.content) return [];
     const pages: any[][] = [];
     let currentPage: any[] = [];
-    
+
     const availableWidth = Dimensions.get('window').width - 48;
     const approxLineHeight = Math.round(fontSize * 1.6);
     const availableHeight = Dimensions.get('window').height - (insets.top + insets.bottom + 160);
     const maxLinesPerPage = Math.floor(availableHeight / approxLineHeight);
-    
+
     const charsPerLine = Math.floor(availableWidth / (fontSize * 0.45));
     let currentLinesOnPage = 0;
 
@@ -370,7 +437,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         while (text.length > 0) {
           const lines = Math.ceil(text.length / charsPerLine);
           const remainingLines = maxLinesPerPage - currentLinesOnPage;
-          
+
           if (lines <= remainingLines) {
             currentPage.push({ type: 'paragraph', data: text });
             currentLinesOnPage += lines + 1;
@@ -379,7 +446,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
             const splitPoint = Math.floor(remainingLines * charsPerLine * 0.9);
             let breakIdx = text.lastIndexOf(' ', splitPoint);
             if (breakIdx === -1) breakIdx = splitPoint;
-            
+
             currentPage.push({ type: 'paragraph', data: text.substring(0, breakIdx).trim() });
             pages.push(currentPage);
             currentPage = [];
@@ -424,7 +491,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     if (novel.authorsNote) count++;
     if (novel.prologue) count++;
     if (novel.characters && novel.characters.length > 0) count++;
-    count += novel.chapters.length;
+    count += novel.chapterCount ?? 0;
     if (novel.epilogue) count++;
     return count;
   }, [novel]);
@@ -446,6 +513,13 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         setNovel(novelData);
         // Clear paging cache because the content might have changed
         pagedCache.current = {};
+
+        // Apply relative offset if needed
+        if (pendingRelativeIndex !== null) {
+          const offset = (novelData.authorsNote ? 1 : 0) + (novelData.prologue ? 1 : 0) + ((novelData.characters && novelData.characters.length > 0) ? 1 : 0);
+          setCurrentChapter(offset + pendingRelativeIndex);
+          setPendingRelativeIndex(null);
+        }
 
         if (currentUser) {
           await updateDoc(doc(db, 'novels', resolvedNovelId), {
@@ -469,26 +543,142 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     fetchNovel();
   }, [novelId, currentUser]);
 
+  useFocusEffect(
+    useCallback(() => {
+      if (novel) {
+        // Re-fetch to check for updates (this will use cache unless invalidated by editor)
+        const fetchUpdates = async () => {
+          try {
+            const novelData = await withCache(`novel_${resolvedNovelId}`, async () => {
+              const novelDoc = await getDoc(doc(db, 'novels', resolvedNovelId));
+              if (novelDoc.exists()) {
+                return { id: novelDoc.id, ...novelDoc.data() } as Novel;
+              }
+              throw new Error('Novel not found');
+            }, CACHE_TTL.CONTENT);
+
+            if (novelData.updatedAt !== novel?.updatedAt) {
+              setNovel(novelData);
+              pagedCache.current = {}; // Hard clear paging cache on update
+            }
+          } catch (e) {
+            console.log("Silent update fetch failed:", e);
+          }
+        };
+        fetchUpdates();
+      }
+    }, [resolvedNovelId, novel?.updatedAt])
+  );
+
   useEffect(() => {
     const fetchChapterData = async () => {
       if (!novel) return;
 
+      // Clear previous content immediately to avoid showing stale content while loading
+      setActiveChapterContent(null);
+
       try {
-        const chapterId = currentContentInfo.type === 'epilogue' ? 'epilogue' : currentChapter.toString();
-        const chapterCacheKey = `chapter_${novel.id}_${chapterId}`;
+        const isChapter = currentContentInfo.type === 'chapter';
+        const isEpilogue = currentContentInfo.type === 'epilogue';
+        const isSpecialPart = ['authors-note', 'prologue', 'characters'].includes(currentContentInfo.type);
 
-        const chapterData = await withCache(chapterCacheKey, async () => {
-          const chapterRef = doc(db, 'novels', novel.id, 'chapters', chapterId);
-          const chapterDoc = await getDoc(chapterRef);
+        let chapterData: any = null;
 
-          if (chapterDoc.exists()) {
-            return chapterDoc.data();
-          }
-          return { _notFound: true };
-        }, CACHE_TTL.CONTENT);
+        if (isEpilogue) {
+          // Epilogue is in the main document (Legacy/Small structure)
+          chapterData = novel.epilogue;
+        } else if (isSpecialPart) {
+          // Special parts already have their content in currentContentInfo
+          chapterData = {
+            title: currentContentInfo.title,
+            content: currentContentInfo.content,
+          };
+        } else {
+          // Regular chapter - fetch from sub-collection
+          const chapterId = currentContentInfo.chapterIndex.toString();
+          const chapterCacheKey = `chapter_${novel.id}_${chapterId}`;
+
+          chapterData = await withCache(chapterCacheKey, async () => {
+            const chapterRef = doc(db, 'novels', novel.id, 'chapters', chapterId);
+            const chapterDoc = await getDoc(chapterRef);
+
+            if (chapterDoc.exists()) {
+              return chapterDoc.data();
+            }
+            return { _notFound: true };
+          }, CACHE_TTL.CONTENT);
+        }
 
         if (!chapterData || chapterData._notFound) {
           throw new Error('Chapter not found');
+        }
+
+        // --- NEW ENGAGEMENT FETCH LOGIC (Subcollection Support) ---
+        const engagementDocId = getChapterDocId();
+        const engagementCacheKey = `engagement_${novel.id}_${engagementDocId}`;
+        const engagementData = await withCache(engagementCacheKey, async () => {
+          const engRef = doc(db, 'novels', novel.id, 'chapters', engagementDocId);
+          const engDoc = await getDoc(engRef);
+
+          let chapterLikes = 0;
+          let chapterLikedBy: string[] = [];
+          let comments: any[] = [];
+          let fromLegacyArray = false;
+
+          if (engDoc.exists()) {
+            const data = engDoc.data();
+            chapterLikes = data.chapterLikes || 0;
+            chapterLikedBy = data.chapterLikedBy || [];
+
+            // Check for legacy comments
+            if (data.comments && data.comments.length > 0) {
+              comments = data.comments;
+              fromLegacyArray = true;
+            }
+          }
+
+          // ALWAYS fetch from subcollection to see new comments
+          try {
+            const commentsQuery = query(
+              collection(db, 'novels', novel.id, 'chapters', engagementDocId, 'comments'),
+              orderBy('createdAt', 'desc')
+            );
+            const commentsSnapshot = await getDocs(commentsQuery);
+            const subcollectionComments: any[] = [];
+            commentsSnapshot.forEach(doc => {
+              subcollectionComments.push({ id: doc.id, ...doc.data() });
+            });
+
+            // Merge them: Subcollection comments take priority if IDs match (rare but safe)
+            const subIds = new Set(subcollectionComments.map(c => c.id));
+            comments = [...subcollectionComments, ...comments.filter(c => !subIds.has(c.id))];
+          } catch (e) {
+            console.log("Error fetching chapter comments subcollection:", e);
+          }
+
+          return { chapterLikes, chapterLikedBy, comments, fromLegacyArray };
+        }, CACHE_TTL.CONTENT);
+
+        // --- TRIGGER MIGRATION (Outside Cache Block) ---
+        // Even if data is from cache, if we are the author and see unmigrated comments, trigger it.
+        const hasUnmigrated = engagementData.comments && engagementData.comments.some((c: any) => !c.migrated);
+
+        if (hasUnmigrated && currentUser && currentUser.uid === novel.authorId) {
+          migrateLegacyComments(novel.id, engagementDocId, engagementData.comments);
+        }
+
+        // Merge engagement into chapterData
+        chapterData = { ...chapterData, ...engagementData };
+
+        // Set active chapter content for the reader
+        if (isChapter || isEpilogue) {
+          setActiveChapterContent({
+            title: chapterData.title || currentContentInfo.title,
+            content: chapterData.content || '',
+            index: currentChapter,
+          });
+        } else {
+          setActiveChapterContent(null);
         }
 
         setChapterLiked(currentUser ? chapterData.chapterLikedBy?.includes(currentUser.uid) || false : false);
@@ -502,13 +692,15 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         // Predictive Prefetching: Pre-calculate paging and pre-load metadata for neighbors
         const prefetch = async (idx: number) => {
           if (!novel || idx < 0 || idx >= getTotalReadingOrderItems()) return;
-          
+
           // 1. Pre-calculate paging (CPU bound)
           getPagedContent(idx);
 
           // 2. Pre-load chapter metadata (Network bound)
           const info = getContentInfo(idx);
-          const id = info.type === 'epilogue' ? 'epilogue' : idx.toString();
+          if (info.type !== 'chapter') return; // Epilogue/Others are already in 'novel'
+
+          const id = info.chapterIndex.toString();
           const key = `chapter_${novel.id}_${id}`;
           try {
             await withCache(key, async () => {
@@ -553,7 +745,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     // Reset scroll position ONLY on chapter transition if no specific page is requested
     if (chapterChanged && requestedPage === 0) {
       flatListRef.current?.scrollToIndex({ index: 0, animated: false });
-    } 
+    }
     // Just reset the requested page state if it was consumed by initialScrollIndex
     else if (requestedPage !== 0 && pagedContent.length > 0) {
       setRequestedPage(0);
@@ -672,7 +864,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     if (currentChapter >= getTotalReadingOrderItems() - 1) return;
 
     const screenHeight = Dimensions.get('window').height;
-    
+
     Animated.timing(slideAnim, {
       toValue: -screenHeight,
       duration: 300,
@@ -754,13 +946,15 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
       showAlert({
         title: 'Login Required',
         message: 'Please login to like chapters',
-        type: 'info'
+        type: 'info',
+        useNative: true
       });
       return;
     }
 
     try {
-      const chapterRef = doc(db, 'novels', novel.id, 'chapters', currentChapter.toString());
+      const chapterId = getChapterDocId();
+      const chapterRef = doc(db, 'novels', novel.id, 'chapters', chapterId);
       const chapterDoc = await getDoc(chapterRef);
       const newLikeStatus = !chapterLiked;
 
@@ -780,10 +974,11 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         });
       }
 
-      // Invalidate chapter cache to ensure immediate update
-      const chapterId = currentContentInfo.type === 'epilogue' ? 'epilogue' : currentChapter.toString();
+      // Invalidate chapter and engagement caches to ensure immediate update
       const chapterCacheKey = `chapter_${novel.id}_${chapterId}`;
+      const engagementCacheKey = `engagement_${novel.id}_${chapterId}`;
       await invalidateCache(chapterCacheKey);
+      await invalidateCache(engagementCacheKey);
       // Invalidate novel cache in case overview aggregates chapter likes
       await invalidateCache(`novel_${novel.id}`);
 
@@ -812,7 +1007,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     } catch (error) {
       console.error('Error updating chapter like:', error);
       setChapterLiked(!chapterLiked);
-      showToast({ message: 'Failed to update like status', type: 'error' });
+      showAlert({ message: 'Failed to update like status', type: 'error', useNative: true });
     }
   };
 
@@ -821,7 +1016,8 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
       showAlert({
         title: 'Login Required',
         message: 'Please login to follow authors',
-        type: 'info'
+        type: 'info',
+        useNative: true
       });
       return;
     }
@@ -839,7 +1035,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
     } catch (error) {
       console.error('Error toggling follow:', error);
-      showToast({ message: 'Failed to update follow status', type: 'error' });
+      showAlert({ message: 'Failed to update follow status', type: 'error', useNative: true });
       // Revert on error
       setIsFollowing(isFollowing);
     } finally {
@@ -852,11 +1048,15 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
     try {
       setSubmittingComment(true);
-      const chapterRef = doc(db, 'novels', novel.id, 'chapters', currentChapter.toString());
+      const chapterId = getChapterDocId();
+      const chapterRef = doc(db, 'novels', novel.id, 'chapters', chapterId);
       const chapterDoc = await getDoc(chapterRef);
 
+      const commentId = Date.now().toString();
+      const commentSubRef = doc(db, 'novels', novel.id, 'chapters', chapterId, 'comments', commentId);
+
       const comment: Comment = {
-        id: Date.now().toString(),
+        id: commentId,
         content: newComment.trim(),
         userId: currentUser.uid,
         userName: currentUser.displayName || 'Anonymous',
@@ -866,27 +1066,16 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         likedBy: [],
       };
 
-      let updatedComments: Comment[];
+      await setDoc(commentSubRef, comment);
 
-      if (!chapterDoc.exists()) {
-        await setDoc(chapterRef, {
-          chapterLikes: 0,
-          chapterLikedBy: [],
-          comments: [comment],
-        });
-        updatedComments = [comment];
-      } else {
-        const existingComments = chapterDoc.data().comments || [];
-        updatedComments = [...existingComments, comment];
-        await updateDoc(chapterRef, {
-          comments: updatedComments,
-        });
-      }
+      // Update lightweight count in chapter doc
+      await updateDoc(chapterRef, {
+        commentCount: increment(1)
+      });
 
-      // Invalidate chapter cache
-      const chapterId = currentContentInfo.type === 'epilogue' ? 'epilogue' : currentChapter.toString();
-      const chapterCacheKey = `chapter_${novel.id}_${chapterId}`;
-      await invalidateCache(chapterCacheKey);
+      // Invalidate engagement cache
+      const engagementCacheKey = `engagement_${novel.id}_${chapterId}`;
+      await invalidateCache(engagementCacheKey);
       // Invalidate novel cache to refresh comment stats on overview
       await invalidateCache(`novel_${novel.id}`);
 
@@ -914,13 +1103,13 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         );
       }
 
-      const organizedComments = organizeComments(updatedComments);
-      setComments(organizedComments);
+      // Update local state optimistically
+      setComments(prev => organizeComments([...(prev.flatMap(c => [c, ...(c.replies || [])])), comment]));
       setNewComment('');
-      showToast({ message: 'Comment posted successfully!', type: 'success' });
+      showAlert({ title: 'Success', message: 'Comment posted successfully!', type: 'info', useNative: true });
     } catch (error) {
       console.error('Error adding comment:', error);
-      showToast({ message: 'Failed to post comment', type: 'error' });
+      showAlert({ message: 'Failed to post comment', type: 'error', useNative: true });
     } finally {
       setSubmittingComment(false);
     }
@@ -931,7 +1120,8 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
     try {
       setSubmittingReply(parentId);
-      const chapterRef = doc(db, 'novels', novel.id, 'chapters', currentChapter.toString());
+      const chapterId = getChapterDocId();
+      const chapterRef = doc(db, 'novels', novel.id, 'chapters', chapterId);
       const chapterDoc = await getDoc(chapterRef);
 
       if (!chapterDoc.exists()) return;
@@ -939,8 +1129,11 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
       const existingComments = chapterDoc.data().comments || [];
       const parentComment = existingComments.find((c: Comment) => c.id === parentId);
 
+      const replyId = Date.now().toString();
+      const replySubRef = doc(db, 'novels', novel.id, 'chapters', chapterId, 'comments', replyId);
+
       const reply: Comment = {
-        id: Date.now().toString(),
+        id: replyId,
         content: replyContent.trim(),
         userId: currentUser.uid,
         userName: currentUser.displayName || 'Anonymous',
@@ -951,15 +1144,16 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         likedBy: [],
       };
 
-      const updatedComments = [...existingComments, reply];
+      await setDoc(replySubRef, reply);
+
+      // Update lightweight count in chapter doc
       await updateDoc(chapterRef, {
-        comments: updatedComments,
+        commentCount: increment(1)
       });
 
-      // Invalidate chapter cache
-      const chapterId = currentContentInfo.type === 'epilogue' ? 'epilogue' : currentChapter.toString();
-      const chapterCacheKey = `chapter_${novel.id}_${chapterId}`;
-      await invalidateCache(chapterCacheKey);
+      // Invalidate engagement cache
+      const engagementCacheKey = `engagement_${novel.id}_${chapterId}`;
+      await invalidateCache(engagementCacheKey);
 
       if (novel.authorId !== currentUser.uid) {
         await addDoc(collection(db, 'notifications'), {
@@ -1011,15 +1205,15 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         );
       }
 
-      const organizedComments = organizeComments(updatedComments);
-      setComments(organizedComments);
+      // Update local state optimistically
+      setComments(prev => organizeComments([...(prev.flatMap(c => [c, ...(c.replies || [])])), reply]));
       setReplyContent('');
       setReplyingTo(null);
       setReplyingToUser('');
-      showToast({ message: 'Reply posted successfully!', type: 'success' });
+      showAlert({ title: 'Success', message: 'Reply posted successfully!', type: 'info', useNative: true });
     } catch (error) {
       console.error('Error adding reply:', error);
-      showToast({ message: 'Failed to post reply', type: 'error' });
+      showAlert({ message: 'Failed to post reply', type: 'error', useNative: true });
     } finally {
       setSubmittingReply(null);
     }
@@ -1027,7 +1221,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
   const handleCopyComment = async (text: string) => {
     await Clipboard.setStringAsync(text);
-    showToast({ message: 'Comment copied to clipboard', type: 'success' });
+    showAlert({ message: 'Comment copied to clipboard', type: 'info', useNative: true });
   };
 
   const handleEditSubmit = async () => {
@@ -1035,39 +1229,37 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
     try {
       setSubmittingComment(true);
-      const chapterRef = doc(db, 'novels', novel.id, 'chapters', currentChapter.toString());
+      const chapterId = getChapterDocId();
+      const chapterRef = doc(db, 'novels', novel.id, 'chapters', chapterId);
       const chapterDoc = await getDoc(chapterRef);
 
       if (!chapterDoc.exists()) return;
 
-      const existingComments = chapterDoc.data().comments || [];
-      const updatedComments = existingComments.map((comment: Comment) => {
-        if (comment.id === editingCommentId) {
-          return {
-            ...comment,
-            content: editContent.trim(),
-            updatedAt: new Date().toISOString(),
-          };
+      const commentRef = doc(db, 'novels', novel.id, 'chapters', chapterId, 'comments', editingCommentId);
+
+      await updateDoc(commentRef, {
+        content: editContent.trim(),
+        updatedAt: new Date().toISOString(),
+      });
+
+      // Invalidate engagement cache
+      const engagementCacheKey = `engagement_${novel.id}_${chapterId}`;
+      await invalidateCache(engagementCacheKey);
+
+      // Update local state optimistically
+      setComments(prev => prev.map(c => {
+        if (c.id === editingCommentId) return { ...c, content: editContent.trim() };
+        if (c.replies) {
+          return { ...c, replies: c.replies.map(r => r.id === editingCommentId ? { ...r, content: editContent.trim() } : r) };
         }
-        return comment;
-      });
-      await updateDoc(chapterRef, {
-        comments: updatedComments,
-      });
-
-      // Invalidate chapter cache
-      const chapterId = currentContentInfo.type === 'epilogue' ? 'epilogue' : currentChapter.toString();
-      const chapterCacheKey = `chapter_${novel.id}_${chapterId}`;
-      await invalidateCache(chapterCacheKey);
-
-      const organizedComments = organizeComments(updatedComments);
-      setComments(organizedComments);
+        return c;
+      }));
       setEditingCommentId(null);
       setEditContent('');
-      showToast({ message: 'Comment updated successfully!', type: 'success' });
+      showAlert({ title: 'Success', message: 'Comment updated successfully!', type: 'info', useNative: true });
     } catch (error) {
       console.error('Error updating comment:', error);
-      showToast({ message: 'Failed to update comment', type: 'error' });
+      showAlert({ message: 'Failed to update comment', type: 'error', useNative: true });
     } finally {
       setSubmittingComment(false);
     }
@@ -1080,6 +1272,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
       title: 'Delete Comment',
       message: 'Are you sure you want to delete this comment?',
       type: 'warning',
+      useNative: true,
       buttons: [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -1088,31 +1281,36 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
           onPress: async () => {
             try {
               setDeletingComment(commentId);
-              const chapterRef = doc(db, 'novels', novel.id, 'chapters', currentChapter.toString());
-              const chapterDoc = await getDoc(chapterRef);
+              const chapterId = getChapterDocId();
+              const commentRef = doc(db, 'novels', novel.id, 'chapters', chapterId, 'comments', commentId);
 
-              if (!chapterDoc.exists()) return;
+              // We'll use a batch to delete the comment and its immediate replies (if any)
+              const batch = writeBatch(db);
+              batch.delete(commentRef);
 
-              const existingComments = chapterDoc.data().comments || [];
-              const updatedComments = existingComments.filter(
-                (c: Comment) => c.id !== commentId && c.parentId !== commentId
-              );
+              // Note: For deep nesting, we'd need a more complex recursive delete, 
+              // but for now we'll just delete the targeted comment.
 
+              await batch.commit();
+
+              // Update lightweight count in chapter doc
+              const chapterRef = doc(db, 'novels', novel.id, 'chapters', chapterId);
               await updateDoc(chapterRef, {
-                comments: updatedComments,
+                commentCount: increment(-1)
               });
 
-              // Invalidate chapter cache
-              const chapterId = currentContentInfo.type === 'epilogue' ? 'epilogue' : currentChapter.toString();
-              const chapterCacheKey = `chapter_${novel.id}_${chapterId}`;
-              await invalidateCache(chapterCacheKey);
+              // Invalidate engagement cache
+              const engagementCacheKey = `engagement_${novel.id}_${chapterId}`;
+              await invalidateCache(engagementCacheKey);
 
-              const organizedComments = organizeComments(updatedComments);
-              setComments(organizedComments);
-              showToast({ message: 'Comment deleted successfully!', type: 'success' });
+              setComments(prev => prev.filter(c => c.id !== commentId).map(c => ({
+                ...c,
+                replies: c.replies?.filter(r => r.id !== commentId)
+              })));
+              showAlert({ title: 'Success', message: 'Comment deleted successfully!', type: 'info', useNative: true });
             } catch (error) {
               console.error('Error deleting comment:', error);
-              showToast({ message: 'Failed to delete comment', type: 'error' });
+              showAlert({ message: 'Failed to delete comment', type: 'error', useNative: true });
             } finally {
               setDeletingComment(null);
             }
@@ -1157,46 +1355,38 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     setComments((prev) => updateCommentInTree(prev));
 
     try {
-      const chapterRef = doc(db, 'novels', novel.id, 'chapters', currentChapter.toString());
-      const chapterDoc = await getDoc(chapterRef);
+      const chapterId = getChapterDocId();
+      const commentRef = doc(db, 'novels', novel.id, 'chapters', chapterId, 'comments', commentId);
 
-      if (!chapterDoc.exists()) {
-        throw new Error('Chapter document not found');
+      if (isLiked) {
+        await updateDoc(commentRef, {
+          likes: increment(-1),
+          likedBy: arrayRemove(currentUser.uid),
+        });
+      } else {
+        await updateDoc(commentRef, {
+          likes: increment(1),
+          likedBy: arrayUnion(currentUser.uid),
+        });
       }
 
-      const existingComments = chapterDoc.data().comments || [];
-      let commentToNotify: Comment | null = null;
-
-      const updatedComments = existingComments.map((comment: Comment) => {
-        if (comment.id === commentId) {
-          commentToNotify = comment;
-          const likedBy = comment.likedBy || [];
-          if (isLiked) {
-            return {
-              ...comment,
-              likes: Math.max(0, (comment.likes || 1) - 1),
-              likedBy: likedBy.filter((uid: string) => uid !== currentUser.uid),
-            };
-          } else {
-            return {
-              ...comment,
-              likes: (comment.likes || 0) + 1,
-              likedBy: [...likedBy, currentUser.uid],
-            };
+      // Find the comment to notify from our organized tree
+      const findInTree = (list: Comment[]): Comment | null => {
+        for (const c of list) {
+          if (c.id === commentId) return c;
+          if (c.replies) {
+            const found = findInTree(c.replies);
+            if (found) return found;
           }
         }
-        return comment;
-      });
+        return null;
+      };
 
-      await updateDoc(chapterRef, {
-        comments: updatedComments,
-      });
+      const commentToNotify = findInTree(previousComments);
 
-      // Background tasks
-      const chapterId = currentContentInfo.type === 'epilogue' ? 'epilogue' : currentChapter.toString();
-      const chapterCacheKey = `chapter_${novel.id}_${chapterId}`;
-      invalidateCache(chapterCacheKey).catch(err => console.error("Error invalidating cache:", err));
-      invalidateCache(`novel_${novel.id}`).catch(err => console.error("Error invalidating cache:", err));
+      // Invalidate engagement cache
+      const engagementCacheKey = `engagement_${novel.id}_${chapterId}`;
+      await invalidateCache(engagementCacheKey);
 
       if (!isLiked && commentToNotify && (commentToNotify as Comment).userId !== currentUser.uid) {
         const c = commentToNotify as Comment;
@@ -1226,7 +1416,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
       console.error('Error updating comment like:', error);
       // Revert organized state if backend fails
       setComments(previousComments);
-      showToast({ message: 'Failed to update like status', type: 'error' });
+      showAlert({ message: 'Failed to update like status', type: 'error', useNative: true });
     }
   };
 
@@ -1332,6 +1522,17 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     setShowComments(false);
     navigation.navigate('Profile', { userId });
   };
+  const toggleReplies = (commentId: string) => {
+    setExpandedComments(prev => {
+      const next = new Set(prev);
+      if (next.has(commentId)) {
+        next.delete(commentId);
+      } else {
+        next.add(commentId);
+      }
+      return next;
+    });
+  };
 
   const getParentCommentData = (parentId: string | undefined): { userName: string; userId: string } | null => {
     if (!parentId) return null;
@@ -1358,6 +1559,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
   const renderComment = (comment: Comment, isReply: boolean = false) => {
     const parentData = isReply ? getParentCommentData(comment.parentId) : null;
+    const isExpanded = expandedComments.has(comment.id);
 
     return (
       <View key={comment.id} style={[
@@ -1428,6 +1630,27 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
                   <Text style={[styles.commentActionText, { color: colors.textSecondary }]}>Reply</Text>
                 </TouchableOpacity>
               </View>
+
+              {/* View Replies Button */}
+              {!isReply && comment.replies && comment.replies.length > 0 && (
+                <TouchableOpacity
+                  style={styles.viewRepliesButton}
+                  onPress={() => toggleReplies(comment.id)}
+                >
+                  <View style={styles.viewRepliesContent}>
+                    <View style={[styles.repliesIndicatorLine, { backgroundColor: colors.border }]} />
+                    <Text style={[styles.viewRepliesText, { color: colors.textSecondary }]}>
+                      {isExpanded ? 'Hide replies' : `View ${comment.replies.length} ${comment.replies.length === 1 ? 'reply' : 'replies'}`}
+                    </Text>
+                    <Ionicons
+                      name={isExpanded ? "chevron-up" : "chevron-down"}
+                      size={14}
+                      color={colors.textSecondary}
+                      style={{ marginLeft: 4 }}
+                    />
+                  </View>
+                </TouchableOpacity>
+              )}
             </View>
 
             {/* Far Right: Like Button */}
@@ -1448,7 +1671,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
           </View>
         </View>
 
-        {comment.replies && comment.replies.length > 0 && (
+        {comment.replies && comment.replies.length > 0 && isExpanded && (
           <View style={styles.repliesContainer}>
             {comment.replies.map((reply) => renderComment(reply, true))}
           </View>
@@ -1518,9 +1741,9 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     return blocks.map((block, idx) => {
       const fontStyle = {
         fontFamily: Platform.OS === 'ios' ? fontFamily : (
-          fontFamily === 'Courier' ? 'monospace' : 
-          ['Georgia', 'Times New Roman', 'Baskerville', 'Charter', 'Palatino', 'Iowan Old Style'].includes(fontFamily) ? 'serif' : 
-          'sans-serif'
+          fontFamily === 'Courier' ? 'monospace' :
+            ['Georgia', 'Times New Roman', 'Baskerville', 'Charter', 'Palatino', 'Iowan Old Style'].includes(fontFamily) ? 'serif' :
+              'sans-serif'
         )
       };
 
@@ -1577,10 +1800,10 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         );
       } else if (block.type === 'image') {
         return (
-          <InlineImageBlock 
-            key={idx} 
-            uri={block.data} 
-            maxHeight={Dimensions.get('window').height * 0.55} 
+          <InlineImageBlock
+            key={idx}
+            uri={block.data}
+            maxHeight={Dimensions.get('window').height * 0.55}
           />
         );
       } else if (block.type === 'characters_list') {
@@ -1689,6 +1912,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
             style={styles.contentScroll}
             contentContainerStyle={styles.contentContainer}
             showsVerticalScrollIndicator={true}
+            onScrollBeginDrag={onUserActivity}
             onScroll={handleScroll}
             onScrollEndDrag={handleScrollEndDrag}
             scrollEventThrottle={16}
@@ -1788,7 +2012,7 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
               </View>
             </Pressable>
           </ScrollView>
-        ) : (
+        ) : totalPages > 0 ? (
           <FlatList
             key={`chapter-${currentChapter}-${fontSize}`}
             ref={flatListRef}
@@ -1798,10 +2022,11 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
             horizontal
             pagingEnabled
             showsHorizontalScrollIndicator={false}
+            onScrollBeginDrag={onUserActivity}
             onScrollEndDrag={(e) => {
               const { contentOffset, layoutMeasurement, contentSize } = e.nativeEvent;
               const threshold = 40;
-              
+
               // Forward past end
               if (contentOffset.x + layoutMeasurement.width > contentSize.width + threshold) {
                 goToNextChapter(0);
@@ -1817,28 +2042,28 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
               index,
             })}
             renderItem={({ index }: any) => (
-              <View 
-                style={{ 
+              <View
+                style={{
                   width: Dimensions.get('window').width,
                   height: '100%',
                   backgroundColor: readerColors.background
                 }}
               >
                 <Pressable onPress={toggleUI} style={{ flex: 1 }}>
-                  <View style={{ 
+                  <View style={{
                     height: pageHeight,
                     marginTop: topPadding + insets.top,
                     marginHorizontal: 24,
                   }}>
                     {renderBlocks(pagedContent[index])}
                   </View>
-                  
+
                   {/* Page Indicator */}
-                  <View style={{ 
-                    position: 'absolute', 
-                    bottom: insets.bottom + 10, 
-                    width: '100%', 
-                    alignItems: 'center' 
+                  <View style={{
+                    position: 'absolute',
+                    bottom: insets.bottom + 10,
+                    width: '100%',
+                    alignItems: 'center'
                   }}>
                     <Text style={{ color: readerColors.textSecondary, fontSize: 10, opacity: 0.5 }}>
                       {index + 1} / {totalPages}
@@ -1857,7 +2082,9 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
                             <Ionicons name="chevron-forward" size={20} color="#fff" />
                           </TouchableOpacity>
                         ) : (
-                          <Text style={[styles.noMoreChaptersText, { color: colors.textSecondary }]}>End of story</Text>
+                          <Text style={[styles.noMoreChaptersText, { color: colors.textSecondary }]}>
+                            {novel.status === 'completed' ? 'End of story' : "You've reached the current end"}
+                          </Text>
                         )}
                       </View>
                     </View>
@@ -1866,6 +2093,10 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
               </View>
             )}
           />
+        ) : (
+          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: readerColors.background }}>
+            <ActivityIndicator size="large" color={colors.primary} />
+          </View>
         )}
       </Animated.View>
 
@@ -2195,13 +2426,16 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
                 });
                 currentIndex++;
               }
-              novel?.chapters.forEach((ch, idx) => {
+              const chaptersCount = novel?.chapterCount ?? 0;
+              const titles = novel?.chapterTitles || [];
+
+              Array.from({ length: chaptersCount }).forEach((_, idx) => {
                 items.push({
                   id: `chapter-${idx}`,
                   type: 'chapter',
-                  title: ch.title || `Chapter ${idx + 1}`,
+                  title: titles[idx] || `Chapter ${idx + 1}`,
                   index: currentIndex,
-                  date: formatDate(ch.createdAt || novel.updatedAt)
+                  date: formatDate(novel?.updatedAt)
                 });
                 currentIndex++;
               });
@@ -2609,6 +2843,23 @@ const getStyles = (themeColors: any, insets: any, fontSize: number) => StyleShee
     alignItems: 'center',
     gap: 16,
     marginTop: 4,
+  },
+  viewRepliesButton: {
+    marginTop: 12,
+    alignSelf: 'flex-start',
+  },
+  viewRepliesContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  repliesIndicatorLine: {
+    width: 30,
+    height: 1,
+    marginRight: 10,
+  },
+  viewRepliesText: {
+    fontSize: 14,
+    fontWeight: '700',
   },
   commentActionText: {
     fontSize: 14,

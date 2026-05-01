@@ -25,6 +25,7 @@ import { spacing } from '../../theme';
 import CachedImage from '../../components/CachedImage';
 import { compressImage } from '../../utils/imageUtils';
 import { invalidateCache } from '../../utils/cache';
+import { getFriendlyErrorMessage } from '../../utils/errorHandlers';
 
 const CharacterManagerScreen = ({ route, navigation }: any) => {
   const { novelId, initialCharacters = [] } = route.params;
@@ -59,7 +60,8 @@ const CharacterManagerScreen = ({ route, navigation }: any) => {
         setCharacters(data.characters || []);
       }
     } catch (error) {
-      console.error('Error fetching characters:', error);
+      const friendlyError = getFriendlyErrorMessage(error, 'fetch_characters');
+      console.error(friendlyError, error);
     } finally {
       setLoading(false);
     }
@@ -164,8 +166,8 @@ const CharacterManagerScreen = ({ route, navigation }: any) => {
       }
 
     } catch (error) {
-      console.error('Error saving character:', error);
-      showToast({ message: 'Failed to save character', type: 'error' });
+      const friendlyError = getFriendlyErrorMessage(error, 'save_character');
+      showToast({ message: friendlyError, type: 'error' });
     } finally {
       setIsUploading(false);
     }
