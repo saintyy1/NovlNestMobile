@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Platform,
+  RefreshControl,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import CachedImage from '../../components/CachedImage';
@@ -19,6 +20,7 @@ import { useAlert } from '../../contexts/AlertContext';
 import { spacing, typography } from '../../theme';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { withCache, CACHE_TTL } from '../../utils/cache';
+import { ErrorRetryView } from '../../components/common/ErrorRetryView';
 
 interface Notification {
   id: string;
@@ -40,7 +42,9 @@ interface Notification {
     | 'poem_added_to_library'
     | 'promotion_approved'
     | 'promotion_ended'
-    | 'support_response';
+    | 'support_response'
+    | 'novel_published'
+    | 'poem_published';
   fromUserId?: string;
   fromUserName?: string;
   toUserId: string;
@@ -76,6 +80,10 @@ export const NotificationsScreen = ({ navigation }: any) => {
   const [fromUsersData, setFromUsersData] = useState<Record<string, { displayName: string; photoURL?: string }>>({});
   const [markingAllAsRead, setMarkingAllAsRead] = useState(false);
   const [clearingAll, setClearingAll] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [timedOut, setTimedOut] = useState(false);
+  const [hasError, setHasError] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const styles = getStyles(colors);
 
@@ -84,11 +92,35 @@ export const NotificationsScreen = ({ navigation }: any) => {
     return name.charAt(0).toUpperCase();
   }, []);
 
+  const handleRefresh = (isRetry = false) => {
+    if (!isRetry) {
+      setRefreshing(true);
+    }
+    setTimedOut(false);
+    setHasError(false);
+    setRefreshKey(prev => prev + 1);
+  };
+
+  useEffect(() => {
+    if (loading) {
+      const timer = setTimeout(() => {
+        setTimedOut(true);
+      }, 10000);
+      return () => clearTimeout(timer);
+    } else {
+      setTimedOut(false);
+    }
+  }, [loading]);
+
   useEffect(() => {
     if (authLoading || !currentUser) {
       setLoading(false);
+      setRefreshing(false);
       return;
     }
+
+    setLoading(true);
+    setHasError(false);
 
     const notificationsQuery = query(
       collection(db, 'notifications'),
@@ -140,19 +172,27 @@ export const NotificationsScreen = ({ navigation }: any) => {
           }
         });
 
-        await Promise.all(fetchPromises);
-        setFromUsersData(newFromUsersData);
-        setNotifications(fetchedNotifications);
-        setLoading(false);
+        try {
+          await Promise.all(fetchPromises);
+          setFromUsersData(newFromUsersData);
+          setNotifications(fetchedNotifications);
+        } catch (e) {
+          console.error("Error resolving user data in notifications:", e);
+        } finally {
+          setLoading(false);
+          setRefreshing(false);
+        }
       },
       (err) => {
         console.error('Error fetching notifications:', err);
+        setHasError(true);
         setLoading(false);
+        setRefreshing(false);
       }
     );
 
     return () => unsubscribe();
-  }, [currentUser, authLoading]);
+  }, [currentUser, authLoading, refreshKey]);
 
   const markAsRead = useCallback(
     async (notificationId: string) => {
@@ -186,6 +226,7 @@ export const NotificationsScreen = ({ navigation }: any) => {
         case 'new_chapter':
         case 'promotion_approved':
         case 'promotion_ended':
+        case 'novel_published':
           if (notification.novelId) {
             navigation.navigate('NovelOverview', { novelId: notification.novelId });
           }
@@ -226,6 +267,7 @@ export const NotificationsScreen = ({ navigation }: any) => {
         case 'poem_comment':
         case 'poem_reply':
         case 'poem_added_to_library':
+        case 'poem_published':
           if (notification.poemId) {
             navigation.navigate('PoemOverview', { poemId: notification.poemId });
           }
@@ -298,6 +340,9 @@ export const NotificationsScreen = ({ navigation }: any) => {
         return <Ionicons name="time" {...iconProps} color="#FB923C" />;
       case 'support_response':
         return <Ionicons name="headset" {...iconProps} color="#60A5FA" />;
+      case 'novel_published':
+      case 'poem_published':
+        return <Ionicons name="book" {...iconProps} color="#FBBF24" />;
       default:
         return <Ionicons name="mail" {...iconProps} color="#9CA3AF" />;
     }
@@ -345,6 +390,10 @@ export const NotificationsScreen = ({ navigation }: any) => {
         return `Your novel "${notification.novelTitle}" promotion has ended.`;
       case 'support_response':
         return `Support team responded to your ticket${notification.ticketId ? ` #${notification.ticketId}` : ''}${notification.subject ? ` - ${notification.subject}` : ''}.`;
+      case 'novel_published':
+        return `🎉 Your novel "${notification.novelTitle}" has been reviewed and published!`;
+      case 'poem_published':
+        return `🎉 Your poem "${notification.poemTitle}" has been reviewed and published!`;
       default:
         return 'You have a new message.';
     }
@@ -401,12 +450,18 @@ export const NotificationsScreen = ({ navigation }: any) => {
     });
   };
 
-  if (authLoading || loading) {
+  if ((authLoading || loading) && !timedOut && !refreshing) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color={colors.primary} />
         <Text style={styles.loadingText}>Loading notifications...</Text>
       </View>
+    );
+  }
+
+  if (timedOut || hasError) {
+    return (
+      <ErrorRetryView onRetry={() => handleRefresh(true)} />
     );
   }
 
@@ -476,6 +531,13 @@ export const NotificationsScreen = ({ navigation }: any) => {
       <ScrollView 
         showsVerticalScrollIndicator={false} 
         contentContainerStyle={[styles.scrollContent, { paddingBottom: Math.max(insets.bottom, 20) }]}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            tintColor={colors.primary}
+          />
+        }
       >
         {notifications.length === 0 ? (
           <View style={styles.emptyStateContainer}>

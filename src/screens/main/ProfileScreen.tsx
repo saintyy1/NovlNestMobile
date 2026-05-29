@@ -55,6 +55,7 @@ import {
 } from '../../utils/cache';
 import { broadcastNotification } from '../../services/PushNotificationService';
 import { useAlert } from '../../contexts/AlertContext';
+import { ErrorRetryView } from '../../components/common/ErrorRetryView';
 
 interface Announcement {
   id: string;
@@ -88,7 +89,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
 
   const insets = useSafeAreaInsets();
   const { userId } = route.params || {};
-  const { currentUser, updateUserPhoto, toggleFollow, updateUserProfile } = useAuth();
+  const { currentUser, updateUserPhoto, toggleFollow, updateUserProfile, redeemInviteCode } = useAuth();
   const { showAlert, showToast } = useAlert();
   const { colors } = useTheme();
   const styles = getStyles(colors, insets);
@@ -114,6 +115,8 @@ const ProfileScreen = ({ route, navigation }: any) => {
   const [userPoems, setUserPoems] = useState<Poem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [timedOut, setTimedOut] = useState(false);
+  const [hasError, setHasError] = useState(false);
   const [activeTab, setActiveTab] = useState<'published' | 'pending' | 'all'>('all');
   const [contentType, setContentType] = useState<'novels' | 'poems'>('novels');
 
@@ -166,6 +169,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
   const [editCoverError, setEditCoverError] = useState('');
   const [uploadingEditPoemCover, setUploadingEditPoemCover] = useState(false);
   const [editPoemCoverError, setEditPoemCoverError] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
 
   const isOwnProfile = !userId || userId === currentUser?.uid;
   const displayName = profileUser?.displayName || currentUser?.displayName || 'User';
@@ -177,6 +181,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
       return;
     }
 
+    setHasError(false);
     try {
       let fetchedUser: any = null;
 
@@ -250,11 +255,23 @@ const ProfileScreen = ({ route, navigation }: any) => {
     } catch (err) {
       console.error('Error fetching user data:', err);
       showToast({ message: 'Failed to load profile data', type: 'error' });
+      setHasError(true);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
   }, [currentUser, userId]);
+
+  useEffect(() => {
+    if (loading) {
+      const timer = setTimeout(() => {
+        setTimedOut(true);
+      }, 10000);
+      return () => clearTimeout(timer);
+    } else {
+      setTimedOut(false);
+    }
+  }, [loading]);
 
   useEffect(() => {
     fetchUserData();
@@ -291,13 +308,21 @@ const ProfileScreen = ({ route, navigation }: any) => {
     return () => unsubscribe();
   }, [profileUser?.uid]);
 
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
+  const onRefresh = useCallback(async (isRetry = false) => {
+    if (!isRetry) {
+      setRefreshing(true);
+    }
+    setTimedOut(false);
+    setHasError(false);
     const targetUserId = userId || currentUser?.uid;
     if (targetUserId) {
-      await invalidateCache(`profile_user_${targetUserId}`);
-      await invalidateCache(`profile_novels_${targetUserId}`);
-      await invalidateCache(`profile_poems_${targetUserId}`);
+      try {
+        await invalidateCache(`profile_user_${targetUserId}`);
+        await invalidateCache(`profile_novels_${targetUserId}`);
+        await invalidateCache(`profile_poems_${targetUserId}`);
+      } catch (e) {
+        console.warn('Error invalidating profile cache on refresh:', e);
+      }
     }
     fetchUserData();
   }, [fetchUserData, userId, currentUser?.uid]);
@@ -1092,11 +1117,17 @@ const ProfileScreen = ({ route, navigation }: any) => {
     return true;
   });
 
-  if (loading) {
+  if (loading && !timedOut && !refreshing) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#8B5CF6" />
       </View>
+    );
+  }
+
+  if (timedOut || hasError) {
+    return (
+      <ErrorRetryView onRetry={() => onRefresh(true)} />
     );
   }
 
@@ -1183,35 +1214,37 @@ const ProfileScreen = ({ route, navigation }: any) => {
           </View>
 
           {/* Stats Bar - Horizontal Scrollable */}
-          <View style={styles.statsBar}>
-            <View style={[styles.statItem, { borderRightWidth: 1, borderRightColor: colors.cardBorder }]}>
-              <Text style={[styles.statNumber, { color: colors.primary }]}>
-                {userNovels.reduce((total, novel) => total + (novel.likes || 0), 0)}
-              </Text>
-              <Text style={[styles.statName, { color: colors.textSecondary }]}>Likes</Text>
+          <View style={styles.statsCardWrapper}>
+            <View style={[styles.statsBar, { backgroundColor: colors.card, borderColor: colors.border }]}>
+              <View style={[styles.statItem, { borderRightWidth: 1, borderRightColor: colors.cardBorder }]}>
+                <Text style={[styles.statNumber, { color: colors.primary }]}>
+                  {userNovels.reduce((total, novel) => total + (novel.likes || 0), 0)}
+                </Text>
+                <Text style={[styles.statName, { color: colors.textSecondary }]}>Likes</Text>
+              </View>
+
+              <TouchableOpacity
+                style={[styles.statItem, { borderRightWidth: 1, borderRightColor: colors.cardBorder }]}
+                onPress={() => {
+                  setFollowListType('followers');
+                  setShowFollowListModal(true);
+                }}
+              >
+                <Text style={[styles.statNumber, { color: colors.primary }]}>{followersCount}</Text>
+                <Text style={[styles.statName, { color: colors.textSecondary }]}>Followers</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.statItem}
+                onPress={() => {
+                  setFollowListType('following');
+                  setShowFollowListModal(true);
+                }}
+              >
+                <Text style={[styles.statNumber, { color: colors.primary }]}>{followingCount}</Text>
+                <Text style={[styles.statName, { color: colors.textSecondary }]}>Following</Text>
+              </TouchableOpacity>
             </View>
-
-            <TouchableOpacity
-              style={[styles.statItem, { borderRightWidth: 1, borderRightColor: colors.cardBorder }]}
-              onPress={() => {
-                setFollowListType('followers');
-                setShowFollowListModal(true);
-              }}
-            >
-              <Text style={[styles.statNumber, { color: colors.primary }]}>{followersCount}</Text>
-              <Text style={[styles.statName, { color: colors.textSecondary }]}>Followers</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.statItem}
-              onPress={() => {
-                setFollowListType('following');
-                setShowFollowListModal(true);
-              }}
-            >
-              <Text style={[styles.statNumber, { color: colors.primary }]}>{followingCount}</Text>
-              <Text style={[styles.statName, { color: colors.textSecondary }]}>Following</Text>
-            </TouchableOpacity>
           </View>
         </View>
 
@@ -1268,7 +1301,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
 
         {isOwnProfile && (
           <TouchableOpacity
-            style={[styles.actionCard, { marginTop: 12 }]}
+            style={[styles.actionCard, { marginTop: 12, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border }]}
             onPress={() => navigation.navigate('ReadingInsights' as any)}
           >
             <View style={styles.actionCardContent}>
@@ -1279,8 +1312,8 @@ const ProfileScreen = ({ route, navigation }: any) => {
           </TouchableOpacity>
         )}
 
-        {/* Social Links Section */}
-        {(profileUser?.instagramUrl || profileUser?.twitterUrl || profileUser?.supportLink || emailVisible) && (
+        {/* Social Links Section - Hidden for Minors (Safe Wall) */}
+        {!profileUser?.isMinor && (profileUser?.instagramUrl || profileUser?.twitterUrl || profileUser?.supportLink || emailVisible) && (
           <View style={[styles.socialSection, { backgroundColor: colors.surface }]}>
             <View style={styles.sectionHeader}>
               <Ionicons name="link" size={20} color={colors.primary} />
@@ -1324,6 +1357,75 @@ const ProfileScreen = ({ route, navigation }: any) => {
                 </TouchableOpacity>
               )}
             </View>
+          </View>
+        )}
+
+        {/* School Section - Blueprint Item: Profile Redemption */}
+        {isOwnProfile && (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <View style={{ backgroundColor: colors.primary, borderRadius: 12, padding: 8 }}>
+                <Ionicons name="school" size={20} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.sectionTitle, { color: colors.text }]}>School Account</Text>
+                <Text style={[styles.sectionSubtitle, { color: colors.textSecondary }]}>
+                  {currentUser?.schoolId ? 'Institutional Enrollment' : 'Link your account to a school'}
+                </Text>
+              </View>
+            </View>
+
+            {currentUser?.schoolId ? (
+              <View style={[styles.schoolInfoCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                <View style={styles.schoolInfoRow}>
+                  <View style={styles.schoolRowHeader}>
+                    <Ionicons name="business-outline" size={16} color={colors.primary} />
+                    <Text style={[styles.schoolLabel, { color: colors.textSecondary }]}>Institution</Text>
+                  </View>
+                  <Text style={[styles.schoolValue, { color: colors.text }]} numberOfLines={1}>{currentUser.institutionName || 'Your School'}</Text>
+                </View>
+                <View style={styles.schoolInfoRow}>
+                  <View style={styles.schoolRowHeader}>
+                    <Ionicons name="person-circle-outline" size={16} color={colors.primary} />
+                    <Text style={[styles.schoolLabel, { color: colors.textSecondary }]}>Role</Text>
+                  </View>
+                  <Text style={[styles.schoolValue, { color: colors.text, textTransform: 'capitalize' }]} numberOfLines={1}>
+                    {currentUser.schoolRole?.replace('_', ' ') || 'Student'}
+                  </Text>
+                </View>
+              </View>
+            ) : (
+              <View style={styles.redemptionContainer}>
+                <TextInput
+                  style={[styles.schoolInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background }]}
+                  placeholder="Enter School/Class Code"
+                  placeholderTextColor={colors.textSecondary}
+                  value={inviteCode}
+                  onChangeText={(text) => setInviteCode(text.toUpperCase())}
+                  autoCapitalize="characters"
+                />
+                <TouchableOpacity
+                  style={[styles.joinButton, { backgroundColor: colors.primary }, !inviteCode.trim() && { opacity: 0.5 }]}
+                  onPress={async () => {
+                    if (!inviteCode.trim()) return;
+                    try {
+                      setLoading(true);
+                      await redeemInviteCode(inviteCode.trim());
+                      showToast({ message: "Welcome to your school!", type: 'success' });
+                      setInviteCode('');
+                      fetchUserData();
+                    } catch (e: any) {
+                      showToast({ message: e.message || "Invalid invite code", type: 'error' });
+                    } finally {
+                      setLoading(false);
+                    }
+                  }}
+                  disabled={!inviteCode.trim() || loading}
+                >
+                  <Text style={styles.joinButtonText}>Join School</Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
         )}
 
@@ -1520,7 +1622,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
                       )}
                       {!novel.published && (
                         <View style={styles.draftBadge}>
-                          <Text style={styles.draftBadgeText}>Draft</Text>
+                          <Text style={styles.draftBadgeText}>In Review</Text>
                         </View>
                       )}
                     </View>
@@ -1608,7 +1710,7 @@ const ProfileScreen = ({ route, navigation }: any) => {
                       )}
                       {!poem.published && (
                         <View style={styles.draftBadge}>
-                          <Text style={styles.draftBadgeText}>Draft</Text>
+                          <Text style={styles.draftBadgeText}>In Review</Text>
                         </View>
                       )}
                     </View>
@@ -2309,12 +2411,20 @@ const getStyles = (themeColors: any, insets: any) => ({
     paddingHorizontal: 16,
     fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
+  statsCardWrapper: {
+    paddingHorizontal: 20,
+    marginTop: -25,
+    zIndex: 10,
+  },
   statsBar: {
     flexDirection: 'row' as const,
-    backgroundColor: themeColors.card,
-    marginHorizontal: 0,
-    borderTopWidth: 1,
-    borderTopColor: themeColors.cardBorder,
+    borderRadius: 16,
+    borderWidth: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
   },
   statItem: {
     flex: 1,
@@ -3030,6 +3140,75 @@ const getStyles = (themeColors: any, insets: any) => ({
   completionCancelText: {
     fontSize: 15,
     fontWeight: '600' as const,
+  },
+  schoolInfoCard: {
+    padding: 20,
+    borderRadius: 20,
+    borderWidth: 1,
+    marginTop: 16,
+    gap: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    elevation: 2,
+  },
+  schoolInfoRow: {
+    flexDirection: 'row' as const,
+    justifyContent: 'space-between' as const,
+    alignItems: 'center' as const,
+    gap: 12,
+  },
+  schoolRowHeader: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 8,
+  },
+  schoolLabel: {
+    fontSize: 12,
+    fontWeight: '600' as const,
+    textTransform: 'uppercase' as const,
+    letterSpacing: 0.5,
+  },
+  schoolValue: {
+    fontSize: 15,
+    fontWeight: '700' as const,
+    flex: 1,
+    textAlign: 'right' as const,
+  },
+  redemptionContainer: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 10,
+    marginTop: 16,
+  },
+  schoolInput: {
+    flex: 1,
+    height: 56,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    paddingHorizontal: 20,
+    fontSize: 16,
+    fontWeight: '600' as const,
+    letterSpacing: 1,
+  },
+  joinButton: {
+    height: 56,
+    paddingHorizontal: 24,
+    borderRadius: 16,
+    justifyContent: 'center' as const,
+    alignItems: 'center' as const,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  joinButtonText: {
+    color: '#fff',
+    fontWeight: '800' as const,
+    fontSize: 15,
+    textTransform: 'uppercase' as const,
   },
 });
 

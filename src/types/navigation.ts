@@ -34,4 +34,21 @@ export type RootStackParamList = {
     initialContent?: string;
     onSave: (chapter: { title: string; content: string }) => void;
   };
+  SuperAdmin: undefined;
+  AssignmentDetail: { 
+    assignmentId: string;
+    schoolId?: string;
+    classId?: string;
+  };
+  SubmissionReview: { 
+    submissionId: string; 
+    assignmentId: string; 
+    classId: string; 
+    schoolId: string; 
+  };
+  ClassroomStream: { 
+    classId: string; 
+    className: string;
+    schoolId?: string;
+  };
 }

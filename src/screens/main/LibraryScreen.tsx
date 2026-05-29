@@ -9,6 +9,7 @@ import {
   Image,
   ActivityIndicator,
   Platform,
+  RefreshControl,
 } from 'react-native';
 import CachedImage from '../../components/CachedImage';
 import { Ionicons } from '@expo/vector-icons';
@@ -21,6 +22,7 @@ import { Novel } from '../../types/novel';
 import { Poem } from '../../types/poem';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAlert } from '../../contexts/AlertContext';
+import { ErrorRetryView } from '../../components/common/ErrorRetryView';
 
 const getFirebaseDownloadUrl = (url: string) => {
   if (!url || !url.includes('firebasestorage')) {
@@ -71,7 +73,7 @@ const getGenreColor = (genres: string[]) => {
 
 export const LibraryScreen = ({ navigation }: any) => {
   const { colors } = useTheme();
-  const { currentUser, loading: authLoading, markNovelAsFinished } = useAuth();
+  const { currentUser, loading: authLoading, markNovelAsFinished, refreshUser } = useAuth();
   const { showAlert, showToast } = useAlert();
   const [likedNovels, setLikedNovels] = useState<Novel[]>([]);
   const [finishedNovels, setFinishedNovels] = useState<Novel[]>([]);
@@ -79,12 +81,16 @@ export const LibraryScreen = ({ navigation }: any) => {
   const [loading, setLoading] = useState(true);
   const [imageErrors, setImageErrors] = useState<Record<string, boolean>>({});
   const [activeTab, setActiveTab] = useState<'favourites' | 'finished' | 'poetry'>('favourites');
+  const [refreshing, setRefreshing] = useState(false);
+  const [timedOut, setTimedOut] = useState(false);
+  const [hasError, setHasError] = useState(false);
 
   const styles = getStyles(colors);
 
-  const fetchUserLibrary = useCallback(async () => {
+  const fetchUserLibrary = useCallback(async (force = false, isRetry = false) => {
     if (authLoading || !currentUser) {
       setLoading(false);
+      setRefreshing(false);
       setLikedNovels([]);
       setFinishedNovels([]);
       setLikedPoems([]);
@@ -92,6 +98,21 @@ export const LibraryScreen = ({ navigation }: any) => {
     }
 
     setLoading(true);
+    setHasError(false);
+    setTimedOut(false);
+    if (force) {
+      if (!isRetry) {
+        setRefreshing(true);
+      }
+      if (typeof refreshUser === 'function') {
+        try {
+          await refreshUser();
+        } catch (e) {
+          console.warn('Error refreshing user in library:', e);
+        }
+      }
+    }
+
     try {
       const likedNovelIds = Array.from(new Set(currentUser.library || []));
       const finishedNovelIds = Array.from(new Set(currentUser.finishedReads || []));
@@ -136,8 +157,10 @@ export const LibraryScreen = ({ navigation }: any) => {
       setLikedPoems(fetchedLikedPoems);
     } catch (err) {
       console.error('Error fetching user library:', err);
+      setHasError(true);
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, [currentUser, authLoading]);
 
@@ -146,6 +169,17 @@ export const LibraryScreen = ({ navigation }: any) => {
       fetchUserLibrary();
     }, [fetchUserLibrary])
   );
+
+  useEffect(() => {
+    if (loading) {
+      const timer = setTimeout(() => {
+        setTimedOut(true);
+      }, 10000);
+      return () => clearTimeout(timer);
+    } else {
+      setTimedOut(false);
+    }
+  }, [loading]);
 
   useEffect(() => {
     fetchUserLibrary();
@@ -349,12 +383,18 @@ export const LibraryScreen = ({ navigation }: any) => {
     );
   };
 
-  if (authLoading || loading) {
+  if ((authLoading || loading) && !timedOut && !refreshing) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color={colors.primary} />
         <Text style={styles.loadingText}>Loading library...</Text>
       </View>
+    );
+  }
+
+  if (timedOut || hasError) {
+    return (
+      <ErrorRetryView onRetry={() => fetchUserLibrary(true, true)} />
     );
   }
 
@@ -369,7 +409,17 @@ export const LibraryScreen = ({ navigation }: any) => {
   }
 
   return (
-    <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+    <ScrollView
+      style={styles.container}
+      showsVerticalScrollIndicator={false}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={() => fetchUserLibrary(true)}
+          tintColor={colors.primary}
+        />
+      }
+    >
       {/* Tab Navigation */}
       <View style={styles.tabContainer}>
         <View style={styles.tabWrapper}>

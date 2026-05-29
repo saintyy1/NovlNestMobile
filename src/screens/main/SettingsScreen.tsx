@@ -972,6 +972,21 @@ const SettingsScreen = ({ navigation }: any) => {
           />
         </View>
 
+        {/* Super Admin Section (Hidden) */}
+        {currentUser?.isAdmin && (
+          <>
+            <SectionHeader title="FOUNDER CONTROL" />
+            <View style={[styles.section, { backgroundColor: colors.surface }]}>
+              <SettingItem
+                icon="business-outline"
+                title="Provision School"
+                subtitle="Onboard a new school partner"
+                onPress={() => navigation.navigate('SuperAdmin')}
+              />
+            </View>
+          </>
+        )}
+
         {/* Danger Zone */}
         <SectionHeader title="DANGER ZONE" />
         <View style={[styles.section, { backgroundColor: colors.surface }]}>
@@ -983,6 +998,24 @@ const SettingsScreen = ({ navigation }: any) => {
               <Text style={styles.dangerText}>Logout</Text>
             </View>
           </TouchableOpacity>
+          
+          {currentUser?.isAdmin && (
+            <TouchableOpacity 
+              style={styles.settingItem} 
+              onPress={() => navigation.navigate('SuperAdmin')}
+            >
+              <View style={styles.settingLeft}>
+                <View style={[styles.iconContainer, { backgroundColor: colors.primary + '20' }]}>
+                  <Ionicons name="key-outline" size={22} color={colors.primary} />
+                </View>
+                <View style={styles.settingText}>
+                  <Text style={styles.settingTitle}>Founder Control</Text>
+                  <Text style={styles.settingSubtitle}>Manage school provisioning & master codes</Text>
+                </View>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+            </TouchableOpacity>
+          )}
 
           <TouchableOpacity style={styles.dangerItem} onPress={() => setShowDeleteAccountModal(true)}>
             <View style={styles.settingLeft}>

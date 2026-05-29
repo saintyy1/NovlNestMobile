@@ -19,6 +19,10 @@ export interface ReadingProgress {
     novelCover?: string | null;
     chapterIndex: number;
     chapterTitle: string;
+    // Percentage progress within the chapter (0-100) for vertical reader
+    progressPercent?: number;
+    // Page index for paginated reader mode
+    pageIndex?: number;
     updatedAt: any;
 }
 
@@ -32,6 +36,8 @@ export const updateReadingProgress = async (
     novelCover: string | null | undefined,
     chapterIndex: number,
     chapterTitle: string
+    , progressPercent?: number
+    , pageIndex?: number
 ) => {
     if (!userId || !novelId) return;
 
@@ -44,6 +50,9 @@ export const updateReadingProgress = async (
             novelCover: novelCover || null,
             chapterIndex,
             chapterTitle,
+            // Optional progress fields
+            progressPercent: typeof progressPercent === 'number' ? progressPercent : null,
+            pageIndex: typeof pageIndex === 'number' ? pageIndex : null,
             updatedAt: serverTimestamp(),
         }, { merge: true });
     } catch (error) {

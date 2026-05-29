@@ -31,10 +31,12 @@ export const SignupScreen = ({ navigation }: any) => {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const confirmationRef = React.useRef(false);
-  const { register, loading } = useAuth();
+  const { register, loading, redeemInviteCode } = useAuth();
   const { colors } = useTheme();
   const { showAlert, showToast } = useAlert();
   const [isRegistering, setIsRegistering] = useState(false);
+  const [inviteCode, setInviteCode] = useState('');
+  const [showSchoolCode, setShowSchoolCode] = useState(false);
   const [isGoogleSignInAvailable, setIsGoogleSignInAvailable] = useState(false);
 
   const styles = getStyles(colors);
@@ -96,6 +98,16 @@ export const SignupScreen = ({ navigation }: any) => {
 
       trackSignUp('apple', userCredential.user.uid);
 
+      // Try to redeem invite code if provided
+      if (inviteCode.trim()) {
+        try {
+          await redeemInviteCode(inviteCode.trim());
+        } catch (e) {
+          console.error("Failed to redeem invite code after Apple signup:", e);
+          showToast({ message: "Account created, but invite code was invalid.", type: 'warning' });
+        }
+      }
+
     } catch (error: any) {
       setIsRegistering(false);
       if (error.code === 'ERR_CANCELED') {
@@ -140,6 +152,16 @@ export const SignupScreen = ({ navigation }: any) => {
       // Track Google signup for analytics
       trackSignUp('google', userCredential.user.uid);
 
+      // Try to redeem invite code if provided
+      if (inviteCode.trim()) {
+        try {
+          await redeemInviteCode(inviteCode.trim());
+        } catch (e) {
+          console.error("Failed to redeem invite code after Google signup:", e);
+          showToast({ message: "Account created, but invite code was invalid.", type: 'warning' });
+        }
+      }
+
       // Navigation will happen automatically via auth state change
     } catch (error: any) {
       setIsRegistering(false);
@@ -169,7 +191,7 @@ export const SignupScreen = ({ navigation }: any) => {
 
     setIsRegistering(true);
     try {
-      await register(email, password, name);
+      await register(email, password, name, inviteCode);
 
       // Track email signup for analytics
       if (auth.currentUser) {
@@ -333,6 +355,35 @@ export const SignupScreen = ({ navigation }: any) => {
                 />
               </TouchableOpacity>
             </View>
+
+            {/* Joining a School Link */}
+            {!showSchoolCode ? (
+              <TouchableOpacity
+                onPress={() => setShowSchoolCode(true)}
+                style={styles.schoolLinkContainer}
+              >
+                <Text style={styles.schoolLinkText}>Joining a school?</Text>
+              </TouchableOpacity>
+            ) : (
+              <View style={[styles.inputWrapper, styles.schoolInputWrapper]}>
+                <Ionicons name="school-outline" size={20} color={colors.primary} style={styles.inputIcon} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Enter School Invite Code"
+                  value={inviteCode}
+                  onChangeText={(text) => setInviteCode(text.toUpperCase())}
+                  autoCapitalize="characters"
+                  editable={!isRegistering}
+                  placeholderTextColor={colors.textSecondary}
+                />
+                <TouchableOpacity onPress={() => {
+                  setShowSchoolCode(false);
+                  setInviteCode('');
+                }}>
+                  <Ionicons name="close-circle-outline" size={20} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
 
           {/* Signup Button */}
@@ -399,9 +450,9 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     gap: spacing.md,
   },
   googleButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
     backgroundColor: '#4285F4',
     paddingVertical: 12,
     paddingHorizontal: 24,
@@ -411,37 +462,33 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   googleButtonText: {
     color: '#fff',
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '600' as const,
   },
   googleButtonDisabled: {
     opacity: 0.7,
   },
   orContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     marginVertical: spacing.md,
-
   },
-
   orLine: {
     flex: 1,
     height: 1,
     backgroundColor: '#E5E7EB', // light gray
   },
-
   orText: {
     marginHorizontal: 12,
     fontSize: 14,
     color: '#6B7280', // muted gray
-    fontWeight: '500',
+    fontWeight: '500' as const,
   },
-
   inputContainer: {
     marginBottom: spacing.lg,
   },
   inputWrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     borderWidth: 1,
     borderColor: themeColors.border,
     borderRadius: 10,
@@ -462,7 +509,7 @@ const getStyles = (themeColors: any) => StyleSheet.create({
     backgroundColor: themeColors.primary,
     padding: spacing.md,
     borderRadius: 10,
-    alignItems: 'center',
+    alignItems: 'center' as const,
     marginBottom: spacing.lg,
   },
   buttonDisabled: {
@@ -471,12 +518,12 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   buttonText: {
     ...typography.body,
     color: '#fff',
-    fontWeight: '600',
+    fontWeight: '600' as const,
   },
   footer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    justifyContent: 'center' as const,
+    alignItems: 'center' as const,
   },
   footerText: {
     ...typography.body,
@@ -485,6 +532,22 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   footerLink: {
     ...typography.body,
     color: themeColors.primary,
-    fontWeight: '600',
+    fontWeight: '600' as const,
+  },
+  schoolLinkContainer: {
+    marginTop: -spacing.xs,
+    marginBottom: spacing.sm,
+    alignSelf: 'flex-end' as const,
+  },
+  schoolLinkText: {
+    fontSize: 16,
+    color: themeColors.textSecondary,
+    textDecorationLine: 'underline' as const,
+    fontWeight: '500' as const,
+  },
+  schoolInputWrapper: {
+    borderColor: themeColors.primary,
+    borderWidth: 1,
+    backgroundColor: `${themeColors.primary}10`,
   },
 });

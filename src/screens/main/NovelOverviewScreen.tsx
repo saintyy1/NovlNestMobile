@@ -18,8 +18,10 @@ import {
   Pressable,
   Animated,
   Easing,
+  RefreshControl,
 } from 'react-native';
 import CachedImage from '../../components/CachedImage';
+import { ErrorRetryView } from '../../components/common/ErrorRetryView';
 import ClassicsBadge from '../../components/ClassicsBadge';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -93,6 +95,9 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
   const [authorData, setAuthorData] = useState<AuthorData | null>(null);
   const [relatedNovels, setRelatedNovels] = useState<Novel[]>([]);
   const [loadingRelated, setLoadingRelated] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [timedOut, setTimedOut] = useState(false);
+  const [hasError, setHasError] = useState(false);
 
   // Follow states
   const [isFollowing, setIsFollowing] = useState(false);
@@ -169,6 +174,7 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
     }
     try {
       setLoading(true);
+      setHasError(false);
       const novelDocRef = doc(db, 'novels', novelId);
 
       const novelData = await withCache(`novel_${novelId}`, async () => {
@@ -214,11 +220,39 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
       } else {
         console.error('Error fetching novel:', error);
         setError('Failed to load novel');
+        setHasError(true);
       }
     } finally {
       setLoading(false);
     }
   }, [novelId, currentUser?.uid]);
+
+  const handleRefresh = async (isRetry = false) => {
+    if (!isRetry) {
+      setRefreshing(true);
+    }
+    setTimedOut(false);
+    setHasError(false);
+    try {
+      await invalidateCache(`novel_${novelId}`);
+      await invalidateCache(`related_novels_${novelId}`);
+    } catch (e) {
+      console.warn('Error invalidating novel overview cache:', e);
+    }
+    await fetchNovel();
+    setRefreshing(false);
+  };
+
+  useEffect(() => {
+    if (loading) {
+      const timer = setTimeout(() => {
+        setTimedOut(true);
+      }, 10000);
+      return () => clearTimeout(timer);
+    } else {
+      setTimedOut(false);
+    }
+  }, [loading]);
 
   useEffect(() => {
     fetchNovel();
@@ -457,6 +491,14 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
       setIsFollowing(!isFollowing);
 
       await toggleFollow(novel.authorId, isFollowing);
+
+      // Send Push Notification
+      await sendPushNotification(
+        novel.authorId,
+        `${currentUser.displayName || "Someone"} 👤`,
+        `Started following you`,
+        { url: `novlnest://profile/${currentUser.uid}` }
+      )
 
     } catch (error) {
       console.error('Error toggling follow:', error);
@@ -999,12 +1041,20 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
     );
   };
 
-  if (loading) {
+  if (loading && !timedOut && !refreshing) {
     return (
       <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color="#8B5CF6" />
         </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (timedOut || hasError) {
+    return (
+      <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+        <ErrorRetryView onRetry={() => handleRefresh(true)} />
       </SafeAreaView>
     );
   }
@@ -1055,6 +1105,13 @@ const NovelOverviewScreen = ({ route, navigation }: any) => {
         style={styles.container}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 20) }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            tintColor={colors.primary}
+          />
+        }
       >
         {/* Cover and Info */}
         <View style={styles.coverSection}>

@@ -16,11 +16,13 @@ import {
   Platform,
   Modal,
   Pressable,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import CachedImage from '../../components/CachedImage';
+import { ErrorRetryView } from '../../components/common/ErrorRetryView';
 import ClassicsBadge from '../../components/ClassicsBadge';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
@@ -89,6 +91,9 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
   const [authorData, setAuthorData] = useState<AuthorData | null>(null);
   const [relatedPoems, setRelatedPoems] = useState<Poem[]>([]);
   const [loadingRelated, setLoadingRelated] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [timedOut, setTimedOut] = useState(false);
+  const [hasError, setHasError] = useState(false);
 
   // Follow states
   const [isFollowing, setIsFollowing] = useState(false);
@@ -150,6 +155,7 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
     }
     try {
       setLoading(true);
+      setHasError(false);
       const poemDocRef = doc(db, 'poems', poemId);
 
       const poemData = await withCache(`poem_${poemId}`, async () => {
@@ -194,11 +200,39 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
       } else {
         console.error('Error fetching poem:', error);
         setError('Failed to load poem');
+        setHasError(true);
       }
     } finally {
       setLoading(false);
     }
   }, [poemId, currentUser?.uid]);
+
+  const handleRefresh = async (isRetry = false) => {
+    if (!isRetry) {
+      setRefreshing(true);
+    }
+    setTimedOut(false);
+    setHasError(false);
+    try {
+      await invalidateCache(`poem_${poemId}`);
+      await invalidateCache(`related_poems_${poemId}`);
+    } catch (e) {
+      console.warn('Error invalidating novel overview cache:', e);
+    }
+    await fetchpoem();
+    setRefreshing(false);
+  };
+
+  useEffect(() => {
+    if (loading) {
+      const timer = setTimeout(() => {
+        setTimedOut(true);
+      }, 10000);
+      return () => clearTimeout(timer);
+    } else {
+      setTimedOut(false);
+    }
+  }, [loading]);
 
   useEffect(() => {
     fetchpoem();
@@ -440,6 +474,14 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
       setIsFollowing(!isFollowing);
 
       await toggleFollow(poem.poetId, isFollowing);
+
+      // Send Push Notification
+      await sendPushNotification(
+        poem.poetId,
+        `${currentUser.displayName || "Someone"} 👤`,
+        `Started following you`,
+        { url: `novlnest://profile/${currentUser.uid}` }
+      )
       // Invalidate profile cache
       await invalidateCache(`profile_user_${poem.poetId}`);
 
@@ -979,11 +1021,15 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
 
   return (
     <>
-      {loading ? (
+      {loading && !timedOut && !refreshing ? (
         <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color="#8B5CF6" />
           </View>
+        </SafeAreaView>
+      ) : timedOut || hasError ? (
+        <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+          <ErrorRetryView onRetry={() => handleRefresh(true)} />
         </SafeAreaView>
       ) : error || !poem ? (
         <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
@@ -1022,6 +1068,13 @@ const PoemOverviewScreen = ({ route, navigation }: any) => {
             style={styles.container}
             showsVerticalScrollIndicator={false}
             contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 20) }}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={handleRefresh}
+                tintColor={colors.primary}
+              />
+            }
           >
             {/* Cover and Info */}
             <View style={styles.coverSection}>

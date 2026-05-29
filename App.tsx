@@ -19,6 +19,9 @@ import { MainTabNavigator } from './src/components/navigation/MainTabNavigator';
 import { AuthNavigator } from './src/components/navigation/AuthNavigator';
 import ProfileScreen from './src/screens/main/ProfileScreen';
 import SettingsScreen from './src/screens/main/SettingsScreen';
+import SuperAdminScreen from './src/screens/admin/SuperAdminScreen';
+import AssignmentDetailScreen from './src/screens/school/AssignmentDetailScreen';
+import SubmissionReviewScreen from './src/screens/school/SubmissionReviewScreen';
 import NovelOverviewScreen from './src/screens/main/NovelOverviewScreen';
 import ChaptersListScreen from './src/screens/main/ChaptersListScreen';
 import AddChaptersScreen from './src/screens/main/AddChapterScreen';
@@ -37,6 +40,7 @@ import EmailActionScreen from './src/screens/main/EmailActionScreen';
 import ChapterEditorScreen from './src/screens/main/ChapterEditorScreen';
 import { ReadingInsightsScreen } from './src/screens/main/ReadingInsightsScreen';
 import { BookReadingInsightsScreen } from './src/screens/main/BookReadingInsightsScreen';
+import { ClassroomStreamScreen } from './src/screens/school/ClassroomStreamScreen';
 import { initializeAnalytics, trackScreenView, setUserId, cleanupAnalytics } from './src/utils/Analytics-utils';
 import { checkAppVersion, AppConfig } from './src/utils/VersionCheck-utils';
 import { Ionicons } from '@expo/vector-icons';
@@ -84,7 +88,7 @@ function AppContent() {
   useEffect(() => {
     initializeAnalytics(currentUser?.uid);
     recoverCrashedSession();
-    
+
     // Clear cache if version changed, then ensure initialization
     checkVersionAndClearCache().then(() => {
       ensureInitialized().then(() => setIsCacheReady(true));
@@ -312,6 +316,37 @@ function AppContent() {
             }}
           />
           <Stack.Screen
+            name="SuperAdmin"
+            component={SuperAdminScreen}
+            options={{
+              headerShown: false,
+            }}
+          />
+          <Stack.Screen
+            name="AssignmentDetail"
+            component={AssignmentDetailScreen}
+            options={{
+              headerShown: true,
+              headerStyle: {
+                backgroundColor: colors.primary,
+              },
+              headerTintColor: '#fff',
+              headerTitle: 'Assignment',
+            }}
+          />
+          <Stack.Screen
+            name="SubmissionReview"
+            component={SubmissionReviewScreen}
+            options={{
+              headerShown: true,
+              headerStyle: {
+                backgroundColor: colors.primary,
+              },
+              headerTintColor: '#fff',
+              headerTitle: 'Review Submission',
+            }}
+          />
+          <Stack.Screen
             name="ReadingInsights"
             component={ReadingInsightsScreen}
             options={{
@@ -471,6 +506,13 @@ function AppContent() {
           <Stack.Screen
             name="CharacterManager"
             component={CharacterManagerScreen}
+            options={{
+              headerShown: false,
+            }}
+          />
+          <Stack.Screen
+            name="ClassroomStream"
+            component={ClassroomStreamScreen}
             options={{
               headerShown: false,
             }}

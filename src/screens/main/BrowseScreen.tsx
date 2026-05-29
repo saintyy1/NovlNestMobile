@@ -11,6 +11,8 @@ import {
   ActivityIndicator,
   Platform,
   FlatList,
+  Switch,
+  RefreshControl,
 } from 'react-native';
 import CachedImage from '../../components/CachedImage';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -28,10 +30,12 @@ import {
 import { db } from '../../firebase/config';
 import type { Novel } from '../../types/novel';
 import type { Poem } from '../../types/poem';
+import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { spacing, typography } from '../../theme';
 import { trackSearch } from '../../utils/Analytics-utils';
-import { withCache, CACHE_TTL } from '../../utils/cache';
+import { withCache, CACHE_TTL, invalidateBrowseCache } from '../../utils/cache';
+import { ErrorRetryView } from '../../components/common/ErrorRetryView';
 
 const NOVEL_GENRES = [
   'All',
@@ -72,6 +76,7 @@ const POEM_FILTERS = ['Trending', 'New', 'Likes'];
 type BrowseType = null | 'novels' | 'poems';
 
 export const BrowseScreen = () => {
+  const { currentUser } = useAuth();
   const { colors } = useTheme();
   const navigation = useNavigation();
   const route = useRoute();
@@ -79,6 +84,7 @@ export const BrowseScreen = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedGenre, setSelectedGenre] = useState('');
   const [selectedFilter, setSelectedFilter] = useState('Trending');
+  const [schoolOnly, setSchoolOnly] = useState(currentUser?.focusedMode || false);
   const [novels, setNovels] = useState<Novel[]>([]);
   const [poems, setPoems] = useState<Poem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -149,131 +155,159 @@ export const BrowseScreen = () => {
     setSelectedFilter('Trending');
   }, [browseType]);
 
-  useEffect(() => {
+  const [refreshing, setRefreshing] = useState(false);
+  const [timedOut, setTimedOut] = useState(false);
+  const [hasError, setHasError] = useState(false);
+
+  const fetchBrowseData = async (force = false, isRetry = false) => {
     if (!browseType) return;
-
-    const fetchBrowseData = async () => {
-      setLoading(true);
-      const collectionName = browseType === 'novels' ? 'novels' : 'poems';
-      const collectionRef = collection(db, collectionName);
-      const queryConstraints: QueryConstraint[] = [where('published', '==', true)];
-
-      if (isClassics) {
-        queryConstraints.push(where('publicDomain', '==', true));
+    setLoading(true);
+    setHasError(false);
+    setTimedOut(false);
+    if (force) {
+      if (!isRetry) {
+        setRefreshing(true);
       }
+      await invalidateBrowseCache();
+    }
+    const collectionName = browseType === 'novels' ? 'novels' : 'poems';
+    const collectionRef = collection(db, collectionName);
+    const queryConstraints: QueryConstraint[] = [where('published', '==', true)];
 
-      if (selectedGenre !== 'All') {
-        queryConstraints.push(where('genres', 'array-contains', selectedGenre));
-      }
+    if (isClassics) {
+      queryConstraints.push(where('publicDomain', '==', true));
+    }
 
-      switch (selectedFilter) {
-        case 'Trending':
-          queryConstraints.push(orderBy('views', 'desc'));
-          break;
-        case 'New':
-          queryConstraints.push(orderBy('createdAt', 'desc'));
-          break;
-        case 'Likes':
-          queryConstraints.push(orderBy('likes', 'desc'));
-          break;
-        case 'Completed':
-          if (browseType === 'novels') {
-            queryConstraints.push(where('status', '==', 'completed'));
-            queryConstraints.push(orderBy('createdAt', 'desc'));
-          }
-          break;
-      }
+    // Safe-Wall Filter - Blueprint Item: Localized content
+    if (schoolOnly && currentUser?.schoolId) {
+      queryConstraints.push(where('schoolId', '==', currentUser.schoolId));
+    }
 
-      const q = query(collectionRef, ...queryConstraints);
-      const cacheKey = `browse_${browseType}_${isClassics}_${selectedGenre}_${selectedFilter}`;
+    if (selectedGenre !== 'All') {
+      queryConstraints.push(where('genres', 'array-contains', selectedGenre));
+    }
 
-      try {
-        const rawData = await withCache(cacheKey, async () => {
-          const snapshot = await getDocs(q);
-          let dataList: any[] = [];
-
-          snapshot.forEach((doc) => {
-            const itemData = doc.data();
-            // If browsing community content, filter out classics
-            if (!isClassics && itemData.publicDomain === true) return;
-
-            if (browseType === 'novels') {
-              dataList.push({
-                id: doc.id,
-                title: itemData.title || 'Untitled',
-                authorName: itemData.authorName || 'Unknown',
-                summary: itemData.summary || '',
-                coverImage: itemData.coverImage,
-                coverSmallImage: itemData.coverSmallImage,
-                views: itemData.views || 0,
-                likes: itemData.likes || 0,
-                genres: itemData.genres || [],
-              } as Novel);
-            } else {
-              dataList.push({
-                id: doc.id,
-                title: itemData.title || 'Untitled',
-                poetName: itemData.poetName || 'Unknown',
-                coverImage: itemData.coverImage,
-                coverSmallImage: itemData.coverSmallImage,
-                // Stripped content to save cache space
-                views: itemData.views || 0,
-                likes: itemData.likes || 0,
-                genres: itemData.genres || [],
-              } as Poem);
-            }
-          });
-          return dataList;
-        }, CACHE_TTL.FEED);
-
-        let filteredData = [...rawData];
-
-        if (searchQuery.trim()) {
-          const searchLower = searchQuery.toLowerCase();
-          filteredData = filteredData.filter((item) => {
-            if (browseType === 'novels') {
-              return (
-                item.title.toLowerCase().includes(searchLower) ||
-                item.authorName.toLowerCase().includes(searchLower) ||
-                item.summary.toLowerCase().includes(searchLower)
-              );
-            } else {
-              return (
-                item.title.toLowerCase().includes(searchLower) ||
-                item.poetName.toLowerCase().includes(searchLower) ||
-                item.content.toLowerCase().includes(searchLower)
-              );
-            }
-          });
-
-          // Track search for analytics
-          trackSearch({
-            searchTerm: searchQuery.trim(),
-            category: browseType,
-            resultsCount: filteredData.length,
-          });
-        }
-
+    switch (selectedFilter) {
+      case 'Trending':
+        queryConstraints.push(orderBy('views', 'desc'));
+        break;
+      case 'New':
+        queryConstraints.push(orderBy('createdAt', 'desc'));
+        break;
+      case 'Likes':
+        queryConstraints.push(orderBy('likes', 'desc'));
+        break;
+      case 'Completed':
         if (browseType === 'novels') {
-          setNovels(filteredData);
-        } else {
-          setPoems(filteredData);
+          queryConstraints.push(where('status', '==', 'completed'));
+          queryConstraints.push(orderBy('createdAt', 'desc'));
         }
-      } catch (error: any) {
-        if (error.code !== 'permission-denied') {
-          console.error(`Error fetching ${browseType}:`, error);
-        }
-      } finally {
-        setLoading(false);
-      }
-    };
+        break;
+    }
 
+    const q = query(collectionRef, ...queryConstraints);
+    const cacheKey = `browse_${browseType}_${isClassics}_${selectedGenre}_${selectedFilter}`;
+
+    try {
+      const rawData = await withCache(cacheKey, async () => {
+        const snapshot = await getDocs(q);
+        let dataList: any[] = [];
+
+        snapshot.forEach((doc) => {
+          const itemData = doc.data();
+          // If browsing community content, filter out classics
+          if (!isClassics && itemData.publicDomain === true) return;
+
+          if (browseType === 'novels') {
+            dataList.push({
+              id: doc.id,
+              title: itemData.title || 'Untitled',
+              authorName: itemData.authorName || 'Unknown',
+              summary: itemData.summary || '',
+              coverImage: itemData.coverImage,
+              coverSmallImage: itemData.coverSmallImage,
+              views: itemData.views || 0,
+              likes: itemData.likes || 0,
+              genres: itemData.genres || [],
+            } as Novel);
+          } else {
+            dataList.push({
+              id: doc.id,
+              title: itemData.title || 'Untitled',
+              poetName: itemData.poetName || 'Unknown',
+              coverImage: itemData.coverImage,
+              coverSmallImage: itemData.coverSmallImage,
+              views: itemData.views || 0,
+              likes: itemData.likes || 0,
+              genres: itemData.genres || [],
+            } as Poem);
+          }
+        });
+        return dataList;
+      }, force ? 0 : CACHE_TTL.FEED);
+
+      let filteredData = [...rawData];
+
+      if (searchQuery.trim()) {
+        const searchLower = searchQuery.toLowerCase();
+        filteredData = filteredData.filter((item) => {
+          if (browseType === 'novels') {
+            return (
+              item.title.toLowerCase().includes(searchLower) ||
+              item.authorName.toLowerCase().includes(searchLower) ||
+              item.summary.toLowerCase().includes(searchLower)
+            );
+          } else {
+            return (
+              item.title.toLowerCase().includes(searchLower) ||
+              item.poetName.toLowerCase().includes(searchLower) ||
+              (item.content && item.content.toLowerCase().includes(searchLower))
+            );
+          }
+        });
+
+        // Track search for analytics
+        trackSearch({
+          searchTerm: searchQuery.trim(),
+          category: browseType,
+          resultsCount: filteredData.length,
+        });
+      }
+
+      if (browseType === 'novels') {
+        setNovels(filteredData);
+      } else {
+        setPoems(filteredData);
+      }
+    } catch (error: any) {
+      if (error.code !== 'permission-denied') {
+        console.error(`Error fetching ${browseType}:`, error);
+        setHasError(true);
+      }
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
     fetchBrowseData();
-  }, [browseType, isClassics, selectedGenre, selectedFilter, searchQuery]);
+  }, [browseType, isClassics, selectedGenre, selectedFilter, searchQuery, schoolOnly]);
+
+  useEffect(() => {
+    if (loading) {
+      const timer = setTimeout(() => {
+        setTimedOut(true);
+      }, 10000);
+      return () => clearTimeout(timer);
+    } else {
+      setTimedOut(false);
+    }
+  }, [loading]);
 
   const getFirebaseDownloadUrl = (url: string) => {
     if (!url) return url;
-    
+
     // If it's already a direct download URL, return it
     if (url.includes('firebasestorage.googleapis.com') && url.includes('alt=media')) {
       return url;
@@ -288,13 +322,13 @@ export const BrowseScreen = () => {
         const isGoogleApi = url.includes('storage.googleapis.com');
         const bucketName = isGoogleApi ? urlParts[3] : urlParts[0];
         const filePath = isGoogleApi ? urlParts.slice(4).join('/') : urlParts.slice(1).join('/');
-        
+
         return `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodeURIComponent(filePath)}?alt=media`;
       } catch (error) {
         return url;
       }
     }
-    
+
     return url;
   };
 
@@ -579,7 +613,39 @@ export const BrowseScreen = () => {
         )}
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false} style={styles.browseContent}>
+      {/* School Only Filter - Blueprint Item: Safe Wall */}
+      {currentUser?.schoolId && !isClassics && (
+        <View style={[styles.schoolFilterCard, { backgroundColor: schoolOnly ? colors.primary + '10' : colors.surface, borderColor: schoolOnly ? colors.primary + '30' : colors.border }]}>
+          <View style={styles.schoolFilterInfo}>
+            <Ionicons name="business" size={20} color={schoolOnly ? colors.primary : colors.textSecondary} />
+            <View style={{ marginLeft: 12 }}>
+              <Text style={[styles.schoolFilterTitle, { color: colors.text }]}>School Only Library</Text>
+              <Text style={[styles.schoolFilterDesc, { color: colors.textSecondary }]}>
+                {currentUser.focusedMode ? 'Locked by institution' : 'Show only work from your school'}
+              </Text>
+            </View>
+          </View>
+          <Switch
+            value={schoolOnly}
+            onValueChange={setSchoolOnly}
+            disabled={currentUser.focusedMode}
+            trackColor={{ false: '#767577', true: colors.primary }}
+            thumbColor={schoolOnly ? '#fff' : '#f4f3f4'}
+          />
+        </View>
+      )}
+
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        style={styles.browseContent}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => fetchBrowseData(true)}
+            tintColor={colors.primary}
+          />
+        }
+      >
         {/* Genre Filter */}
         <View style={styles.filterSection}>
           <Text style={styles.sectionTitle}>Genres</Text>
@@ -591,7 +657,7 @@ export const BrowseScreen = () => {
                   <TouchableOpacity
                     key={genre}
                     style={[
-                      styles.genreGridItem, 
+                      styles.genreGridItem,
                       selectedGenre === genre && styles.genreTagActive
                     ]}
                     onPress={() => {
@@ -611,7 +677,7 @@ export const BrowseScreen = () => {
                     }}
                   >
                     <Text style={[
-                      styles.genreTagText, 
+                      styles.genreTagText,
                       selectedGenre === genre && styles.genreTagTextActive
                     ]}>
                       {genre}
@@ -619,7 +685,7 @@ export const BrowseScreen = () => {
                   </TouchableOpacity>
                 ))}
               </View>
-              <TouchableOpacity 
+              <TouchableOpacity
                 onPress={() => setIsGenresExpanded(false)}
                 style={styles.expandButtonAbsolute}
               >
@@ -637,9 +703,9 @@ export const BrowseScreen = () => {
                 keyExtractor={(item) => item}
                 initialNumToRender={genres.length}
                 onScrollToIndexFailed={(info) => {
-                  genreListRef.current?.scrollToOffset({ 
-                    offset: info.averageItemLength * info.index, 
-                    animated: true 
+                  genreListRef.current?.scrollToOffset({
+                    offset: info.averageItemLength * info.index,
+                    animated: true
                   });
                 }}
                 renderItem={({ item: genre }) => (
@@ -655,7 +721,7 @@ export const BrowseScreen = () => {
                   </TouchableOpacity>
                 )}
               />
-              <TouchableOpacity 
+              <TouchableOpacity
                 onPress={() => setIsGenresExpanded(true)}
                 style={styles.expandButtonInline}
               >
@@ -715,11 +781,13 @@ export const BrowseScreen = () => {
         )}
 
         {/* Results */}
-        {loading ? (
+        {loading && !timedOut && !refreshing ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color={colors.primary} />
             <Text style={styles.loadingText}>Loading {browseType}...</Text>
           </View>
+        ) : (timedOut || hasError) ? (
+          <ErrorRetryView onRetry={() => fetchBrowseData(true, true)} />
         ) : items.length > 0 ? (
           <View style={styles.resultsContainer}>
             {browseType === 'novels'
@@ -865,7 +933,29 @@ const getStyles = (themeColors: any) => StyleSheet.create({
 
   // ===== FILTERS =====
   filterSection: {
-    marginBottom: spacing.lg,
+    marginBottom: spacing.md,
+  },
+  schoolFilterCard: {
+    marginHorizontal: spacing.lg,
+    padding: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  schoolFilterInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  schoolFilterTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  schoolFilterDesc: {
+    fontSize: 12,
   },
   filterLabel: {
     fontSize: 16,

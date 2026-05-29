@@ -9,12 +9,13 @@ import {
   Image,
   ActivityIndicator,
   Platform,
+  RefreshControl,
 } from 'react-native';
 import CachedImage from '../../components/CachedImage';
 import ClassicsBadge from '../../components/ClassicsBadge';
 import { Ionicons } from '@expo/vector-icons';
 
-import { collection, query, orderBy, limit, getDocs, where, updateDoc, onSnapshot } from 'firebase/firestore';
+import { collection, query, orderBy, limit, getDocs, where, updateDoc, onSnapshot, doc, getDoc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import type { Novel } from '../../types/novel';
 import type { Poem } from '../../types/poem';
@@ -25,7 +26,9 @@ import { sendPromotionEndedNotification } from "../../services/notificationServi
 import { getReadingProgress, ReadingProgress, deleteReadingProgress } from '../../services/readingProgressService';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAlert } from '../../contexts/AlertContext';
-import { withCache, CACHE_TTL } from '../../utils/cache';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { withCache, CACHE_TTL, invalidateHomeCache } from '../../utils/cache';
+import { ErrorRetryView } from '../../components/common/ErrorRetryView';
 import { recoverCrashedSession } from '../../services/readingAnalyticsService';
 import { ReadingActivityDashboard } from '../../components/ReadingActivityDashboard';
 
@@ -72,34 +75,255 @@ export const HomeScreen = ({ navigation }: any) => {
 
   const styles = getStyles(colors);
 
-  useEffect(() => {
-    // Recover any unfinished reading sessions from previous crashes
-    recoverCrashedSession();
+  const [refreshing, setRefreshing] = useState(false);
+  const [timedOut, setTimedOut] = useState(false);
+  const [hasError, setHasError] = useState(false);
 
-    const fetchBanners = async () => {
-      try {
-        const bannersData = await withCache('home_banners', async () => {
-          const q = query(
-            collection(db, "banners"),
-            where("isActive", "==", true),
-            orderBy("priority", "asc")
-          )
-          const snapshot = await getDocs(q)
-          return snapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data(),
-          })) as BannerSlide[]
-        }, CACHE_TTL.FEED)
+  const fetchBanners = async (force = false) => {
+    try {
+      if (force) setLoadingBanners(true);
+      const bannersData = await withCache('home_banners', async () => {
+        const q = query(
+          collection(db, "banners"),
+          where("isActive", "==", true),
+          orderBy("priority", "asc")
+        )
+        const snapshot = await getDocs(q)
+        return snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data(),
+        })) as BannerSlide[]
+      }, force ? 0 : CACHE_TTL.FEED)
 
-        setBanners(bannersData)
-      } catch (error: any) {
-        if (error.code !== 'permission-denied') console.error('Error fetching banners:', error)
-      } finally {
-        setLoadingBanners(false)
+      setBanners(bannersData)
+    } catch (error: any) {
+      if (error.code !== 'permission-denied') {
+        console.error('Error fetching banners:', error);
+        setHasError(true);
       }
+    } finally {
+      setLoadingBanners(false)
     }
-    fetchBanners()
-  }, [])
+  }
+
+  const fetchPromoted = async (force = false) => {
+    try {
+      if (force) setLoadingPromoted(true);
+      const promotionalData = await withCache('home_promotional', async () => {
+        const novelsRef = collection(db, 'novels');
+        const q = query(
+          novelsRef,
+          where('isPromoted', '==', true),
+          where('published', '==', true),
+          orderBy("createdAt", "desc"),
+          limit(7)
+        );
+        const snapshot = await getDocs(q);
+        const dataList: Novel[] = [];
+        const now = new Date();
+
+        for (const docSnap of snapshot.docs) {
+          const data = docSnap.data() as any;
+          const endDate = data.promotionEndDate?.toDate?.() || data.promotionEndDate;
+
+          if (endDate && endDate < now) {
+            if (!data.promotionEndNotificationSent) {
+              try {
+                await sendPromotionEndedNotification(data.authorId, docSnap.id, data.title);
+              } catch (error) { }
+            }
+            await updateDoc(docSnap.ref, {
+              isPromoted: false,
+              promotionStartDate: null,
+              promotionEndDate: null,
+              reference: null,
+              promotionPlan: null,
+              promotionEndNotificationSent: true
+            });
+          } else {
+            dataList.push({ id: docSnap.id, ...data } as Novel);
+          }
+        }
+        return dataList.map(item => {
+          const { chapters, ...rest } = item as any;
+          return rest as Novel;
+        });
+      }, force ? 0 : CACHE_TTL.FEED);
+      setPromotedNovels(promotionalData);
+    } catch (error: any) {
+      if (error.code !== 'permission-denied') {
+        console.error('Error fetching promoted:', error);
+        setHasError(true);
+      }
+    } finally {
+      setLoadingPromoted(false);
+    }
+  };
+
+  const fetchTrending = async (force = false) => {
+    try {
+      if (force) setLoadingTrending(true);
+      const trendingData = await withCache('home_trending', async () => {
+        const novelsRef = collection(db, 'novels');
+        const q = query(
+          novelsRef,
+          where('published', '==', true),
+          orderBy('views', 'desc')
+        );
+        const snapshot = await getDocs(q);
+        const novels: Novel[] = [];
+        snapshot.forEach((doc) => {
+          const novelData = { id: doc.id, ...doc.data() } as Novel;
+          if (!novelData.isPromoted && !novelData.publicDomain) {
+            novels.push(novelData);
+          }
+        });
+        return novels.slice(0, 7).map(item => {
+          const { chapters, ...rest } = item as any;
+          return rest as Novel;
+        });
+      }, force ? 0 : CACHE_TTL.FEED);
+      setTrendingNovels(trendingData);
+    } catch (error: any) {
+      if (error.code !== 'permission-denied') {
+        console.error('Error fetching trending novels:', error);
+        setHasError(true);
+      }
+    } finally {
+      setLoadingTrending(false);
+    }
+  };
+
+  const fetchNewReleases = async (force = false) => {
+    try {
+      if (force) setLoadingNewReleases(true);
+      const newReleasesData = await withCache('home_new_releases', async () => {
+        const novelsRef = collection(db, 'novels');
+        const q = query(novelsRef, where('published', '==', true), where('publicDomain', '==', false), orderBy('createdAt', 'desc'), limit(7));
+        const snapshot = await getDocs(q);
+        return snapshot.docs.map(doc => {
+          const { chapters, ...rest } = doc.data() as any;
+          return { id: doc.id, ...rest } as Novel;
+        });
+      }, force ? 0 : CACHE_TTL.FEED);
+      setNewReleases(newReleasesData);
+    } catch (error: any) {
+      if (error.code !== 'permission-denied') {
+        console.error('Error fetching new releases:', error);
+        setHasError(true);
+      }
+    } finally {
+      setLoadingNewReleases(false);
+    }
+  };
+
+  const fetchTimeless = async (force = false) => {
+    try {
+      if (force) setLoadingTimeless(true);
+      const timelessData = await withCache('home_timeless', async () => {
+        const novelsRef = collection(db, 'novels');
+        const q = query(novelsRef, where('published', '==', true), where('publicDomain', '==', true), orderBy('createdAt', 'desc'), limit(7));
+        const snapshot = await getDocs(q);
+        return snapshot.docs.map(doc => {
+          const { chapters, ...rest } = doc.data() as any;
+          return { id: doc.id, ...rest } as Novel;
+        });
+      }, force ? 0 : CACHE_TTL.FEED);
+      setTimelessStories(timelessData);
+    } catch (error: any) {
+      if (error.code !== 'permission-denied') {
+        console.error('Error fetching timeless stories:', error);
+        setHasError(true);
+      }
+    } finally {
+      setLoadingTimeless(false);
+    }
+  };
+
+  const fetchPoems = async (force = false) => {
+    try {
+      if (force) setLoadingPoems(true);
+      const poemsData = await withCache('home_trending_poems', async () => {
+        const poemsRef = collection(db, 'poems');
+        const q = query(
+          poemsRef,
+          where('published', '==', true),
+          orderBy('views', 'desc'),
+          limit(7)
+        );
+        const snapshot = await getDocs(q);
+        return snapshot.docs.map(doc => {
+          const data = doc.data();
+          return {
+            id: doc.id,
+            title: data.title || 'Untitled',
+            poetName: data.poetName || 'Unknown',
+            description: data.description || '',
+            genres: data.genres || [],
+            poetId: data.poetId || '',
+            published: data.published || false,
+            createdAt: data.createdAt || '',
+            updatedAt: data.updatedAt || '',
+            likes: data.likes || 0,
+            views: data.views || 0,
+            coverImage: data.coverImage,
+            coverSmallImage: data.coverSmallImage,
+          } as Poem;
+        });
+      }, force ? 0 : CACHE_TTL.FEED);
+      setTrendingPoems(poemsData);
+    } catch (error: any) {
+      if (error.code !== 'permission-denied') {
+        console.error('Error fetching trending poems:', error);
+        setHasError(true);
+      }
+    } finally {
+      setLoadingPoems(false);
+    }
+  };
+
+  const fetchAll = async (force = false, isRetry = false) => {
+    if (force) {
+      if (isRetry) {
+        setLoadingBanners(true);
+        setLoadingPromoted(true);
+        setLoadingTrending(true);
+        setLoadingNewReleases(true);
+        setLoadingTimeless(true);
+        setLoadingPoems(true);
+      } else {
+        setRefreshing(true);
+      }
+      await invalidateHomeCache();
+    }
+    setTimedOut(false);
+    setHasError(false);
+    await Promise.all([
+      fetchBanners(force),
+      fetchPromoted(force),
+      fetchTrending(force),
+      fetchNewReleases(force),
+      fetchTimeless(force),
+      fetchPoems(force),
+    ]);
+    setRefreshing(false);
+  };
+
+  useEffect(() => {
+    recoverCrashedSession();
+    fetchAll();
+  }, []);
+
+  useEffect(() => {
+    if (loading) {
+      const timer = setTimeout(() => {
+        setTimedOut(true);
+      }, 10000);
+      return () => clearTimeout(timer);
+    } else {
+      setTimedOut(false);
+    }
+  }, [loading]);
 
   useEffect(() => {
     if (!currentUser) {
@@ -218,179 +442,6 @@ export const HomeScreen = ({ navigation }: any) => {
       return url;
     }
   };
-
-
-  useEffect(() => {
-    const fetchPromoted = async () => {
-      try {
-        const promotionalData = await withCache('home_promotional', async () => {
-          const novelsRef = collection(db, 'novels');
-          const q = query(
-            novelsRef,
-            where('isPromoted', '==', true),
-            where('published', '==', true),
-            orderBy("createdAt", "desc"),
-            limit(7)
-          );
-          const snapshot = await getDocs(q);
-          const dataList: Novel[] = [];
-          const now = new Date();
-
-          for (const docSnap of snapshot.docs) {
-            const data = docSnap.data() as any;
-            const endDate = data.promotionEndDate?.toDate?.() || data.promotionEndDate;
-
-            if (endDate && endDate < now) {
-              if (!data.promotionEndNotificationSent) {
-                try {
-                  await sendPromotionEndedNotification(data.authorId, docSnap.id, data.title);
-                } catch (error) { }
-              }
-              await updateDoc(docSnap.ref, {
-                isPromoted: false,
-                promotionStartDate: null,
-                promotionEndDate: null,
-                reference: null,
-                promotionPlan: null,
-                promotionEndNotificationSent: true
-              });
-            } else {
-              dataList.push({ id: docSnap.id, ...data } as Novel);
-            }
-          }
-          return dataList.map(item => {
-            const { chapters, ...rest } = item as any;
-            return rest as Novel;
-          });
-        }, CACHE_TTL.FEED);
-        setPromotedNovels(promotionalData);
-      } catch (error: any) {
-        if (error.code !== 'permission-denied') console.error('Error fetching promoted:', error);
-      } finally {
-        setLoadingPromoted(false);
-      }
-    };
-    fetchPromoted();
-  }, []);
-
-  useEffect(() => {
-    const fetchTrending = async () => {
-      try {
-        const trendingData = await withCache('home_trending', async () => {
-          const novelsRef = collection(db, 'novels');
-          const q = query(
-            novelsRef,
-            where('published', '==', true),
-            orderBy('views', 'desc')
-          );
-          const snapshot = await getDocs(q);
-          const novels: Novel[] = [];
-          snapshot.forEach((doc) => {
-            const novelData = { id: doc.id, ...doc.data() } as Novel;
-            if (!novelData.isPromoted && !novelData.publicDomain) {
-              novels.push(novelData);
-            }
-          });
-          return novels.slice(0, 7).map(item => {
-            const { chapters, ...rest } = item as any;
-            return rest as Novel;
-          });
-        }, CACHE_TTL.FEED);
-        setTrendingNovels(trendingData);
-      } catch (error: any) {
-        if (error.code !== 'permission-denied') console.error('Error fetching trending novels:', error);
-      } finally {
-        setLoadingTrending(false);
-      }
-    };
-    fetchTrending();
-  }, []);
-
-  useEffect(() => {
-    const fetchNewReleases = async () => {
-      try {
-        const newReleasesData = await withCache('home_new_releases', async () => {
-          const novelsRef = collection(db, 'novels');
-          const q = query(novelsRef, where('published', '==', true), where('publicDomain', '==', false), orderBy('createdAt', 'desc'), limit(7));
-          const snapshot = await getDocs(q);
-          return snapshot.docs.map(doc => {
-            const { chapters, ...rest } = doc.data() as any;
-            return { id: doc.id, ...rest } as Novel;
-          });
-        }, CACHE_TTL.FEED);
-        setNewReleases(newReleasesData);
-      } catch (error: any) {
-        if (error.code !== 'permission-denied') console.error('Error fetching new releases:', error);
-      } finally {
-        setLoadingNewReleases(false);
-      }
-    };
-    fetchNewReleases();
-  }, []);
-
-  // For Timeless Stories
-  useEffect(() => {
-    const fetchTimeless = async () => {
-      try {
-        const timelessData = await withCache('home_timeless', async () => {
-          const novelsRef = collection(db, 'novels');
-          const q = query(novelsRef, where('published', '==', true), where('publicDomain', '==', true), orderBy('createdAt', 'desc'), limit(7));
-          const snapshot = await getDocs(q);
-          return snapshot.docs.map(doc => {
-            const { chapters, ...rest } = doc.data() as any;
-            return { id: doc.id, ...rest } as Novel;
-          });
-        }, CACHE_TTL.FEED);
-        setTimelessStories(timelessData);
-      } catch (error: any) {
-        if (error.code !== 'permission-denied') console.error('Error fetching timeless stories:', error);
-      } finally {
-        setLoadingTimeless(false);
-      }
-    };
-    fetchTimeless();
-  }, []);
-
-  useEffect(() => {
-    const fetchPoems = async () => {
-      try {
-        const poemsData = await withCache('home_trending_poems', async () => {
-          const poemsRef = collection(db, 'poems');
-          const q = query(
-            poemsRef,
-            where('published', '==', true),
-            orderBy('views', 'desc'),
-            limit(7)
-          );
-          const snapshot = await getDocs(q);
-          return snapshot.docs.map(doc => {
-            const data = doc.data();
-            return {
-              id: doc.id,
-              title: data.title || 'Untitled',
-              poetName: data.poetName || 'Unknown',
-              description: data.description || '',
-              genres: data.genres || [],
-              poetId: data.poetId || '',
-              published: data.published || false,
-              createdAt: data.createdAt || '',
-              updatedAt: data.updatedAt || '',
-              likes: data.likes || 0,
-              views: data.views || 0,
-              coverImage: data.coverImage,
-              coverSmallImage: data.coverSmallImage,
-            } as Poem;
-          });
-        }, CACHE_TTL.FEED);
-        setTrendingPoems(poemsData);
-      } catch (error: any) {
-        if (error.code !== 'permission-denied') console.error('Error fetching trending poems:', error);
-      } finally {
-        setLoadingPoems(false);
-      }
-    };
-    fetchPoems();
-  }, []);
 
   const handleImageError = (novelId: string) => {
     setImageErrors(prev => ({ ...prev, [novelId]: true }));
@@ -532,11 +583,51 @@ export const HomeScreen = ({ navigation }: any) => {
     return (
       <TouchableOpacity
         key={progress.novelId}
-        style={styles.novelCard}
-        onPress={() => {
+        style={styles.continueReadingNovelCard}
+        onPress={async () => {
+          let savedPage = (progress as any).pageIndex ?? null;
+          let savedPercent = (progress as any).progressPercent ?? null;
+          try {
+            if (currentUser) {
+              const storageKey = `reading_progress_${currentUser.uid}_${progress.novelId}`;
+              const raw = await AsyncStorage.getItem(storageKey);
+              if (raw) {
+                const local = JSON.parse(raw);
+                if (local && local.chapterIndex === progress.chapterIndex) {
+                  if (local.pageIndex !== undefined && local.pageIndex !== null) savedPage = local.pageIndex;
+                  if (local.progressPercent !== undefined && local.progressPercent !== null) savedPercent = local.progressPercent;
+                }
+              }
+            }
+          } catch (e) {
+            // ignore
+          }
+
+          // If no local saved position found, try Firestore fallback (may be fresher)
+          try {
+            if (currentUser && (savedPage === null || savedPercent === null)) {
+              const progRef = doc(db, 'readingProgress', `${currentUser.uid}_${progress.novelId}`);
+              const progSnap = await getDoc(progRef);
+              if (progSnap.exists()) {
+                const r = progSnap.data() as any;
+                if (r && typeof r.chapterIndex === 'number' && r.chapterIndex === progress.chapterIndex) {
+                  if ((savedPage === null || savedPage === undefined) && typeof r.pageIndex === 'number') savedPage = r.pageIndex;
+                  if ((savedPercent === null || savedPercent === undefined) && typeof r.progressPercent === 'number') savedPercent = r.progressPercent;
+                  console.log('[Home] Read remote progress', { novelId: progress.novelId, chapter: r.chapterIndex, pageIndex: r.pageIndex, progressPercent: r.progressPercent });
+                }
+              }
+            }
+          } catch (e) {
+            // ignore remote read errors
+          }
+
+          console.log('[Home] Navigating ContinueReading', { novelId: progress.novelId, chapter: progress.chapterIndex, savedPage, savedPercent });
+
           navigation.navigate('NovelReader', {
             novelId: progress.novelId,
             chapterNumber: progress.chapterIndex,
+            savedPage,
+            savedPercent,
           });
         }}
         onLongPress={() => handleRemoveProgress(progress.novelId, progress.novelTitle)}
@@ -544,12 +635,12 @@ export const HomeScreen = ({ navigation }: any) => {
         {hasImage ? (
           <CachedImage
             uri={getFirebaseDownloadUrl(progress.novelCover || '')}
-            style={styles.novelCover}
+            style={styles.continueReadingNovelCover}
             onError={() => handleImageError(progress.novelId)}
             contentFit="cover"
           />
         ) : (
-          <View style={[styles.novelCover, { backgroundColor: colors.backgroundSecondary }]}>
+          <View style={[styles.continueReadingNovelCover, { backgroundColor: colors.backgroundSecondary }]}>
             <Text style={styles.fallbackTitle} numberOfLines={3}>
               {progress.novelTitle}
             </Text>
@@ -562,7 +653,7 @@ export const HomeScreen = ({ navigation }: any) => {
     );
   };
 
-  if (loading) {
+  if (loading && !timedOut && !refreshing) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color={colors.primary} />
@@ -571,8 +662,24 @@ export const HomeScreen = ({ navigation }: any) => {
     );
   }
 
+  if (timedOut || hasError) {
+    return (
+      <ErrorRetryView onRetry={() => fetchAll(true, true)} />
+    );
+  }
+
   return (
-    <ScrollView style={[styles.container, { backgroundColor: colors.background }]} showsVerticalScrollIndicator={false}>
+    <ScrollView
+      style={[styles.container, { backgroundColor: colors.background }]}
+      showsVerticalScrollIndicator={false}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={() => fetchAll(true)}
+          tintColor={colors.primary}
+        />
+      }
+    >
 
       {/* Verification Banner */}
       {currentUser && !currentUser.emailVerified && isGracePeriodActive(currentUser.createdAt) && (
@@ -630,9 +737,6 @@ export const HomeScreen = ({ navigation }: any) => {
         <HeroBanner slides={banners} autoSlideInterval={5000} />
       )}
 
-      {/* Reading Activity Dashboard */}
-      <ReadingActivityDashboard />
-
       {promotedNovels.length > 0 && (
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
@@ -647,6 +751,9 @@ export const HomeScreen = ({ navigation }: any) => {
           </ScrollView>
         </View>
       )}
+
+      {/* Reading Activity Dashboard */}
+      <ReadingActivityDashboard />
 
       {readingProgress.length > 0 && (
         <View style={styles.section}>
@@ -817,6 +924,18 @@ const getStyles = (themeColors: any) => StyleSheet.create({
   novelCover: {
     width: 140,
     height: 200,
+    backgroundColor: themeColors.backgroundSecondary,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: spacing.sm,
+  },
+  continueReadingNovelCard: {
+    width: 100,
+  },
+  continueReadingNovelCover: {
+    width: 100,
+    height: 160,
     backgroundColor: themeColors.backgroundSecondary,
     borderRadius: 8,
     alignItems: 'center',

@@ -28,6 +28,7 @@ import { useReadingSession } from '../../hooks/useReadingSession';
 
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../../types/navigation';
+import { sendPushNotification } from '../../services/PushNotificationService';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'PoemReader'>;
 
@@ -192,6 +193,15 @@ const PoemReaderScreen = ({ route, navigation }: Props) => {
             setIsFollowing(!isFollowing);
 
             await toggleFollow(poem.poetId, isFollowing);
+
+            // Send Push Notification
+            await sendPushNotification(
+                poem.poetId,
+                `${currentUser.displayName || "Someone"} 👤`,
+                `Started following you`,
+                { url: `novlnest://profile/${currentUser.uid}` }
+            )
+
             // Invalidate profile cache
             await invalidateCache(`profile_user_${poem.poetId}`);
 
@@ -251,6 +261,10 @@ const PoemReaderScreen = ({ route, navigation }: Props) => {
         <SafeAreaView
             style={[styles.container, { backgroundColor: readerColors.background }]}
             onStartShouldSetResponderCapture={() => {
+                onUserActivity();
+                return false;
+            }}
+            onMoveShouldSetResponderCapture={() => {
                 onUserActivity();
                 return false;
             }}
@@ -324,9 +338,9 @@ const PoemReaderScreen = ({ route, navigation }: Props) => {
                                     lineHeight: fontSize * 1.8,
                                     color: readerColors.text,
                                     fontFamily: Platform.OS === 'ios' ? fontFamily : (
-                                        fontFamily === 'Courier' ? 'monospace' : 
-                                        ['Georgia', 'Times New Roman', 'Baskerville', 'Charter', 'Palatino', 'Iowan Old Style'].includes(fontFamily) ? 'serif' : 
-                                        'sans-serif'
+                                        fontFamily === 'Courier' ? 'monospace' :
+                                            ['Georgia', 'Times New Roman', 'Baskerville', 'Charter', 'Palatino', 'Iowan Old Style'].includes(fontFamily) ? 'serif' :
+                                                'sans-serif'
                                     )
                                 },
                             ]}

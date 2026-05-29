@@ -26,10 +26,18 @@ export const usePushNotifications = () => {
 
   useEffect(() => {
     if (currentUser) {
-      registerForPushNotificationsAsync().then((token) => {
+      registerForPushNotificationsAsync().then((result) => {
+        const { token, status } = result || { token: undefined, status: 'undetermined' };
+        
         if (token && token !== currentUser.pushToken) {
           setExpoPushToken(token);
           saveTokenToFirestore(currentUser.uid, token);
+        } else if (status === 'denied' && currentUser.pushNotificationsEnabled !== false) {
+          // Sync database if OS permission was denied but DB still says enabled
+          updatePushPreferenceInFirestore(currentUser.uid, false);
+        } else if (status === 'granted' && currentUser.pushNotificationsEnabled === false) {
+          // Optional: If they granted it but DB says disabled, re-enable it
+          updatePushPreferenceInFirestore(currentUser.uid, true);
         }
       });
     }
@@ -50,10 +58,23 @@ export const usePushNotifications = () => {
       const userRef = doc(db, 'users', userId);
       await updateDoc(userRef, {
         pushToken: token,
+        pushNotificationsEnabled: true, // Ensure enabled if we have a token
         updatedAt: new Date().toISOString(),
       });
     } catch (error) {
       console.error('Error saving push token to Firestore:', error);
+    }
+  };
+
+  const updatePushPreferenceInFirestore = async (userId: string, enabled: boolean) => {
+    try {
+      const userRef = doc(db, 'users', userId);
+      await updateDoc(userRef, {
+        pushNotificationsEnabled: enabled,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error('Error updating push preference in Firestore:', error);
     }
   };
 
@@ -65,6 +86,7 @@ export const usePushNotifications = () => {
 
 async function registerForPushNotificationsAsync() {
   let token;
+  let finalStatus = 'undetermined';
 
   if (Platform.OS === 'android') {
     await Notifications.setNotificationChannelAsync('default', {
@@ -77,14 +99,14 @@ async function registerForPushNotificationsAsync() {
 
   if (Device.isDevice) {
     const { status: existingStatus } = await Notifications.getPermissionsAsync();
-    let finalStatus = existingStatus;
+    finalStatus = existingStatus;
     if (existingStatus !== 'granted') {
       const { status } = await Notifications.requestPermissionsAsync();
       finalStatus = status;
     }
     if (finalStatus !== 'granted') {
       console.log('Failed to get push token for push notification!');
-      return;
+      return { token, status: finalStatus };
     }
     
     try {
@@ -102,5 +124,5 @@ async function registerForPushNotificationsAsync() {
     console.log('Must use physical device for Push Notifications');
   }
 
-  return token;
+  return { token, status: finalStatus };
 }

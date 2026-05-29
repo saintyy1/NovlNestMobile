@@ -40,6 +40,7 @@ const db = admin.firestore();
 const expo = new Expo();
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3001;
 
 // Configure multer for file uploads (use /tmp for Vercel serverless)
@@ -101,8 +102,8 @@ app.post('/api/process-pdf', pdfLimiter, upload.single('pdf'), async (req, res) 
 
     console.log('Processing PDF:', req.file.originalname);
 
-    // Read the PDF file
-    const dataBuffer = fs.readFileSync(req.file.path);
+    // Read the PDF file (async)
+    const dataBuffer = await fs.promises.readFile(req.file.path);
 
     // Parse PDF
     const pdfData = await pdfParse(dataBuffer);
@@ -182,15 +183,28 @@ app.post('/api/notify-user', notificationLimiter, async (req, res) => {
     }];
 
     const chunks = expo.chunkPushNotifications(messages);
+    const tickets = [];
     for (let chunk of chunks) {
       try {
-        await expo.sendPushNotificationsAsync(chunk);
+        const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
+        tickets.push(...ticketChunk);
+        console.log(`[Push] Tickets received: ${JSON.stringify(ticketChunk)}`);
       } catch (error) {
-        console.error('Error sending push chunk:', error);
+        console.error('[Push] Error sending push chunk:', error);
       }
     }
 
-    res.json({ success: true, message: 'Push notification sent' });
+    // Inspect tickets for errors
+    for (let ticket of tickets) {
+      if (ticket.status === 'error') {
+        console.error(`[Push] Delivery error: ${ticket.message}`);
+        if (ticket.details && ticket.details.error) {
+          console.error(`[Push] Error code: ${ticket.details.error}`);
+        }
+      }
+    }
+
+    res.json({ success: true, message: 'Push notification processed', tickets });
 
   } catch (error) {
     console.error('Error in /api/send-push:', error);
@@ -213,11 +227,13 @@ app.post('/api/broadcast-notification', authMiddleware, async (req, res) => {
     if (recipientConfig.type === 'library_users') {
       const usersSnapshot = await db.collection('users')
         .where('library', 'array-contains', recipientConfig.id)
+        .select() // Optimize: Only fetch IDs
         .get();
       recipientIds = usersSnapshot.docs.map(doc => doc.id);
     } else if (recipientConfig.type === 'followers') {
       const usersSnapshot = await db.collection('users')
         .where('following', 'array-contains', recipientConfig.id)
+        .select() // Optimize: Only fetch IDs
         .get();
       recipientIds = usersSnapshot.docs.map(doc => doc.id);
     } else if (recipientConfig.type === 'custom') {
@@ -254,6 +270,7 @@ app.post('/api/broadcast-notification', authMiddleware, async (req, res) => {
 
     // 3. Fetch Push Tokens and send via Expo
     const pushMessages = [];
+    const seenTokens = new Set();
 
     // We need to fetch user documents to get tokens. 
     // We'll do this in chunks of 30 because of Firestore 'where-in' limits
@@ -261,15 +278,18 @@ app.post('/api/broadcast-notification', authMiddleware, async (req, res) => {
       const chunk = recipientIds.slice(i, i + 30);
       const usersSnapshot = await db.collection('users')
         .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
+        .select('pushToken', 'pushNotificationsEnabled') // Optimize: only fetch push fields
         .get();
 
       usersSnapshot.forEach(doc => {
         const userData = doc.data();
+        const token = userData.pushToken;
         const enabled = userData.pushNotificationsEnabled !== false;
 
-        if (enabled && userData.pushToken && Expo.isExpoPushToken(userData.pushToken)) {
+        if (enabled && token && Expo.isExpoPushToken(token) && !seenTokens.has(token)) {
+          seenTokens.add(token);
           pushMessages.push({
-            to: userData.pushToken,
+            to: token,
             sound: 'default',
             title: pushData.title,
             body: pushData.body,
@@ -281,18 +301,26 @@ app.post('/api/broadcast-notification', authMiddleware, async (req, res) => {
       });
     }
 
-    // Send chunks to Expo
+    // Send chunks to Expo in parallel
     const expoChunks = expo.chunkPushNotifications(pushMessages);
-    let successCount = 0;
-
-    for (let chunk of expoChunks) {
-      try {
-        await expo.sendPushNotificationsAsync(chunk);
-        successCount += chunk.length;
-      } catch (error) {
+    
+    const sendPromises = expoChunks.map(chunk => 
+      expo.sendPushNotificationsAsync(chunk).catch(error => {
         console.error('Error sending broadcast push chunk:', error);
+        return [];
+      })
+    );
+
+    const ticketResults = await Promise.all(sendPromises);
+    const tickets = ticketResults.flat();
+    let successCount = tickets.length;
+
+    // Log errors for broadcast tickets
+    tickets.forEach(ticket => {
+      if (ticket.status === 'error') {
+        console.error(`[Broadcast] Push error: ${ticket.message} (${ticket.details?.error})`);
       }
-    }
+    });
 
     res.json({
       success: true,
@@ -320,20 +348,27 @@ app.post('/api/admin/broadcast', async (req, res) => {
   }
 
   try {
-    // 1. Fetch all users
-    const usersSnapshot = await db.collection('users').get();
+    // 1. Fetch only necessary fields to optimize memory and Firestore read costs
+    const usersSnapshot = await db.collection('users')
+      .select('pushToken', 'pushNotificationsEnabled')
+      .get();
 
     if (usersSnapshot.empty) {
       return res.json({ success: true, message: 'No users to notify' });
     }
 
     const messages = [];
+    const seenTokens = new Set();
+
     usersSnapshot.forEach(doc => {
       const userData = doc.data();
+      const token = userData.pushToken;
       const enabled = userData.pushNotificationsEnabled !== false;
-      if (enabled && userData.pushToken && Expo.isExpoPushToken(userData.pushToken)) {
+
+      if (enabled && token && Expo.isExpoPushToken(token) && !seenTokens.has(token)) {
+        seenTokens.add(token);
         messages.push({
-          to: userData.pushToken,
+          to: token,
           sound: 'default',
           title: title,
           body: body,
@@ -344,19 +379,31 @@ app.post('/api/admin/broadcast', async (req, res) => {
       }
     });
 
-    // 2. Send in chunks
+    // 2. Send in chunks in parallel for maximum performance
     const chunks = expo.chunkPushNotifications(messages);
-    let successCount = 0;
-    for (let chunk of chunks) {
-      try {
-        await expo.sendPushNotificationsAsync(chunk);
-        successCount += chunk.length;
-      } catch (error) {
+    
+    const sendPromises = chunks.map(chunk => 
+      expo.sendPushNotificationsAsync(chunk).catch(error => {
         console.error('Error sending broadcast chunk:', error);
-      }
-    }
+        return [];
+      })
+    );
 
-    res.json({ success: true, message: `Broadcast sent to ${successCount} users` });
+    const ticketResults = await Promise.all(sendPromises);
+    const tickets = ticketResults.flat();
+    const successCount = tickets.length;
+
+    // Log errors for admin broadcast tickets
+    tickets.forEach(ticket => {
+      if (ticket.status === 'error') {
+        console.error(`[AdminBroadcast] Push error: ${ticket.message} (${ticket.details?.error})`);
+      }
+    });
+
+    res.json({ 
+      success: true, 
+      message: `Broadcast initiated for ${successCount} users across ${chunks.length} chunks.` 
+    });
   } catch (error) {
     console.error('Error in /api/admin/broadcast:', error);
     res.status(500).json({ success: false, error: error.message });

@@ -1,0 +1,54 @@
+{
+  "project_info": {
+    "project_number": "171117861268",
+    "project_id": "novelnest-50ab1",
+    "storage_bucket": "novelnest-50ab1.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:171117861268:android:4c82572e54fda927955781",
+        "android_client_info": {
+          "package_name": "com.novlnest"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "171117861268-g6ljt9s5l986uteprh4lvn8qqssnhokn.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.novlnest",
+            "certificate_hash": "aebef72b3cd1b96841b222edfb282c29875b7d03"
+          }
+        },
+        {
+          "client_id": "171117861268-msg103kefn7trmdmsmj586t754h8fjh8.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCgADBhEFO1tid5xtv5_2QsQQ7mpIw-n9g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "171117861268-msg103kefn7trmdmsmj586t754h8fjh8.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "171117861268-nj2vicso0ia0ss2jj3vllago0dbm9lno.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.tolu.novlnest"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

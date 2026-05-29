@@ -682,6 +682,26 @@ export const MessagesScreen = ({ navigation, route }: any) => {
     );
   };
 
+  if (currentUser?.isMinor) {
+    return (
+      <View style={[styles.safeArea, { backgroundColor: colors.background, justifyContent: 'center', alignItems: 'center', padding: 20 }]}>
+        <View style={{ backgroundColor: colors.error + '15', padding: 32, borderRadius: 32, alignItems: 'center' }}>
+          <Ionicons name="shield-half-outline" size={80} color={colors.error} />
+          <Text style={[styles.emptyTitle, { color: colors.text, marginTop: 24, textAlign: 'center' }]}>Safety First</Text>
+          <Text style={[styles.emptyText, { color: colors.textSecondary, textAlign: 'center', marginTop: 12 }]}>
+            Direct messaging is disabled for minor accounts to ensure a safe environment.
+          </Text>
+          <TouchableOpacity
+            style={[styles.loginButton, { backgroundColor: colors.primary, marginTop: 32 }]}
+            onPress={() => navigation.goBack()}
+          >
+            <Text style={styles.loginButtonText}>Go Back</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
   if (!currentUser) {
     return (
       <View style={styles.safeArea}>

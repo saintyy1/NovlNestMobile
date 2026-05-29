@@ -16,15 +16,30 @@ import { BrowseScreen } from "../../screens/main/BrowseScreen"
 import { LibraryScreen } from "../../screens/main/LibraryScreen"
 import { SubmitScreen } from "../../screens/main/SubmitScreen"
 import { MessagesScreen } from "../../screens/main/MessagesScreen"
+import { ClassroomDashboard } from "../../screens/school/ClassroomDashboard"
+import { StaffScreen } from "../../screens/school/StaffScreen"
+import { StudentScreen } from "../../screens/school/StudentScreen"
+import { ClassesScreen } from "../../screens/school/ClassesScreen"
+import { ShowcaseScreen } from "../../screens/school/ShowcaseScreen"
+import { AssignmentsScreen } from "../../screens/school/AssignmentsScreen"
+import ProfileScreen from "../../screens/main/ProfileScreen"
+import SettingsScreen from "../../screens/main/SettingsScreen"
 
 export type MainTabParamList = {
   Home: undefined
-  Browse: { resetBrowseType?: number }
+  Browse: { resetBrowseType?: number } | undefined
   Library: undefined
-  Submit: undefined
+  Submit: { resetSubmitType?: number; showBackButton?: boolean } | undefined
   Messages: undefined
   Notifications: undefined
-  Profile: { userId?: string }
+  Profile: { userId?: string } | undefined
+  School: { activeTab?: 'assignments' | 'announcements' | 'showcase' | 'members'; peopleSubTab?: 'staff' | 'students' | 'classes' } | undefined
+  Hub: { activeTab?: 'assignments' | 'announcements' | 'showcase' | 'members'; peopleSubTab?: 'staff' | 'students' | 'classes' }
+  Staff: { activeTab?: 'assignments' | 'announcements' | 'showcase' | 'members'; peopleSubTab?: 'staff' | 'students' | 'classes' }
+  Students: { activeTab?: 'assignments' | 'announcements' | 'showcase' | 'members'; peopleSubTab?: 'staff' | 'students' | 'classes' }
+  Showcase: { activeTab?: 'assignments' | 'announcements' | 'showcase' | 'members'; peopleSubTab?: 'staff' | 'students' | 'classes' }
+  Assignments: undefined
+  Classes: undefined
 }
 
 const Tab = createBottomTabNavigator<MainTabParamList>()
@@ -58,6 +73,7 @@ const SubmitBackButton = ({ navigation, route }: any) => {
 
 export const MainTabNavigator = () => {
   const { colors } = useTheme()
+  const { currentUser } = useAuth()
   const { unreadCount } = useChat()
   const insets = useSafeAreaInsets()
   const previousTabRef = useRef<string>('Home')
@@ -119,6 +135,8 @@ export const MainTabNavigator = () => {
     )
   }
 
+  const isPrincipal = currentUser?.schoolRole === 'school_admin';
+
   return (
     <Tab.Navigator
       screenListeners={({ navigation, route }) => ({
@@ -134,46 +152,35 @@ export const MainTabNavigator = () => {
           // If tapping on the already active tab, reset to the root of that tab
           const isFocused = navigation.isFocused()
           if (isFocused) {
-            // Prevent default behavior
             e.preventDefault()
-
-            // Reset the tab's navigation stack to the initial route
             navigation.dispatch(
               CommonActions.reset({
                 index: 0,
-                routes: [{ name: route.name }],
+                routes: [{ name: route.name as any, params: route.params as any }],
               })
             )
           }
         },
       })}
       screenOptions={({ route }) => {
-        // Access unreadCount in this scope so it's available in the closure
         const chatUnreadCount = unreadCount
 
         return {
           tabBarIcon: ({ focused, color, size }) => {
-            let iconName: keyof typeof Ionicons.glyphMap
+            let iconName: keyof typeof Ionicons.glyphMap = "ellipse"
 
-            switch (route.name) {
-              case "Home":
-                iconName = focused ? "home" : "home-outline"
-                break
-              case "Browse":
-                iconName = focused ? "search" : "search-outline"
-                break
-              case "Library":
-                iconName = focused ? "library" : "library-outline"
-                break
-              case "Submit":
-                iconName = focused ? "create" : "create-outline"
-                break
-              case "Messages":
-                iconName = focused ? "chatbubbles" : "chatbubbles-outline"
-                break
-              default:
-                iconName = "ellipse"
-            }
+            if (route.name === "Home") iconName = focused ? "home" : "home-outline"
+            else if (route.name === "Browse") iconName = focused ? "search" : "search-outline"
+            else if (route.name === "Library") iconName = focused ? "library" : "library-outline"
+            else if (route.name === "Submit") iconName = focused ? "create" : "create-outline"
+            else if (route.name === "Messages") iconName = focused ? "chatbubbles" : "chatbubbles-outline"
+            else if (route.name === "School" || route.name === "Hub") iconName = focused ? "school" : "school-outline"
+            else if (route.name === "Staff") iconName = focused ? "people" : "people-outline"
+            else if (route.name === "Students") iconName = focused ? "person" : "person-outline"
+            else if (route.name === "Showcase") iconName = focused ? "book" : "book-outline"
+            else if (route.name === "Assignments") iconName = focused ? "document-text" : "document-text-outline"
+            else if (route.name === "Classes") iconName = focused ? "school" : "school-outline"
+            else if (route.name === "Profile") iconName = focused ? "settings" : "settings-outline"
 
             return (
               <View style={{ position: "relative" }}>
@@ -211,82 +218,211 @@ export const MainTabNavigator = () => {
         }
       }}
     >
-      <Tab.Screen
-        name="Home"
-        component={HomeScreen}
-        options={({ navigation }) => ({
-          header: () => (
-            <View style={styles.headerContainer}>
-              <View style={styles.headerContent}>
-                <View style={styles.logoContainer}>
-                  <Image
-                    source={require('../../../assets/images/app-icon.png')}
-                    style={styles.logoImage}
-                    resizeMode="contain"
-                  />
+      {isPrincipal ? (
+        <>
+          <Tab.Screen
+            name="Home"
+            component={HomeScreen}
+            options={({ navigation }) => ({
+              header: () => (
+                <View style={styles.headerContainer}>
+                  <View style={styles.headerContent}>
+                    <View style={styles.logoContainer}>
+                      <Image
+                        source={require('../../../assets/images/app-icon.png')}
+                        style={styles.logoImage}
+                        resizeMode="contain"
+                      />
+                    </View>
+                    <HeaderRight navigation={navigation} />
+                  </View>
                 </View>
-                <HeaderRight navigation={navigation} />
-              </View>
-            </View>
-          ),
-        })}
-      />
-      <Tab.Screen
-        name="Browse"
-        component={BrowseScreen}
-        options={({ navigation }) => ({
-          tabBarLabel: "Browse",
-          header: () => (
-            <View style={styles.headerContainer}>
-              <View style={styles.headerContent}>
-                <View style={styles.logoContainer}>
-                  <Text style={styles.logoText}>Browse</Text>
+              ),
+            })}
+          />
+          <Tab.Screen
+            name="Browse"
+            component={BrowseScreen}
+            options={({ navigation }) => ({
+              tabBarLabel: "Browse",
+              header: () => (
+                <View style={styles.headerContainer}>
+                  <View style={styles.headerContent}>
+                    <View style={styles.logoContainer}>
+                      <Text style={styles.logoText}>Browse</Text>
+                    </View>
+                    <HeaderRight navigation={navigation} />
+                  </View>
                 </View>
-                <HeaderRight navigation={navigation} />
-              </View>
-            </View>
-          ),
-        })}
-      />
-      <Tab.Screen
-        name="Library"
-        component={LibraryScreen}
-        options={({ navigation }) => ({
-          header: () => (
-            <View style={styles.headerContainer}>
-              <View style={styles.headerContent}>
-                <View style={styles.logoContainer}>
-                  <Text style={styles.logoText}>My Library</Text>
+              ),
+            })}
+          />
+          <Tab.Screen
+            name="Hub"
+            component={ClassesScreen}
+            options={{ tabBarLabel: "Classes", headerShown: false }}
+          />
+          <Tab.Screen
+            name="Staff"
+            component={StaffScreen}
+            options={{ tabBarLabel: "Staff", headerShown: false }}
+          />
+          <Tab.Screen
+            name="Students"
+            component={StudentScreen}
+            options={{ tabBarLabel: "Students", headerShown: false }}
+          />
+          <Tab.Screen
+            name="Showcase"
+            component={ShowcaseScreen}
+            options={{ tabBarLabel: "Showcase", headerShown: false }}
+          />
+        </>
+      ) : currentUser?.schoolRole === 'teacher' ? (
+        <>
+          <Tab.Screen
+            name="Home"
+            component={HomeScreen}
+            options={({ navigation }) => ({
+              header: () => (
+                <View style={styles.headerContainer}>
+                  <View style={styles.headerContent}>
+                    <View style={styles.logoContainer}>
+                      <Image
+                        source={require('../../../assets/images/app-icon.png')}
+                        style={styles.logoImage}
+                        resizeMode="contain"
+                      />
+                    </View>
+                    <HeaderRight navigation={navigation} />
+                  </View>
                 </View>
-                <HeaderRight navigation={navigation} />
-              </View>
-            </View>
-          ),
-        })}
-      />
-      <Tab.Screen
-        name="Submit"
-        component={SubmitScreen}
-        options={({ navigation, route }) => ({
-          title: "Write",
-          tabBarLabel: "Write",
-          headerLeft: () => <SubmitBackButton navigation={navigation} route={route} />,
-          headerRight: () => (
-            <View style={styles.submitHeaderRight}>
-              <HeaderRight navigation={navigation} />
-            </View>
-          ),
-        })}
-      />
-      <Tab.Screen
-        name="Messages"
-        component={MessagesScreen}
-        options={({ navigation }) => ({
-          tabBarBadge: unreadCount > 0 ? (unreadCount > 99 ? "99+" : unreadCount) : undefined,
-          tabBarBadgeStyle: styles.tabBarBadge,
-          headerShown: false,
-        })}
-      />
+              ),
+            })}
+          />
+          <Tab.Screen
+            name="Browse"
+            component={BrowseScreen}
+            options={({ navigation }) => ({
+              tabBarLabel: "Browse",
+              header: () => (
+                <View style={styles.headerContainer}>
+                  <View style={styles.headerContent}>
+                    <View style={styles.logoContainer}>
+                      <Text style={styles.logoText}>Browse</Text>
+                    </View>
+                    <HeaderRight navigation={navigation} />
+                  </View>
+                </View>
+              ),
+            })}
+          />
+          <Tab.Screen
+            name="Classes"
+            component={ClassesScreen}
+            options={{ tabBarLabel: "Classes", headerShown: false }}
+          />
+          <Tab.Screen
+            name="Students"
+            component={StudentScreen}
+            options={{ tabBarLabel: "Students", headerShown: false }}
+          />
+          <Tab.Screen
+            name="Showcase"
+            component={ShowcaseScreen}
+            options={{ tabBarLabel: "Showcase", headerShown: false }}
+          />
+        </>
+      ) : (
+        <>
+          <Tab.Screen
+            name="Home"
+            component={HomeScreen}
+            options={({ navigation }) => ({
+              header: () => (
+                <View style={styles.headerContainer}>
+                  <View style={styles.headerContent}>
+                    <View style={styles.logoContainer}>
+                      <Image
+                        source={require('../../../assets/images/app-icon.png')}
+                        style={styles.logoImage}
+                        resizeMode="contain"
+                      />
+                    </View>
+                    <HeaderRight navigation={navigation} />
+                  </View>
+                </View>
+              ),
+            })}
+          />
+          <Tab.Screen
+            name="Browse"
+            component={BrowseScreen}
+            options={({ navigation }) => ({
+              tabBarLabel: "Browse",
+              header: () => (
+                <View style={styles.headerContainer}>
+                  <View style={styles.headerContent}>
+                    <View style={styles.logoContainer}>
+                      <Text style={styles.logoText}>Browse</Text>
+                    </View>
+                    <HeaderRight navigation={navigation} />
+                  </View>
+                </View>
+              ),
+            })}
+          />
+          {currentUser?.schoolId && (
+            <Tab.Screen
+              name="School"
+              component={ClassroomDashboard}
+              options={({ navigation }) => ({
+                tabBarLabel: "School",
+                headerShown: false,
+              })}
+            />
+          )}
+          <Tab.Screen
+            name="Library"
+            component={LibraryScreen}
+            options={({ navigation }) => ({
+              header: () => (
+                <View style={styles.headerContainer}>
+                  <View style={styles.headerContent}>
+                    <View style={styles.logoContainer}>
+                      <Text style={styles.logoText}>My Library</Text>
+                    </View>
+                    <HeaderRight navigation={navigation} />
+                  </View>
+                </View>
+              ),
+            })}
+          />
+          <Tab.Screen
+            name="Submit"
+            component={SubmitScreen}
+            options={({ navigation, route }) => ({
+              title: "Write",
+              tabBarLabel: "Write",
+              headerLeft: () => <SubmitBackButton navigation={navigation} route={route} />,
+              headerRight: () => (
+                <View style={styles.submitHeaderRight}>
+                  <HeaderRight navigation={navigation} />
+                </View>
+              ),
+            })}
+          />
+          <Tab.Screen
+            name="Messages"
+            component={MessagesScreen}
+            options={({ navigation }) => ({
+              tabBarBadge: unreadCount > 0 ? (unreadCount > 99 ? "99+" : unreadCount) : undefined,
+              tabBarBadgeStyle: styles.tabBarBadge,
+              headerShown: false,
+            })}
+          />
+        </>
+      )}
     </Tab.Navigator>
   )
 }

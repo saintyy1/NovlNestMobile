@@ -43,8 +43,8 @@ export interface LocalSessionData {
   accumulatedDuration: number;
 }
 
-const MIN_SESSION_DURATION = 10; // Ignore sessions shorter than 10s
-const MIN_COMPLETION_DURATION = 30; // Min 30s to count as "completed"
+const MIN_SESSION_DURATION = 5; // Lowered to 5s for better accuracy in short sessions
+const MIN_COMPLETION_DURATION = 15; // Lowered to 15s for better completion tracking
 
 let activeLocalSession: LocalSessionData | null = null;
 
@@ -66,7 +66,8 @@ export const startReadingSession = async (
   // 1. Ensure only one active session exists
   if (activeLocalSession) {
     console.log('[Analytics] Existing active session found, ending it first...');
-    await endReadingSession();
+    // We pass the current active session's IDs to ensure we end the RIGHT one
+    await endReadingSession(activeLocalSession.bookId, activeLocalSession.chapterId);
   } else {
     // Check if there's a forgotten session in AsyncStorage
     const forgottenSession = await AsyncStorage.getItem(LOCAL_SESSION_KEY);
@@ -89,14 +90,20 @@ export const startReadingSession = async (
   };
 
   await AsyncStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify(activeLocalSession));
-  console.log('[Analytics] Reading session started locally:', bookTitle);
+  console.log('[Analytics] Reading session started locally:', bookTitle, '(Chapter:', chapterId, ')');
 };
 
 /**
  * Update local heartbeat (accumulate duration)
  */
-export const updateLocalHeartbeat = async (currentDuration: number) => {
+export const updateLocalHeartbeat = async (bookId: string, chapterId: string, currentDuration: number) => {
   if (!activeLocalSession) return;
+  
+  // Validation: Ensure we are updating the session we think we are
+  if (activeLocalSession.bookId !== bookId || activeLocalSession.chapterId !== chapterId) {
+    console.warn('[Analytics] Heartbeat mismatch. Expected:', activeLocalSession.bookId, 'Got:', bookId);
+    return;
+  }
 
   activeLocalSession.lastActiveTime = Date.now();
   activeLocalSession.accumulatedDuration = currentDuration;
@@ -107,8 +114,14 @@ export const updateLocalHeartbeat = async (currentDuration: number) => {
 /**
  * End session and save to Firestore
  */
-export const endReadingSession = async (isCompleted: boolean = false, finalDurationMs?: number) => {
+export const endReadingSession = async (bookId: string, chapterId: string, isCompleted: boolean = false, finalDurationMs?: number) => {
   if (!activeLocalSession) return;
+
+  // Validation: Ensure we are ending the correct session
+  if (activeLocalSession.bookId !== bookId || activeLocalSession.chapterId !== chapterId) {
+    console.warn('[Analytics] End session mismatch. Expected:', activeLocalSession.bookId, 'Got:', bookId);
+    return;
+  }
 
   const sessionToSave = { ...activeLocalSession };
   activeLocalSession = null;

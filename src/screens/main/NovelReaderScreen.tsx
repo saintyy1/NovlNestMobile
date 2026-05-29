@@ -45,6 +45,7 @@ import {
   limit,
 } from 'firebase/firestore';
 import { db } from '../../firebase/config';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Novel } from '../../types/novel';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -229,6 +230,86 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
   const replyInputRef = useRef<TextInput>(null);
   const lastChapterRef = useRef<number>(currentChapter);
 
+  // Progress tracking state
+  const [progressPercent, setProgressPercent] = useState<number>(0);
+  const [pageIndex, setPageIndex] = useState<number>(0);
+  const lastSavedAtRef = useRef<number>(0);
+  const pendingScrollRestorePercentRef = useRef<number | null>(null);
+  const restoredProgressRef = useRef<Record<string, boolean>>({});
+  const isProgressRestoredRef = useRef<boolean>(false);
+  const contentHeightRef = useRef<number>(0);
+  const totalPagesRef = useRef<number>(0);
+  const viewportHeightRef = useRef<number>(Dimensions.get('window').height - 150);
+  const scrollOffsetYRef = useRef<number>(0);
+  const SAVE_INTERVAL = 3000; // ms throttle for writes
+
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+  // Attempt to restore vertical scroll position, retrying until content is measured.
+  // Prefers raw offset (pixel-perfect); falls back to percent-based estimation.
+  const attemptRestoreScroll = async (
+    toPercent: number | null,
+    savedOffset?: number | null,
+    savedContentHeight?: number | null,
+  ) => {
+    if (toPercent === null || toPercent === undefined) return false;
+    const maxAttempts = 12;
+    const delayMs = 200;
+    for (let i = 0; i < maxAttempts; i++) {
+      if (contentHeightRef.current > 0 && scrollViewRef.current) {
+        try {
+          let y: number;
+          if (typeof savedOffset === 'number' && savedOffset > 0 && typeof savedContentHeight === 'number' && savedContentHeight > 0) {
+            // Pixel-perfect: scale the saved offset proportionally if content height changed (e.g. font size)
+            const ratio = contentHeightRef.current / savedContentHeight;
+            y = Math.max(0, Math.round(savedOffset * ratio));
+          } else {
+            // Fallback: invert the save formula => offset = (percent/100 * contentSize) - viewport
+            y = Math.max(0, Math.round(((toPercent / 100) * contentHeightRef.current) - viewportHeightRef.current));
+          }
+          scrollViewRef.current?.scrollTo({ y, animated: false });
+          console.log('[Reader] Restored vertical scroll to y=', y, 'for percent', toPercent,
+            savedOffset != null ? `(from saved offset ${savedOffset})` : '(from percent fallback)');
+          return true;
+        } catch (e) {
+          console.log('[Reader] scrollTo failed:', e);
+        }
+      }
+      await sleep(delayMs);
+    }
+    console.log('[Reader] Failed to restore vertical scroll (no content height), ref height:', contentHeightRef.current);
+    return false;
+  };
+
+  // Attempt to restore paginated page index, retrying until FlatList is ready
+  const attemptRestorePage = async (idx: number | null) => {
+    if (idx === null || idx === undefined) return false;
+    const maxAttempts = 12;
+    const delayMs = 150;
+    for (let i = 0; i < maxAttempts; i++) {
+      if (flatListRef.current && totalPagesRef.current > 0) {
+        try {
+          flatListRef.current?.scrollToIndex({ index: Math.min(Math.max(0, idx), totalPagesRef.current - 1), animated: false });
+          console.log('[Reader] Restored paged index to', idx);
+          return true;
+        } catch (e) {
+          // scrollToIndex can fail if layout not ready; ignore and retry
+          try {
+            const width = Dimensions.get('window').width;
+            flatListRef.current?.scrollToOffset({ offset: idx * width, animated: false });
+            console.log('[Reader] Restored paged offset to', idx);
+            return true;
+          } catch (e2) {
+            // ignore
+          }
+        }
+      }
+      await sleep(delayMs);
+    }
+    console.log('[Reader] Failed to restore page index, ref total pages:', totalPagesRef.current);
+    return false;
+  };
+
   // Initialize reading session tracking
   const { onUserActivity, markAsCompleted } = useReadingSession(
     currentUser?.uid,
@@ -410,9 +491,77 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
     const contentInfo = getContentInfo(chapterIdx);
 
-    // Explicit handle for Cast of Characters
+    // Cast of Characters — paginate using the same method as chapters
     if (contentInfo.type === 'characters') {
-      const charPages = [[{ type: 'characters_list' }]];
+      const chars = novel.characters || [];
+      if (chars.length === 0) {
+        pagedCache.current[cacheKey] = [];
+        return [];
+      }
+
+      // Convert characters into blocks: character_header (avatar+name) + paragraph (description)
+      const charBlocks: any[] = [];
+      chars.forEach((char: any, charIdx: number) => {
+        // Avatar (80px) + gap (12px) + name (~30px) + margin ≈ 130px of vertical space
+        charBlocks.push({ type: 'character_header', data: charIdx });
+        if (char.description) {
+          charBlocks.push({ type: 'paragraph', data: char.description });
+        }
+      });
+
+      // Use the exact same pagination logic as chapters
+      const availableWidth = Dimensions.get('window').width - 48;
+      const approxLineHeight = Math.round(fontSize * 1.6);
+      const availableHeight = Dimensions.get('window').height - (insets.top + insets.bottom + 160);
+      const maxLinesPerPage = Math.floor(availableHeight / approxLineHeight);
+      const charsPerLine = Math.floor(availableWidth / (fontSize * 0.45));
+
+      const charPages: any[][] = [];
+      let currentPage: any[] = [];
+      let currentLinesOnPage = 0;
+
+      charBlocks.forEach((block: any) => {
+        if (block.type === 'paragraph') {
+          let text = block.data;
+          while (text.length > 0) {
+            const lines = Math.ceil(text.length / charsPerLine);
+            const remainingLines = maxLinesPerPage - currentLinesOnPage;
+
+            if (lines <= remainingLines) {
+              currentPage.push({ type: 'paragraph', data: text });
+              currentLinesOnPage += lines + 1;
+              text = "";
+            } else if (remainingLines > 3) {
+              const splitPoint = Math.floor(remainingLines * charsPerLine * 0.9);
+              let breakIdx = text.lastIndexOf(' ', splitPoint);
+              if (breakIdx === -1) breakIdx = splitPoint;
+
+              currentPage.push({ type: 'paragraph', data: text.substring(0, breakIdx).trim() });
+              charPages.push(currentPage);
+              currentPage = [];
+              currentLinesOnPage = 0;
+              text = text.substring(breakIdx).trim();
+            } else {
+              if (currentPage.length > 0) charPages.push(currentPage);
+              currentPage = [];
+              currentLinesOnPage = 0;
+            }
+          }
+        } else {
+          // character_header block — avatar (80px) + name (~30px) + spacing ≈ 130px
+          const blockWeight = Math.ceil(130 / approxLineHeight);
+          if (currentLinesOnPage + blockWeight > maxLinesPerPage) {
+            if (currentPage.length > 0) charPages.push(currentPage);
+            currentPage = [block];
+            currentLinesOnPage = blockWeight;
+          } else {
+            currentPage.push(block);
+            currentLinesOnPage += blockWeight;
+          }
+        }
+      });
+
+      if (currentPage.length > 0) charPages.push(currentPage);
       pagedCache.current[cacheKey] = charPages;
       return charPages;
     }
@@ -484,6 +633,17 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
   const pagedContent = getPagedContent(currentChapter);
   const totalPages = pagedContent.length;
+  totalPagesRef.current = totalPages;
+
+  // Update percent when paginated content becomes available or when a requested page is set
+  useEffect(() => {
+    if (isPagingEnabled && pagedContent.length > 0) {
+      const idx = Math.min(Math.max(0, requestedPage !== 0 ? requestedPage : pageIndex), pagedContent.length - 1);
+      setPageIndex(idx);
+      const percent = Math.round(((idx + 1) / pagedContent.length) * 100) || 0;
+      setProgressPercent(percent);
+    }
+  }, [isPagingEnabled, pagedContent.length, requestedPage]);
 
   const getTotalReadingOrderItems = useCallback(() => {
     if (!novel) return 0;
@@ -573,6 +733,11 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
   useEffect(() => {
     const fetchChapterData = async () => {
       if (!novel) return;
+
+      // Reset restored flag to false to prevent race conditions during chapter loading/restoration
+      isProgressRestoredRef.current = false;
+      contentHeightRef.current = 0;
+      setContentHeight(0);
 
       // Clear previous content immediately to avoid showing stale content while loading
       setActiveChapterContent(null);
@@ -681,6 +846,80 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
           setActiveChapterContent(null);
         }
 
+        // Attempt to restore saved progress for this chapter.
+        // Prefer a local AsyncStorage copy (fast / offline) and fall back to Firestore.
+        // Allow restoration when the route explicitly provided savedPage/savedPercent params,
+        // or when the user didn't explicitly request a chapter.
+        const hasExplicitChapter = chapterNumber !== undefined || chapterIndex !== undefined || chapter !== undefined;
+        const hasSavedParam = (route && (route.params?.savedPage !== undefined || route.params?.savedPercent !== undefined));
+        // Always attempt to restore saved progress for this chapter (Continue Reading supplies chapterNumber)
+        if (currentUser && novel) {
+          const restoreKey = `${novel.id}_${currentChapter}`;
+          if (!restoredProgressRef.current[restoreKey]) {
+            try {
+              const storageKey = `reading_progress_${currentUser.uid}_${novel.id}`;
+
+              // Load local and remote in parallel
+              let localProg: any = null;
+              try {
+                const raw = await AsyncStorage.getItem(storageKey);
+                if (raw) localProg = JSON.parse(raw);
+              } catch (e) {
+                // ignore local read errors
+              }
+
+              let remoteProg: any = null;
+              try {
+                const progRef = doc(db, 'readingProgress', `${currentUser.uid}_${novel.id}`);
+                const progSnap = await getDoc(progRef);
+                if (progSnap.exists()) remoteProg = progSnap.data();
+              } catch (e) {
+                // ignore remote read errors
+              }
+
+              // Normalize timestamps and pick freshest
+              const localTime = localProg?.updatedAt || 0;
+              let remoteTime = 0;
+              if (remoteProg && remoteProg.updatedAt) {
+                if (typeof remoteProg.updatedAt === 'number') remoteTime = remoteProg.updatedAt;
+                else if (remoteProg.updatedAt?.toMillis) remoteTime = remoteProg.updatedAt.toMillis();
+              }
+
+              const prog = (localTime >= remoteTime && localProg) ? localProg : remoteProg || localProg;
+
+              if (prog && typeof prog.chapterIndex === 'number' && prog.chapterIndex === currentChapter) {
+                console.log('[Reader] Restoring progress for', novel.id, 'chapter', currentChapter, 'prog:', prog);
+                // Allow route params to override stored progress when present
+                const routeSavedPage = route?.params?.savedPage;
+                const routeSavedPercent = route?.params?.savedPercent;
+                const usePage = (routeSavedPage !== undefined && routeSavedPage !== null) ? routeSavedPage : (typeof prog.pageIndex === 'number' ? prog.pageIndex : null);
+                const usePercent = (routeSavedPercent !== undefined && routeSavedPercent !== null) ? routeSavedPercent : (typeof prog.progressPercent === 'number' ? prog.progressPercent : null);
+
+                if (isPagingEnabled && usePage !== null) {
+                  setRequestedPage(usePage as number);
+                  setPageIndex(usePage as number);
+                  // Try restoring page after FlatList mounts; helper will retry until ready
+                  attemptRestorePage(usePage as number).then((ok) => {
+                    if (!ok) console.log('[Reader] Page restore attempt failed, will rely on initialScrollIndex or later retries.');
+                  });
+                } else if (!isPagingEnabled && usePercent !== null) {
+                  pendingScrollRestorePercentRef.current = usePercent as number;
+                  // Pass saved raw offset for pixel-perfect restoration (local records only)
+                  const savedOffset = typeof prog.scrollOffsetY === 'number' ? prog.scrollOffsetY : null;
+                  const savedContentHeight = typeof prog.scrollContentHeight === 'number' ? prog.scrollContentHeight : null;
+                  attemptRestoreScroll(usePercent as number, savedOffset, savedContentHeight).then((ok) => {
+                    if (!ok) console.log('[Reader] Vertical restore attempt failed, will retry later on layout.');
+                    pendingScrollRestorePercentRef.current = null;
+                  });
+                }
+              }
+            } catch (e) {
+              console.log('Error restoring reading progress:', e);
+            }
+            restoredProgressRef.current[restoreKey] = true;
+          }
+        }
+
         setChapterLiked(currentUser ? chapterData.chapterLikedBy?.includes(currentUser.uid) || false : false);
         setChapterLikes(chapterData.chapterLikes || 0);
 
@@ -727,6 +966,8 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         } else {
           console.error('Error fetching chapter data:', error);
         }
+      } finally {
+        isProgressRestoredRef.current = true;
       }
     };
 
@@ -771,28 +1012,111 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     }
   }, [currentChapter, pagedContent.length, requestedPage]);
 
-  // Save reading progress to database
+  // Persist reading progress helper (throttled)
+  const persistReadingProgress = useCallback(async (force: boolean = false) => {
+    if (!novel || !currentUser) return;
+    if (!isProgressRestoredRef.current) {
+      console.log('[Reader] Skipping progress save: progress has not been restored yet.');
+      return;
+    }
+    try {
+      const storageKey = `reading_progress_${currentUser.uid}_${novel.id}`;
+
+      // Read existing local copy
+      let existingLocal: any = null;
+      try {
+        const rawLocal = await AsyncStorage.getItem(storageKey);
+        if (rawLocal) existingLocal = JSON.parse(rawLocal);
+      } catch (e) {
+        existingLocal = null;
+      }
+
+      // Read existing remote copy to avoid overwriting fresher/better progress
+      let existingRemote: any = null;
+      try {
+        const progRef = doc(db, 'readingProgress', `${currentUser.uid}_${novel.id}`);
+        const progSnap = await getDoc(progRef);
+        if (progSnap.exists()) existingRemote = progSnap.data();
+      } catch (e) {
+        existingRemote = null;
+      }
+
+      // Decide whether to write local: avoid overwriting a richer recent record with a lower/zero progress
+      const newPercent = typeof progressPercent === 'number' ? progressPercent : null;
+      const newPage = typeof pageIndex === 'number' ? pageIndex : null;
+      let shouldWriteLocal = true;
+
+      if (existingLocal && existingLocal.progressPercent != null && newPercent != null) {
+        const localAge = Date.now() - (existingLocal.updatedAt || 0);
+        if (existingLocal.progressPercent > newPercent && localAge < 15000) {
+          shouldWriteLocal = false;
+        }
+      }
+
+      if (shouldWriteLocal && existingRemote && existingRemote.progressPercent != null && newPercent != null) {
+        let remoteTime = 0;
+        if (existingRemote.updatedAt) {
+          if (typeof existingRemote.updatedAt === 'number') remoteTime = existingRemote.updatedAt;
+          else if (existingRemote.updatedAt?.toMillis) remoteTime = existingRemote.updatedAt.toMillis();
+        }
+        const remoteAge = Date.now() - (remoteTime || 0);
+        if (existingRemote.progressPercent > newPercent && remoteAge < 15000) {
+          shouldWriteLocal = false;
+        }
+      }
+
+      if (shouldWriteLocal) {
+        try {
+          const localObj = {
+            chapterIndex: currentChapter,
+            chapterTitle: currentContentInfo.title,
+            progressPercent: newPercent,
+            pageIndex: newPage,
+            scrollOffsetY: scrollOffsetYRef.current,
+            scrollContentHeight: contentHeightRef.current,
+            updatedAt: Date.now(),
+          };
+          await AsyncStorage.setItem(storageKey, JSON.stringify(localObj));
+          console.log('[Reader] Saved local progress', storageKey, localObj);
+        } catch (e) {
+          // ignore local write errors
+        }
+      } else {
+        console.log('[Reader] Skipped local overwrite (existing local/remote fresher or higher)');
+      }
+
+      // Remote save (Firestore)
+      await updateReadingProgress(
+        currentUser.uid,
+        novel.id,
+        novel.title,
+        novel.coverSmallImage || novel.coverImage,
+        currentChapter,
+        currentContentInfo.title,
+        progressPercent,
+        pageIndex
+      );
+
+      console.log('[Reader] Persisted progress remote', { novelId: novel.id, chapter: currentChapter, progressPercent, pageIndex });
+
+      lastSavedAtRef.current = Date.now();
+    } catch (err) {
+      console.error('Error persisting reading progress:', err);
+    }
+  }, [novel, currentUser, currentChapter, currentContentInfo.title, progressPercent, pageIndex]);
+
+  // Save reading progress when chapter changes and when leaving the screen
   useEffect(() => {
     if (novel && currentUser) {
-      const saveProgress = async () => {
-        await updateReadingProgress(
-          currentUser.uid,
-          novel.id,
-          novel.title,
-          novel.coverSmallImage || novel.coverImage,
-          currentChapter,
-          currentContentInfo.title
-        );
-      };
+      // Save immediately for chapter changes
+      persistReadingProgress();
 
-      saveProgress();
-
-      // Also save when user leaves the screen
+      // Also save on cleanup (leaving screen)
       return () => {
-        saveProgress();
+        persistReadingProgress();
       };
     }
-  }, [currentChapter, novel, currentUser, currentContentInfo.title]);
+  }, [currentChapter, novel, currentUser, currentContentInfo.title, persistReadingProgress]);
 
   // Track reading progress based on scroll position
   const lastProgressRef = useRef<number>(0);
@@ -806,8 +1130,21 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
     const paddingToBottom = 50;
     const isCloseToBottom = layoutMeasurement.height + contentOffset.y >= contentSize.height - paddingToBottom;
 
+    // Keep refs in sync for scroll restoration
+    viewportHeightRef.current = layoutMeasurement.height;
+    contentHeightRef.current = contentSize.height;
+    scrollOffsetYRef.current = contentOffset.y;
+
     // Calculate reading progress percentage
     const progressPercent = Math.min(100, Math.round((contentOffset.y + layoutMeasurement.height) / contentSize.height * 100));
+
+    // Update UI state
+    setProgressPercent(progressPercent);
+
+    // Persist periodically (throttled)
+    if (Date.now() - lastSavedAtRef.current > SAVE_INTERVAL) {
+      persistReadingProgress();
+    }
 
     // Track progress at milestones (25%, 50%, 75%, 100%)
     if (novel && currentContentInfo.type === 'chapter') {
@@ -1030,6 +1367,14 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
       setIsFollowing(!isFollowing);
 
       await toggleFollow(novel.authorId, isFollowing);
+
+      // Send Push Notification
+      await sendPushNotification(
+        novel.authorId,
+        `${currentUser.displayName || "Someone"} 👤`,
+        `Started following you`,
+        { url: `novlnest://profile/${currentUser.uid}` }
+      )
       // Invalidate profile cache
       await invalidateCache(`profile_user_${novel.authorId}`);
 
@@ -1806,24 +2151,21 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
             maxHeight={Dimensions.get('window').height * 0.55}
           />
         );
-      } else if (block.type === 'characters_list') {
+      } else if (block.type === 'character_header') {
+        // Pagination mode: renders a single character's avatar + name
+        const charIdx = block.data;
+        const char = novel?.characters?.[charIdx];
+        if (!char) return null;
         return (
-          <View key={idx} style={styles.charactersContainer}>
-            {novel?.characters?.map((char) => (
-              <View key={char.id} style={styles.characterListItem}>
-                {char.imageUrl ? (
-                  <CachedImage uri={char.imageUrl} style={styles.characterListAvatar} />
-                ) : (
-                  <View style={[styles.characterListAvatar, { backgroundColor: colors.primary + '20', justifyContent: 'center', alignItems: 'center' }]}>
-                    <Text style={{ color: colors.primary, fontWeight: 'bold', fontSize: 24 }}>{char.name.charAt(0)}</Text>
-                  </View>
-                )}
-                <View style={styles.characterListInfo}>
-                  <Text style={[styles.characterListName, { color: readerColors.text }]}>{char.name}</Text>
-                  <Text style={[styles.characterListDesc, { color: readerColors.textSecondary }]}>{char.description}</Text>
-                </View>
+          <View key={idx} style={styles.characterListItem}>
+            {char.imageUrl ? (
+              <CachedImage uri={char.imageUrl} style={styles.characterListAvatar} />
+            ) : (
+              <View style={[styles.characterListAvatar, { backgroundColor: colors.primary + '20', justifyContent: 'center', alignItems: 'center' }]}>
+                <Text style={{ color: colors.primary, fontWeight: 'bold', fontSize: 24 }}>{char.name.charAt(0)}</Text>
               </View>
-            ))}
+            )}
+            <Text style={[styles.characterListName, { color: readerColors.text }]}>{char.name}</Text>
           </View>
         );
       }
@@ -1839,12 +2181,20 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         onUserActivity();
         return false;
       }}
+      onMoveShouldSetResponderCapture={() => {
+        onUserActivity();
+        return false;
+      }}
     >
       <StatusBar barStyle={readerColors.text === '#FFFFFF' ? 'light-content' : 'dark-content'} backgroundColor={readerColors.background} />
 
       {/* Hidden Measure View to get accurate content height */}
       <View style={{ position: 'absolute', opacity: 0, width: Dimensions.get('window').width - 48, zIndex: -1000 }} pointerEvents="none">
-        <View onLayout={(e) => setContentHeight(e.nativeEvent.layout.height)}>
+        <View onLayout={(e) => {
+          const height = e.nativeEvent.layout.height;
+          setContentHeight(height);
+          contentHeightRef.current = height;
+        }}>
           {renderBlocks(extractChatBlocks(currentContentInfo.content))}
         </View>
       </View>
@@ -1902,6 +2252,11 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
         >
           <Ionicons name="share-outline" size={24} color="#8B5CF6" />
         </TouchableOpacity>
+
+        {/* Progress bar */}
+        <View style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 3 }}>
+          <View style={{ position: 'absolute', left: 0, bottom: 0, height: '100%', width: `${progressPercent}%`, backgroundColor: colors.primary }} />
+        </View>
       </Animated.View>
 
       {/* Scrollable Content */}
@@ -2029,11 +2384,23 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
 
               // Forward past end
               if (contentOffset.x + layoutMeasurement.width > contentSize.width + threshold) {
+                markAsCompleted();
                 goToNextChapter(0);
               }
               // Backward past start
               else if (contentOffset.x < -threshold) {
                 goToPreviousChapter(-1); // -1 means go to the LAST page of prev chapter
+              }
+            }}
+            onMomentumScrollEnd={(e) => {
+              const offsetX = e.nativeEvent.contentOffset.x;
+              const width = Dimensions.get('window').width;
+              const idx = Math.round(offsetX / width);
+              setPageIndex(idx);
+              const percent = totalPages > 0 ? Math.round(((idx + 1) / totalPages) * 100) : 0;
+              setProgressPercent(percent);
+              if (Date.now() - lastSavedAtRef.current > SAVE_INTERVAL) {
+                persistReadingProgress();
               }
             }}
             getItemLayout={(_, index) => ({
@@ -2076,7 +2443,10 @@ const NovelReaderScreen = ({ route, navigation }: any) => {
                         {currentChapter < getTotalReadingOrderItems() - 1 ? (
                           <TouchableOpacity
                             style={[styles.nextChapterButton, { backgroundColor: colors.primary, width: '100%' }]}
-                            onPress={() => goToNextChapter(0)}
+                            onPress={() => {
+                              markAsCompleted();
+                              goToNextChapter(0);
+                            }}
                           >
                             <Text style={styles.nextChapterButtonText}>Next Chapter</Text>
                             <Ionicons name="chevron-forward" size={20} color="#fff" />
@@ -3062,13 +3432,14 @@ const getStyles = (themeColors: any, insets: any, fontSize: number) => StyleShee
     height: Dimensions.get('window').height * 0.55,
   },
   charactersContainer: {
-    paddingVertical: 16,
+    paddingTop: 16,
+    paddingBottom: 100,
   },
   characterListItem: {
-    flexDirection: 'row',
-    marginBottom: 24,
-    alignItems: 'flex-start',
-    gap: 16,
+    flexDirection: 'column',
+    marginBottom: 40,
+    alignItems: 'center',
+    gap: 12,
   },
   characterListAvatar: {
     width: 80,
@@ -3076,18 +3447,20 @@ const getStyles = (themeColors: any, insets: any, fontSize: number) => StyleShee
     borderRadius: 40,
   },
   characterListInfo: {
-    flex: 1,
-    justifyContent: 'center',
+    width: '100%',
+    marginTop: 8,
   },
   characterListName: {
     fontSize: 20,
     fontWeight: 'bold',
-    marginBottom: 4,
+    marginBottom: 8,
+    textAlign: 'center',
     fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   characterListDesc: {
     fontSize: 16,
     lineHeight: 22,
+    textAlign: 'left',
     fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
   },
   tocModalContainer: {

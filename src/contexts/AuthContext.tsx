@@ -73,18 +73,26 @@ export interface ExtendedUser extends User {
   pushToken?: string
   pushNotificationsEnabled?: boolean
   displayNameLower?: string
+  // School System Fields
+  schoolId?: string | null
+  schoolRole?: 'school_admin' | 'teacher' | 'student' | null
+  classId?: string | null
+  institutionName?: string | null
+  isMinor?: boolean
+  focusedMode?: boolean
 }
 
 interface AuthContextType {
   currentUser: ExtendedUser | null
   login: (email: string, password: string) => Promise<void>
-  register: (email: string, password: string, displayName: string) => Promise<void>
+  register: (email: string, password: string, displayName: string, inviteCode?: string) => Promise<void>
   logout: () => Promise<void>
   resetPassword: (email: string) => Promise<void>
   sendEmailVerificationLink: (email?: string, password?: string) => Promise<void>
   verifyEmail: (actionCode: string) => Promise<any>
   loading: boolean
   isAdmin: boolean
+  leaveSchool: () => Promise<void>
   refreshUser: () => Promise<void>
   checkAccountStatus: (user: User) => Promise<void>
   signInWithSocialCredential: (credential: AuthCredential) => Promise<void>
@@ -107,6 +115,7 @@ interface AuthContextType {
   updateUserEmail: (newEmail: string, confirmEmail: string, password?: string) => Promise<void>
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>
   deleteUserAccount: (password?: string) => Promise<void>
+  redeemInviteCode: (code: string) => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextType>({} as AuthContextType)
@@ -283,8 +292,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         }
 
+        let schoolFocusedMode = false;
+        if (data.schoolId) {
+          const schoolRef = doc(db, 'schools', data.schoolId);
+          const schoolSnap = await getDoc(schoolRef);
+          if (schoolSnap.exists()) {
+            schoolFocusedMode = schoolSnap.data().focusedMode || false;
+          }
+        }
+
         const extendedUser = {
           ...user,
+          ...data,
+          focusedMode: schoolFocusedMode,
           isAdmin: data.isAdmin || false,
           emailVisible: data.emailVisible || false,
           createdAt: data.createdAt,
@@ -305,6 +325,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           pendingEmail: data.pendingEmail,
           pushToken: data.pushToken,
           pushNotificationsEnabled: data.pushNotificationsEnabled,
+          schoolId: data.schoolId || null,
+          schoolRole: data.schoolRole || null,
+          classId: data.classId || null,
+          institutionName: data.institutionName || null,
         } as ExtendedUser
 
         setCurrentUser(extendedUser)
@@ -335,9 +359,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           pendingEmail: null,
           pushNotificationsEnabled: true,
           isActive: true,
-          isVerified: false, // Initialized for new users
+          isVerified: false,
         }
-        await setDoc(doc(db, "users", user.uid), newUserData)
+        await setDoc(doc(db, "users", user.uid), newUserData, { merge: true })
         const extendedUser = {
           ...user,
           displayName: user.displayName || user.email?.split("@")[0] || "User",
@@ -360,6 +384,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           pushNotificationsEnabled: true,
           isActive: true,
           isVerified: false,
+          schoolId: null,
+          schoolRole: null,
+          classId: null,
+          institutionName: null,
         } as ExtendedUser
         setCurrentUser(extendedUser)
         setFirebaseUser(user)
@@ -1116,7 +1144,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }
 
-  const register = async (email: string, password: string, displayName: string) => {
+  const register = async (email: string, password: string, displayName: string, inviteCode?: string) => {
     if (!displayName || displayName.trim().length === 0) {
       throw new Error("Display name is required")
     }
@@ -1137,6 +1165,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     const normalizedDisplayName = trimmedDisplayName.toLowerCase().replace(/\s+/g, " ").trim()
+
+    // 1. Validate Invite Code if provided
+    let schoolData: any = null;
+    let codeData: any = null;
+    let cleanCode = "";
+
+    if (inviteCode && inviteCode.trim()) {
+      cleanCode = inviteCode.trim().toUpperCase();
+      const codeRef = doc(db, "inviteCodes", cleanCode);
+      const codeSnap = await getDoc(codeRef);
+      
+      if (!codeSnap.exists() || !codeSnap.data().isActive) {
+        throw new Error("Invalid or inactive school invite code.");
+      }
+      
+      codeData = codeSnap.data();
+      const schoolSnap = await getDoc(doc(db, codeData.schoolPath));
+      if (schoolSnap.exists()) {
+        schoolData = schoolSnap.data();
+        schoolData.id = schoolSnap.id;
+      }
+    }
 
     const nameQuery = query(
       collection(db, "users"),
@@ -1164,7 +1214,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const user = userCredential.user
 
     await updateProfile(user, { displayName: trimmedDisplayName })
-    await sendEmailVerification(user, actionCodeSettings)
+    try {
+      await sendEmailVerification(user, actionCodeSettings)
+    } catch (e) {
+      console.warn("Failed to send verification email during registration:", e);
+    }
 
     const newUserData = {
       uid: user.uid,
@@ -1186,12 +1240,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       poemLibrary: [],
       finishedReads: [],
       pendingEmail: null,
+      pushNotificationsEnabled: true,
       isActive: true,
       isVerified: false,
+      schoolId: schoolData ? schoolData.id : null,
+      schoolRole: codeData ? codeData.role : null,
+      institutionName: schoolData ? schoolData.name : null,
+      classId: codeData ? (codeData.classId || null) : null,
     }
-    await setDoc(doc(db, "users", user.uid), newUserData)
 
-    // NO LONGER logging out immediately - allowing grace period
+    const batch = writeBatch(db);
+    batch.set(doc(db, "users", user.uid), newUserData, { merge: true });
+
+    if (codeData && schoolData) {
+      if (codeData.role === 'school_admin') {
+        batch.update(doc(db, "schools", schoolData.id), {
+          adminIds: arrayUnion(user.uid)
+        });
+      } else if (codeData.role === 'student' && codeData.classId) {
+        const memberRef = doc(db, `schools/${schoolData.id}/classes/${codeData.classId}/members`, user.uid);
+        batch.set(memberRef, {
+          uid: user.uid,
+          role: 'student',
+          joinedAt: newUserData.createdAt
+        });
+      }
+      
+      batch.update(doc(db, "inviteCodes", cleanCode), {
+        usageCount: (codeData.usageCount || 0) + 1
+      });
+    }
+
+    await batch.commit();
     await fetchUserData(user)
   }
 
@@ -1530,6 +1610,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 poemLibrary: data.poemLibrary || [],
                 finishedReads: data.finishedReads || [],
                 pendingEmail: data.pendingEmail,
+                // School Fields
+                schoolId: data.schoolId || null,
+                schoolRole: data.schoolRole || null,
+                classId: data.classId || null,
+                institutionName: data.institutionName || null,
+                isMinor: data.isMinor || false,
+                focusedMode: prev?.focusedMode || false, // focusedMode is handled separately in fetchUserData/refresh
               };
               return updatedUser;
             });
@@ -1599,6 +1686,103 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => clearInterval(interval)
   }, [currentUser?.pendingEmail, currentUser?.emailVerified, firebaseUser])
 
+  const redeemInviteCode = async (inviteCode: string) => {
+    if (!currentUser) throw new Error("You must be logged in to redeem a code.")
+    
+    const cleanCode = inviteCode.trim().toUpperCase()
+    
+    try {
+      // 1. Fetch the Invite Code document
+      const codeRef = doc(db, "inviteCodes", cleanCode)
+      const codeSnap = await getDoc(codeRef)
+      
+      if (!codeSnap.exists()) {
+        throw new Error("Invalid invite code. Please check and try again.")
+      }
+      
+      const codeData = codeSnap.data()
+      if (!codeData.isActive) {
+        throw new Error("This invite code is no longer active.")
+      }
+      
+      // 2. Fetch the School document to get the name
+      const schoolRef = doc(db, codeData.schoolPath)
+      const schoolSnap = await getDoc(schoolRef)
+      
+      if (!schoolSnap.exists()) {
+        throw new Error("The school associated with this code could not be found.")
+      }
+      
+      const schoolData = schoolSnap.data()
+      const schoolId = schoolSnap.id
+      
+      // 3. Prepare Batch Update
+      const batch = writeBatch(db)
+      const userRef = doc(db, "users", currentUser.uid)
+      
+      // Update User Profile
+      batch.update(userRef, {
+        schoolId: schoolId,
+        schoolRole: codeData.role,
+        institutionName: schoolData.name,
+        classId: codeData.classId || null,
+        updatedAt: new Date().toISOString()
+      })
+      
+      // 4. Update Role-Specific Collections
+      if (codeData.role === 'school_admin') {
+        batch.update(schoolRef, {
+          adminIds: arrayUnion(currentUser.uid)
+        })
+      } else if (codeData.role === 'student' && codeData.classId) {
+        const memberRef = doc(db, `${codeData.schoolPath}/classes/${codeData.classId}/members`, currentUser.uid)
+        batch.set(memberRef, {
+          uid: currentUser.uid,
+          role: 'student',
+          joinedAt: new Date().toISOString()
+        })
+      }
+
+      // 5. Update Usage Count
+      batch.update(codeRef, {
+        usageCount: (codeData.usageCount || 0) + 1
+      })
+      
+      await batch.commit()
+      
+      // 6. Invalidate Caches & Update Local State
+      await invalidateProfileCache(currentUser.uid)
+      setCurrentUser(prev => prev ? {
+        ...prev,
+        schoolId: schoolId,
+        schoolRole: codeData.role,
+        institutionName: schoolData.name,
+        classId: codeData.classId || null,
+      } : null)
+      
+    } catch (error) {
+      console.error("Error redeeming invite code:", error)
+      throw error
+    }
+  }
+
+  const leaveSchool = async () => {
+    if (!currentUser) return;
+    try {
+      const userRef = doc(db, 'users', currentUser.uid);
+      await updateDoc(userRef, {
+        schoolId: null,
+        schoolRole: null,
+        classId: null,
+        institutionName: null,
+      });
+      await refreshUser();
+    } catch (error) {
+      console.error("Error leaving school:", error);
+      throw error;
+    }
+  };
+
   const value = {
     currentUser,
     login,
@@ -1609,6 +1793,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     verifyEmail,
     loading,
     isAdmin,
+    leaveSchool,
     refreshUser,
     checkAccountStatus,
     signInWithSocialCredential,
@@ -1623,6 +1808,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     updateUserEmail,
     changePassword,
     deleteUserAccount,
+    redeemInviteCode,
   }
 
   return <AuthContext.Provider value={value}>{!loading && children}</AuthContext.Provider>
